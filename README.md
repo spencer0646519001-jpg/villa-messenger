@@ -39,3 +39,29 @@ Every preliminary quote must tell guests that actual availability and final pric
 - `docs/limitations.md`
 - `docs/v2_roadmap.md`
 
+## Local Development
+
+Create and activate a virtual environment:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```powershell
+pip install -r requirements.txt
+```
+
+Run tests:
+
+```powershell
+python -m pytest
+```
+
+Run the app:
+
+```powershell
+uvicorn app.main:app --reload
+```
