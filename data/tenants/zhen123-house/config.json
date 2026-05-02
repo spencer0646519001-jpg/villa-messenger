@@ -1,0 +1,210 @@
+{
+  "slug": "zhen123-house",
+  "name": "枕123民宿 / 枕壹貳參",
+  "address": "宜蘭縣員山鄉枕山十二路123號",
+  "phone": "0975-639-757",
+  "emergency_phone": "0975-639-757",
+  "timezone": "Asia/Taipei",
+  "default_language": "zh-TW",
+  "source_pages": [
+    "https://zhen123house.wixsite.com/my-site-1/general-6",
+    "https://zhen123house.wixsite.com/my-site-1/about-4"
+  ],
+  "hard_rules": {
+    "never_guarantee_availability": true,
+    "never_confirm_booking": true,
+    "never_reserve_automatically": true,
+    "never_process_payment_or_deposit": true,
+    "required_quote_sentence": "實際是否有空房與最終價格，仍會由民宿人員和您確認。"
+  },
+  "stay_policy": {
+    "booking_type": "whole_house_only",
+    "check_in_after": "15:00",
+    "checkout_before": "11:00",
+    "arrival_call_notice_minutes": 30,
+    "late_checkout_fee_twd_per_30_minutes": 500,
+    "checkout_after_15_full_nightly_rate_may_apply": true,
+    "breakfast_provided": false,
+    "disposable_amenities_proactively_provided": false,
+    "towels_based_on_guest_count": true,
+    "automatic_cleaning_during_continuous_stay": false,
+    "automatic_towel_replacement_during_continuous_stay": false,
+    "cleaning_or_towel_replacement_available_on_request": true
+  },
+  "room_policy": {
+    "quote_scope": "whole_house_preliminary_pricing",
+    "total_rooms": 4,
+    "double_rooms": 2,
+    "quad_rooms": 2,
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+      {
+        "max_people": 8,
+        "rooms_opened": 2
+      },
+      {
+        "max_people": 10,
+        "rooms_opened": 3
+      },
+      {
+        "max_people": 12,
+        "rooms_opened": 4
+      },
+      {
+        "min_people": 13,
+        "max_people": 16,
+        "rooms_opened": 4,
+        "extra_beds": true
+      }
+    ]
+  },
+  "pricing": {
+    "currency": "TWD",
+    "base_prices_per_night": {
+      "8_people": {
+        "weekday": 9000,
+        "saturday": 15000,
+        "summer_weekday": 12000,
+        "summer_saturday_or_holiday": 15000,
+        "spring_festival": 25000
+      },
+      "10_people": {
+        "weekday": 12000,
+        "saturday": 18000,
+        "summer_weekday": 15000,
+        "summer_saturday_or_holiday": 18000,
+        "spring_festival": 28000
+      },
+      "12_people": {
+        "weekday": 15000,
+        "saturday": 21000,
+        "summer_weekday": 18000,
+        "summer_saturday_or_holiday": 21000,
+        "spring_festival": 31000
+      }
+    },
+    "people_pricing": [
+      {
+        "min_people": 1,
+        "max_people": 8,
+        "tier": "8_people"
+      },
+      {
+        "min_people": 9,
+        "max_people": 10,
+        "tier": "10_people"
+      },
+      {
+        "min_people": 11,
+        "max_people": 12,
+        "tier": "12_people"
+      },
+      {
+        "min_people": 13,
+        "max_people": 16,
+        "tier": "12_people",
+        "extra_person_fee_twd": 1000,
+        "extra_person_fee_basis": "per_person_over_12"
+      },
+      {
+        "min_people": 17,
+        "max_people": null,
+        "auto_quote": false,
+        "requires_staff_confirmation": true
+      }
+    ],
+    "children": {
+      "count_as_guests_for_preliminary_estimate": true,
+      "requires_staff_confirmation": true,
+      "required_sentence": "小孩是否需依實際佔床情況調整，最終價格仍會請民宿人員和您確認。"
+    },
+    "infants": {
+      "automatically_count_as_guests_for_pricing": false,
+      "requires_staff_confirmation": true,
+      "required_sentence": "小孩是否需依實際佔床情況調整，最終價格仍會請民宿人員和您確認。"
+    },
+    "pets": {
+      "allowed_with_notice": true,
+      "common_terms": {
+        "毛孩": "dog"
+      },
+      "small_dogs_only_for_now": true,
+      "fee_twd_per_pet_per_stay": 500,
+      "count_as_guests": false,
+      "ask_for_pet_count_when_missing": true,
+      "requires_staff_confirmation": true
+    },
+    "long_stay_discount": {
+      "formula": "max(0, nights - 1) * 1000",
+      "discount_twd_per_extra_night_after_first": 1000
+    },
+    "season_rules": {
+      "summer_months": [
+        7,
+        8
+      ],
+      "saturday_pricing_applies_only_to_saturday_night": true,
+      "price_each_night_by_its_own_date": true,
+      "national_holidays_source": "special_dates.national_holidays",
+      "spring_festival_source": "special_dates.spring_festival",
+      "taiwan_holiday_api": "v2"
+    },
+    "price_type_priority": [
+      "spring_festival",
+      "national_holiday",
+      "summer_saturday_or_holiday",
+      "summer_weekday",
+      "saturday",
+      "weekday"
+    ],
+    "bbq": {
+      "requires_advance_notice": true,
+      "cleaning_fee_twd": 1000,
+      "v1_5_owner_confirmation_needed": true,
+      "auto_add_fee_in_v1_5": false
+    },
+    "deposits": {
+      "booking_deposit_percent_of_total_room_price": 30,
+      "equipment_security_deposit_on_arrival_twd": 3000,
+      "process_automatically": false
+    }
+  },
+  "special_dates": {
+    "national_holidays": [],
+    "spring_festival": []
+  },
+  "owner_commands": {
+    "planned": true,
+    "allowed_for_tenant_owners_only": true,
+    "do_not_intercept_non_slash_owner_messages": true,
+    "do_not_expose_owner_command_behavior_to_guests": true,
+    "commands": [
+      "/幫助",
+      "/詢價",
+      "/今日詢價",
+      "/查詢價 <inquiry_id>",
+      "/未處理",
+      "/緊急",
+      "/昨晚總覽",
+      "/今天總覽",
+      "/綁定 <message_id> <booking_code>",
+      "/查訂房 <booking_code>",
+      "/查客人 <message_id>",
+      "/解除綁定 <message_id>"
+    ]
+  },
+  "messaging": {
+    "line_first": true,
+    "line_webhook_v1_5_future_scope": true,
+    "messenger_api_v1_5": false,
+    "messenger_current_strategy": "Meta Business Suite native auto-replies",
+    "future_messenger_adapter_ready": true
+  },
+  "google_calendar": {
+    "v1_5_enabled": false,
+    "v2_planned": true,
+    "booking_keyword": "枕123"
+  }
+}
+
