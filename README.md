@@ -2,7 +2,7 @@
 
 LINE-first homestay night inquiry and message concierge system.
 
-This project will be built gradually. The initial version of the repository contains documentation and tenant configuration only. It does not implement FastAPI routes, LINE webhook handling, database code, or business logic yet.
+This project will be built gradually. The initial version of the repository contains documentation, tenant configuration, and a small FastAPI health surface. It does not implement LINE webhook handling, database code, or business logic yet.
 
 ## V1.5 Direction
 
@@ -29,6 +29,11 @@ Every preliminary quote must tell guests that actual availability and final pric
 - Address: 宜蘭縣員山鄉枕山十二路123號
 - Timezone: `Asia/Taipei`
 - Config: `data/tenants/zhen123-house/config.json`
+
+## Tenant Configuration
+
+Tenant config lives under `data/tenants/{tenant_slug}/config.json`.
+V1.5 uses file-based tenant config before DB-backed tenant management.
 
 ## Documentation
 
