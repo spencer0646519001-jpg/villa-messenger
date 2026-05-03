@@ -2,7 +2,7 @@
 
 LINE-first homestay night inquiry and message concierge system.
 
-This project will be built gradually. The initial version of the repository contains documentation, tenant configuration, and a small FastAPI health surface. It does not implement LINE webhook handling, database code, or business logic yet.
+This project will be built gradually. The initial version of the repository contains documentation, tenant configuration, SQLite schema setup, and a small FastAPI health surface. It does not implement LINE webhook handling or business logic yet.
 
 ## V1.5 Direction
 
@@ -34,6 +34,10 @@ Every preliminary quote must tell guests that actual availability and final pric
 
 Tenant config lives under `data/tenants/{tenant_slug}/config.json`.
 V1.5 uses file-based tenant config before DB-backed tenant management.
+
+## Persistence
+
+SQLite is used for V1.5 local/demo persistence, with PostgreSQL as the future SaaS/V3 direction. Local DB files are ignored by git.
 
 ## Documentation
 
