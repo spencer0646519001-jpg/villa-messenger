@@ -6,6 +6,13 @@ from pydantic import BaseModel, Field
 class NightlyPrice(BaseModel):
     night_date: date
     price_type: str
+    # Semantic types: weekday, saturday, summer_weekday,
+    # summer_saturday_or_holiday, spring_festival, national_holiday.
+    price_lookup_key: str
+    # The actual key used to look up base_prices_per_night.
+    # Per docs/pricing_rules.md V1.5, national_holiday maps to
+    # "summer_saturday_or_holiday". V2 will introduce a dedicated holiday
+    # price tier and this mapping will go away.
     tier: str
     amount: int
 
