@@ -18,6 +18,7 @@ EXPECTED_TABLES = {
     "conversation_links",
     "messages",
     "inquiries",
+    "tenant_operation_state",
 }
 
 NOW = "2026-05-03T00:00:00+08:00"
@@ -111,6 +112,50 @@ def test_inquiries_table_includes_tenant_id(temp_db_dir: Path) -> None:
     init_db(database_path)
 
     assert "tenant_id" in _column_names(database_path, "inquiries")
+
+
+def test_tenant_operation_state_table_exists(temp_db_dir: Path) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    with get_connection(database_path) as connection:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("tenant_operation_state",),
+        ).fetchall()
+
+    assert len(rows) == 1
+
+
+def test_tenant_operation_state_has_expected_columns(temp_db_dir: Path) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    expected = {
+        "tenant_id",
+        "auto_schedule_enabled",
+        "auto_on_start_time",
+        "auto_on_end_time",
+        "manual_mode",
+        "manual_set_at",
+        "manual_valid_until",
+        "last_changed_by_owner_id",
+        "updated_at",
+    }
+    assert expected <= _column_names(database_path, "tenant_operation_state")
+
+
+def test_tenant_operation_state_primary_key_is_tenant_id(temp_db_dir: Path) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    with get_connection(database_path) as connection:
+        rows = connection.execute(
+            "PRAGMA table_info(tenant_operation_state)"
+        ).fetchall()
+
+    pk_columns = {row["name"] for row in rows if row["pk"] > 0}
+    assert pk_columns == {"tenant_id"}
 
 
 def _insert_tenant(connection: sqlite3.Connection, slug: str) -> int:

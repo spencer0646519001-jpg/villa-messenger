@@ -139,3 +139,16 @@ CREATE TABLE IF NOT EXISTS inquiries (
     FOREIGN KEY (contact_id) REFERENCES contacts(id),
     FOREIGN KEY (message_id) REFERENCES messages(id)
 );
+
+CREATE TABLE IF NOT EXISTS tenant_operation_state (
+    tenant_id INTEGER PRIMARY KEY,
+    auto_schedule_enabled INTEGER NOT NULL DEFAULT 1,
+    auto_on_start_time TEXT NOT NULL DEFAULT '23:00',
+    auto_on_end_time TEXT NOT NULL DEFAULT '08:00',
+    manual_mode TEXT,
+    manual_set_at TEXT,
+    manual_valid_until TEXT,
+    last_changed_by_owner_id INTEGER,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
