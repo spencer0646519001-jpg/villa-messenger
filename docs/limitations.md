@@ -1,44 +1,63 @@
-# Limitations
+# V1.5 Limitations
 
-## Current Task
+明確列出 V1.5 **不會做**的事,以及為什麼。
 
-This first task creates documentation and tenant configuration only. It does not implement routes, webhook handling, database code, or business logic.
+## 不會做的事
 
-## V1.5 Limitations
+### 1. 不保證空房
 
-V1.5 is preliminary quote and inquiry handling only.
+即使接了 Google Calendar(V1.5 已接),系統也**不會主動告訴客人「這天有房」**。
 
-Not included in V1.5:
+Calendar 的角色是:
+- 看到關鍵字標記 → 該晚被當「客滿」處理,系統不報價、轉人工
+- 沒看到關鍵字標記 → 系統照常初步報價,但回覆中**不提空房狀態**,只附固定確認句
 
-- Guaranteed availability.
-- Booking confirmation.
-- Automatic room reservation.
-- Payment processing.
-- Deposit processing.
-- Google Calendar availability check.
-- Booking.com API.
-- Messenger API.
-- Web UI.
-- AI implementation.
+理由:民宿主可能漏標、用不同關鍵字、紙本記、剛接電話還沒記。系統說「沒看到標記」會被客人理解成「有房」,出事是民宿的責任。所以系統不主動講,只在「明確客滿」時擋住報價。
 
-## Availability
+### 2. 不自動成立訂房
 
-The system must not represent availability as confirmed. Even when a preliminary quote can be calculated, staff must confirm actual availability and final price.
+系統永遠不會替客人「鎖定」一個日期。所有最終確認由民宿人員執行。
 
-## Pricing
+### 3. 不收款、不收訂金
 
-Pricing is conservative and policy-based. Special dates must come from tenant configuration in V1.5. Taiwan holiday API support is V2.
+不串金流。30% 訂金、3,000 押金等政策只在文字中提及,實際收款由民宿人員處理。
 
-Cases requiring staff confirmation include:
+### 4. 不用 LLM
 
-- More than 16 guests.
-- Children or infants.
-- Missing pet count.
-- BBQ requests.
-- Special requests outside configured policy.
-- Any ambiguous or incomplete inquiry.
+V1.5 全程不使用任何 LLM。所有解析、判斷、報價都用規則完成。
 
-## Messenger
+理由:LLM 不可預測。詢價涉及金額、空房承諾,出錯成本太高。等 V2 加 RAG 時,LLM 只用在「FAQ 白名單」這個低風險場景。
 
-Messenger can use Meta Business Suite native auto-replies for now. Future Messenger support should be implemented as a separate adapter without changing core inquiry or pricing services.
+### 5. 不主動回 FAQ
 
+WiFi、停車、check-in 時間…等非詢價問題,系統一律推播主人、不自動回。V2 才會加 RAG 處理這些。
+
+### 6. 不接 Messenger API
+
+Messenger 用 Meta Business Suite 內建罐頭回覆撐著。V2 才補。
+
+### 7. 白天不主動回覆
+
+V1.5 的系統有 On/Off 開關。預設 Off,主人手動 `/開機` 時才接手。
+這是為了避免系統跟主人在白天搶著回客人。
+
+V2 才加自動時間排程。
+
+### 8. 緊急訊息不回覆,只推播
+
+偵測到「沒水、瓦斯、停電」這類關鍵字 → 立即推播主人,系統不自動回任何安撫訊息。
+
+理由:緊急狀況不該由機器人講話。
+
+## Fallback 行為
+
+### Google Calendar API 連不上
+
+不能假裝沒事繼續報價。改成:
+- 不報價
+- 回覆客人「需請民宿人員確認後再為您試算」
+- 推播主人「Calendar 連不上,請檢查」
+
+### LINE API 連不上
+
+訊息留在資料庫、標記為「未送出」。主人 `/未處理` 看得到。

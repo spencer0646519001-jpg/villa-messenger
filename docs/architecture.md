@@ -58,3 +58,51 @@ Owner slash commands are planned for future tasks. Command handling should be se
 Google Calendar availability checks are V2. The future design should allow each tenant to define its own calendar booking keyword. For `zhen123-house`, the keyword is `枕123`.
 
 Booking.com API is not part of V1.5.
+
+## 新增:V1.5 完整資料流(更新版)
+
+```
+客人 LINE 訊息
+  ↓
+LINE webhook
+  ↓
+LineAdapter → InboundMessage
+  ↓
+MessageService
+  ├─ UrgencyDetector
+  │    └─ 命中 → 推播主人 + 不自動回 + 記錄 + 結束
+  │
+  ├─ InquiryParser
+  │    └─ 解析日期、人數、寵物、意圖
+  │
+  ├─ is_system_active(tenant)? [OperationMode 檢查]
+  │    └─ False(Off)→ 只存資料庫 + 結束(不回覆、不推播)
+  │
+  ├─ Inquiry 完整?
+  │    ├─ 否 → 補資料模板 → 回覆客人
+  │    └─ 是 ↓
+  │
+  ├─ GoogleCalendarAvailability.is_blocked()?
+  │    ├─ True(客滿) → 客滿模板 → 回覆客人 + 推播主人
+  │    ├─ API 失敗 → fallback 模板「需主人確認」+ 推播主人「API 失敗」
+  │    └─ False ↓
+  │
+  ├─ PricingPolicy
+  │    └─ 算出 PricingResult
+  │
+  ├─ ReplyTemplatePolicy
+  │    └─ PricingResult → 報價訊息
+  │
+  ├─ MessageRepository + InquiryRepository(存進 SQLite)
+  │
+  └─ LineClient
+      ├─ Reply 客人
+      └─ Push 主人(摘要 + inquiry_id)
+```
+
+新增模組對應的 PR:
+- PR6:ReplyTemplatePolicy
+- PR6.5:OperationMode
+- PR6.6:UrgencyDetector
+- PR7:InquiryService(把上面這些組合起來)
+- PR8.5:GoogleCalendarAvailability
