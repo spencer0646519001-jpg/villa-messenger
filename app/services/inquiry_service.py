@@ -8,16 +8,21 @@ Forbidden imports: app.repositories, app.api, app.adapters, app.clients,
 app.services.* (other services).
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable
 
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.parser_models import InquiryParseResult
+from app.domain.pricing_models import PricingResult
+from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_invalid_date_message,
     render_missing_info_message,
+    render_over_capacity_message,
     render_owner_push_uncategorized,
     render_owner_push_urgent,
+    render_quote_message,
 )
 from app.domain.urgency_detector import UrgencyDetectionResult, detect_urgency
 from app.schemas import InboundMessage
@@ -46,9 +51,13 @@ class InquiryService:
         self,
         *,
         operation_mode_service,
+        tenant_pricing_loader: Callable[[int], dict],
+        tenant_special_dates_loader: Callable[[int], dict],
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._operation_mode_service = operation_mode_service
+        self._tenant_pricing_loader = tenant_pricing_loader
+        self._tenant_special_dates_loader = tenant_special_dates_loader
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
 
     def handle_message(self, *, message: InboundMessage) -> InquiryDecision:
@@ -119,12 +128,14 @@ class InquiryService:
         message: InboundMessage,
         urgency: UrgencyDetectionResult,
     ) -> InquiryDecision:
-        contact = message.customer_display_name or message.platform_user_id
         push_text = render_owner_push_urgent(
             original_text=message.text,
             matched_keywords=urgency.matched_keywords,
-            contact_display=contact,
+            contact_display=(message.customer_display_name or message.platform_user_id),
         )
+        # "unknown" is intentional: test invariant forbids calling is_system_active
+        # on the urgent path (it has side effects). Future option: add a side-
+        # effect-free peek method to OperationModeService if log fidelity matters.
         log = self._build_base_log_payload(
             message,
             system_state="unknown",
@@ -205,9 +216,74 @@ class InquiryService:
             parsed_as_inquiry=True,
         )
 
+    def _stay_kwargs(self, inquiry: InquiryParseResult) -> dict:
+        return {
+            "checkin_date": date.fromisoformat(inquiry.dates.checkin_date),
+            "checkout_date": date.fromisoformat(inquiry.dates.checkout_date),
+            "adult_count": inquiry.guests.adult_count,
+            "child_count": inquiry.guests.child_count or 0,
+            "infant_count": inquiry.guests.infant_count or 0,
+            "pet_count": inquiry.pets.pet_count or 0,
+        }
+
     def _handle_pricing(
         self,
         message: InboundMessage,
         inquiry: InquiryParseResult,
     ) -> InquiryDecision:
-        raise NotImplementedError("PR7 commit 3/3")
+        pricing = calculate_price(
+            **self._stay_kwargs(inquiry),
+            tenant_pricing=self._tenant_pricing_loader(message.tenant_id),
+            tenant_special_dates=self._tenant_special_dates_loader(message.tenant_id),
+        )
+        if not pricing.can_quote:
+            return self._handle_unquotable(message, inquiry, pricing)
+        return self._handle_quoted(message, inquiry, pricing)
+
+    def _handle_unquotable(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        pricing: PricingResult,
+    ) -> InquiryDecision:
+        reply_text, action_taken = self._unquotable_reply(pricing)
+        log = self._build_base_log_payload(
+            message,
+            system_state="on",
+            action_taken=action_taken,
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        return InquiryDecision(
+            action_type="reply_to_customer_only",
+            customer_reply_text=reply_text,
+            log_payload=log,
+            parsed_as_inquiry=True,
+            could_quote=False,
+        )
+
+    def _unquotable_reply(self, pricing: PricingResult) -> tuple[str, str]:
+        if "exceeds_max_capacity" in pricing.reasons:
+            return render_over_capacity_message(), "over_capacity"
+        return render_invalid_date_message(), "invalid_date"
+
+    def _handle_quoted(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        pricing: PricingResult,
+    ) -> InquiryDecision:
+        reply_text = render_quote_message(pricing=pricing, **self._stay_kwargs(inquiry))
+        log = self._build_base_log_payload(
+            message,
+            system_state="on",
+            action_taken="quoted",
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        log["quoted_total"] = pricing.total
+        return InquiryDecision(
+            action_type="reply_to_customer_only",
+            customer_reply_text=reply_text,
+            log_payload=log,
+            parsed_as_inquiry=True,
+            could_quote=True,
+        )

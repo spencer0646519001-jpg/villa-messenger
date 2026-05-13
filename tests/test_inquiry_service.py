@@ -1,18 +1,50 @@
 import inspect
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.reply_text import (
+    INVALID_DATE_MESSAGE,
     MISSING_INFO_HEADER,
+    OVER_CAPACITY_MESSAGE,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
     OWNER_PUSH_URGENT_PREFIX,
+    QUOTE_GREETING,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
 from app.services.inquiry_service import InquiryService
+
+
+_DEFAULT_PRICING = {
+    "base_prices_per_night": {
+        "8_people": {
+            "weekday": 9000,
+            "saturday": 15000,
+            "summer_weekday": 12000,
+            "summer_saturday_or_holiday": 15000,
+            "spring_festival": 25000,
+        },
+        "10_people": {
+            "weekday": 12000,
+            "saturday": 18000,
+            "summer_weekday": 15000,
+            "summer_saturday_or_holiday": 18000,
+            "spring_festival": 28000,
+        },
+        "12_people": {
+            "weekday": 15000,
+            "saturday": 21000,
+            "summer_weekday": 18000,
+            "summer_saturday_or_holiday": 21000,
+            "spring_festival": 31000,
+        },
+    },
+}
 
 
 class FakeOperationModeService:
@@ -48,9 +80,21 @@ def _build_message(
     )
 
 
-def _build_service(*, system_on: bool = True) -> tuple[InquiryService, FakeOperationModeService]:
+def _build_service(
+    *,
+    system_on: bool = True,
+    tenant_pricing: dict | None = None,
+    tenant_special_dates: dict | None = None,
+) -> tuple[InquiryService, FakeOperationModeService]:
     fake = FakeOperationModeService(return_value=system_on)
-    return InquiryService(operation_mode_service=fake), fake
+    pricing = tenant_pricing if tenant_pricing is not None else _DEFAULT_PRICING
+    special = tenant_special_dates if tenant_special_dates is not None else {}
+    service = InquiryService(
+        operation_mode_service=fake,
+        tenant_pricing_loader=lambda tid: pricing,
+        tenant_special_dates_loader=lambda tid: special,
+    )
+    return service, fake
 
 
 # ============================================================
@@ -254,13 +298,194 @@ def test_handle_message_never_raises(text: str) -> None:
     assert isinstance(decision, InquiryDecision)
 
 
-def test_handle_pricing_stub_raises_not_implemented() -> None:
-    service, _ = _build_service(system_on=True)
-    message = _build_message("6/15 入住 6/17 退房 4 大人 多少錢?")
-    inquiry = parse_inquiry(message.text)
+# ============================================================
+# PRICING HAPPY PATH
+# ============================================================
 
-    with pytest.raises(NotImplementedError):
-        service._handle_pricing(message, inquiry)
+
+def test_pricing_complete_weekday_inquiry_returns_quote() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.could_quote is True
+    assert decision.customer_reply_text is not None
+    assert QUOTE_GREETING in decision.customer_reply_text
+
+
+def test_pricing_log_payload_quoted_total_matches_pricing() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    # 4 adults, 1 weekday night, 8_people tier weekday=9000, no discount
+    assert decision.log_payload["quoted_total"] == 9000
+
+
+def test_pricing_action_taken_is_quoted() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "quoted"
+
+
+def test_pricing_log_payload_includes_parsed_fields() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["parsed_checkin"] == "2026-05-12"
+    assert decision.log_payload["parsed_checkout"] == "2026-05-13"
+    assert decision.log_payload["parsed_adult_count"] == 4
+    assert decision.log_payload["inquiry_intent"] == "price"
+
+
+# ============================================================
+# OVER-CAPACITY
+# ============================================================
+
+
+def test_over_capacity_reply_uses_over_capacity_template() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.customer_reply_text == OVER_CAPACITY_MESSAGE
+    assert decision.log_payload["action_taken"] == "over_capacity"
+
+
+def test_over_capacity_could_quote_false_and_no_quoted_total() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+    )
+
+    assert decision.could_quote is False
+    assert decision.log_payload["quoted_total"] is None
+
+
+# ============================================================
+# INVALID DATE
+# ============================================================
+
+
+def test_invalid_date_reply_uses_invalid_date_template() -> None:
+    # checkout (5/12) earlier than checkin (5/14)
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.customer_reply_text == INVALID_DATE_MESSAGE
+
+
+def test_invalid_date_action_taken() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "invalid_date"
+
+
+# ============================================================
+# LOADER INJECTION
+# ============================================================
+
+
+def test_tenant_pricing_loader_called_with_correct_tenant_id() -> None:
+    pricing_calls: list[int] = []
+
+    def pricing_loader(tid: int) -> dict:
+        pricing_calls.append(tid)
+        return _DEFAULT_PRICING
+
+    fake = FakeOperationModeService(return_value=True)
+    service = InquiryService(
+        operation_mode_service=fake,
+        tenant_pricing_loader=pricing_loader,
+        tenant_special_dates_loader=lambda tid: {},
+    )
+
+    service.handle_message(
+        message=_build_message(
+            "5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=42
+        )
+    )
+
+    assert pricing_calls == [42]
+
+
+def test_special_dates_loader_called_and_fakes_work_end_to_end() -> None:
+    special_calls: list[int] = []
+
+    def special_loader(tid: int) -> dict:
+        special_calls.append(tid)
+        return {}
+
+    fake = FakeOperationModeService(return_value=True)
+    service = InquiryService(
+        operation_mode_service=fake,
+        tenant_pricing_loader=lambda tid: _DEFAULT_PRICING,
+        tenant_special_dates_loader=special_loader,
+    )
+
+    decision = service.handle_message(
+        message=_build_message(
+            "5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=7
+        )
+    )
+
+    assert special_calls == [7]
+    assert decision.could_quote is True
+
+
+# ============================================================
+# INTEGRATION SPOT-CHECK (real fixture)
+# ============================================================
+
+
+def test_integration_spring_festival_quote_uses_real_fixture() -> None:
+    config_path = (
+        Path(__file__).resolve().parent.parent
+        / "data"
+        / "tenants"
+        / "zhen123-house"
+        / "config.json"
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    fake = FakeOperationModeService(return_value=True)
+    service = InquiryService(
+        operation_mode_service=fake,
+        tenant_pricing_loader=lambda tid: config["pricing"],
+        tenant_special_dates_loader=lambda tid: config["special_dates"],
+    )
+
+    decision = service.handle_message(
+        message=_build_message("2/15 入住 2/17 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.could_quote is True
+    assert "春節房價" in decision.customer_reply_text
 
 
 # ============================================================
