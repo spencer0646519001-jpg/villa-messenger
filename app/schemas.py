@@ -4,9 +4,12 @@ from pydantic import BaseModel
 
 
 class InboundMessage(BaseModel):
+    tenant_id: int
     tenant_slug: str
+    tenant_timezone: str
     platform: str
     platform_user_id: str
+    customer_display_name: str | None = None
     text: str
     timestamp: datetime | None = None
 
