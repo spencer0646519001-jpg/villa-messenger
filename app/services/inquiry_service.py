@@ -10,6 +10,7 @@ app.services.* (other services).
 
 from datetime import date, datetime, timezone
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.inquiry_parser import parse_inquiry
@@ -26,6 +27,14 @@ from app.domain.reply_templates import (
 )
 from app.domain.urgency_detector import UrgencyDetectionResult, detect_urgency
 from app.schemas import InboundMessage
+
+
+# Night window in tenant-local time: [_NIGHT_START_HOUR, 24) U [0, _NIGHT_END_HOUR).
+# Duplicates the schema default for tenant_operation_state.auto_on_start_time /
+# auto_on_end_time ('23:00' / '08:00') so is_night aligns with the auto-on window.
+# V2 admin UI work will unify these so the value lives in one place.
+_NIGHT_START_HOUR = 23
+_NIGHT_END_HOUR = 8
 
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
@@ -85,10 +94,19 @@ class InquiryService:
             and inquiry.intent.inquiry_type in _QUOTE_RELEVANT_INTENTS
         )
 
-    def _received_at_iso(self, message: InboundMessage) -> str:
+    def _received_at_dt(self, message: InboundMessage) -> datetime:
         if message.timestamp is not None:
-            return message.timestamp.isoformat()
-        return self._now().isoformat()
+            return message.timestamp
+        return self._now()
+
+    def _received_at_iso(self, message: InboundMessage) -> str:
+        return self._received_at_dt(message).isoformat()
+
+    def _compute_is_night(self, message: InboundMessage) -> bool:
+        local = self._received_at_dt(message).astimezone(
+            ZoneInfo(message.tenant_timezone)
+        )
+        return local.hour >= _NIGHT_START_HOUR or local.hour < _NIGHT_END_HOUR
 
     def _build_base_log_payload(
         self,
@@ -106,6 +124,7 @@ class InquiryService:
             "raw_text": message.text,
             "system_state_at_time": system_state,
             "action_taken": action_taken,
+            "is_night": self._compute_is_night(message),
         }
         payload.update(dict.fromkeys(_OPTIONAL_LOG_FIELDS, None))
         return payload

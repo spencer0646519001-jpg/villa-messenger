@@ -489,6 +489,102 @@ def test_integration_spring_festival_quote_uses_real_fixture() -> None:
 
 
 # ============================================================
+# IS_NIGHT IN LOG_PAYLOAD
+# ============================================================
+
+
+def test_log_payload_includes_is_night_key() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(message=_build_message("你好"))
+
+    assert "is_night" in decision.log_payload
+
+
+def test_is_night_false_for_daytime_local_message() -> None:
+    # 06:00 UTC == 14:00 Asia/Taipei → clearly daytime.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "你好",
+            timestamp=datetime(2026, 5, 13, 6, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.log_payload["is_night"] is False
+
+
+def test_is_night_true_for_late_night_local_message() -> None:
+    # 15:30 UTC == 23:30 Asia/Taipei → night (hour >= 23).
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "你好",
+            timestamp=datetime(2026, 5, 13, 15, 30, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.log_payload["is_night"] is True
+
+
+def test_is_night_true_for_early_morning_local_message() -> None:
+    # 23:30 UTC on May 12 == 07:30 Asia/Taipei on May 13 → night (hour < 8).
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "你好",
+            timestamp=datetime(2026, 5, 12, 23, 30, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.log_payload["is_night"] is True
+
+
+def test_is_night_false_at_22_30_local_boundary() -> None:
+    # 14:30 UTC == 22:30 Asia/Taipei. Under 23:00-08:00 window, this is daytime.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "你好",
+            timestamp=datetime(2026, 5, 13, 14, 30, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.log_payload["is_night"] is False
+
+
+def test_is_night_present_on_urgent_path() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(message=_build_message("火災!"))
+
+    assert "is_night" in decision.log_payload
+    assert isinstance(decision.log_payload["is_night"], bool)
+
+
+def test_is_night_uses_tenant_timezone_not_utc() -> None:
+    # 15:00 UTC == 23:00 Asia/Taipei (night), but 23:00 UTC == 07:00 Asia/Taipei
+    # (still night under 23:00-08:00, so we use a UTC instant that is daytime
+    # in Taipei to prove the conversion happens).
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "你好",
+            tenant_timezone="Asia/Taipei",
+            timestamp=datetime(2026, 5, 13, 15, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    # 15:00 UTC is daytime in UTC but 23:00 (night) in Asia/Taipei.
+    assert decision.log_payload["is_night"] is True
+
+
+# ============================================================
 # DISCIPLINE
 # ============================================================
 
