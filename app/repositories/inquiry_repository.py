@@ -1,8 +1,48 @@
+import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from app.repositories._helpers import _row_to_dict, _utc_now_iso
 from app.repositories.sqlite import get_connection
+
+
+_INSERT_INQUIRY_SQL = """
+INSERT INTO inquiries (
+    tenant_id,
+    contact_id,
+    message_id,
+    platform,
+    platform_user_id,
+    checkin_date,
+    checkout_date,
+    nights,
+    adult_count,
+    child_count,
+    infant_count,
+    guest_count,
+    has_pet,
+    pet_count,
+    pet_type,
+    pet_fee_per_pet,
+    pet_fee_total,
+    needs_pet_count_confirmation,
+    inquiry_type,
+    estimated_lodging_price,
+    long_stay_discount,
+    estimated_total_price,
+    price_basis,
+    availability_status,
+    status,
+    original_message,
+    reply_text,
+    needs_owner_confirmation,
+    created_at
+)
+VALUES (
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+)
+"""
 
 
 class InquiryRepository:
@@ -39,80 +79,53 @@ class InquiryRepository:
         status: str = "new",
         reply_text: str | None = None,
         needs_owner_confirmation: bool = True,
+        connection: sqlite3.Connection | None = None,
     ) -> int:
-        with closing(get_connection(self.database_path)) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO inquiries (
-                    tenant_id,
-                    contact_id,
-                    message_id,
-                    platform,
-                    platform_user_id,
-                    checkin_date,
-                    checkout_date,
-                    nights,
-                    adult_count,
-                    child_count,
-                    infant_count,
-                    guest_count,
-                    has_pet,
-                    pet_count,
-                    pet_type,
-                    pet_fee_per_pet,
-                    pet_fee_total,
-                    needs_pet_count_confirmation,
-                    inquiry_type,
-                    estimated_lodging_price,
-                    long_stay_discount,
-                    estimated_total_price,
-                    price_basis,
-                    availability_status,
-                    status,
-                    original_message,
-                    reply_text,
-                    needs_owner_confirmation,
-                    created_at
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
-                """,
-                (
-                    tenant_id,
-                    contact_id,
-                    message_id,
-                    platform,
-                    platform_user_id,
-                    checkin_date,
-                    checkout_date,
-                    nights,
-                    adult_count,
-                    child_count,
-                    infant_count,
-                    guest_count,
-                    int(has_pet),
-                    pet_count,
-                    pet_type,
-                    pet_fee_per_pet,
-                    pet_fee_total,
-                    int(needs_pet_count_confirmation),
-                    inquiry_type,
-                    estimated_lodging_price,
-                    long_stay_discount,
-                    estimated_total_price,
-                    price_basis,
-                    availability_status,
-                    status,
-                    original_message,
-                    reply_text,
-                    int(needs_owner_confirmation),
-                    _utc_now_iso(),
-                ),
-            )
-            connection.commit()
-            return int(cursor.lastrowid)
+        params = (
+            tenant_id,
+            contact_id,
+            message_id,
+            platform,
+            platform_user_id,
+            checkin_date,
+            checkout_date,
+            nights,
+            adult_count,
+            child_count,
+            infant_count,
+            guest_count,
+            int(has_pet),
+            pet_count,
+            pet_type,
+            pet_fee_per_pet,
+            pet_fee_total,
+            int(needs_pet_count_confirmation),
+            inquiry_type,
+            estimated_lodging_price,
+            long_stay_discount,
+            estimated_total_price,
+            price_basis,
+            availability_status,
+            status,
+            original_message,
+            reply_text,
+            int(needs_owner_confirmation),
+            _utc_now_iso(),
+        )
+        if connection is not None:
+            return self._insert_inquiry(connection, params)
+        with closing(get_connection(self.database_path)) as own_connection:
+            row_id = self._insert_inquiry(own_connection, params)
+            own_connection.commit()
+            return row_id
+
+    def _insert_inquiry(
+        self,
+        connection: sqlite3.Connection,
+        params: tuple,
+    ) -> int:
+        cursor = connection.execute(_INSERT_INQUIRY_SQL, params)
+        return int(cursor.lastrowid)
 
     def get_by_id(self, tenant_id: int, inquiry_id: int) -> dict | None:
         with closing(get_connection(self.database_path)) as connection:

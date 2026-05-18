@@ -114,6 +114,53 @@ def test_inquiries_table_includes_tenant_id(temp_db_dir: Path) -> None:
     assert "tenant_id" in _column_names(database_path, "inquiries")
 
 
+def test_messages_table_includes_system_state_at_time_column(
+    temp_db_dir: Path,
+) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    assert "system_state_at_time" in _column_names(database_path, "messages")
+
+
+def test_messages_system_state_at_time_defaults_to_unknown(
+    temp_db_dir: Path,
+) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    with get_connection(database_path) as connection:
+        tenant_id = _insert_tenant(connection, "tenant-default")
+        cursor = connection.execute(
+            """
+            INSERT INTO messages (
+                tenant_id, platform, platform_user_id,
+                message_text, category, is_night, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (tenant_id, "line", "guest-1", "hi", "question", 0, NOW),
+        )
+        message_id = cursor.lastrowid
+        row = connection.execute(
+            "SELECT system_state_at_time FROM messages WHERE id = ?",
+            (message_id,),
+        ).fetchone()
+
+    assert row["system_state_at_time"] == "unknown"
+
+
+def test_messages_system_state_at_time_is_not_null(temp_db_dir: Path) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    with get_connection(database_path) as connection:
+        rows = connection.execute("PRAGMA table_info(messages)").fetchall()
+
+    column = next(row for row in rows if row["name"] == "system_state_at_time")
+    assert column["notnull"] == 1
+
+
 def test_tenant_operation_state_table_exists(temp_db_dir: Path) -> None:
     database_path = temp_db_dir / "homestay.db"
     init_db(database_path)

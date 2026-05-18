@@ -1,8 +1,32 @@
+import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from app.repositories._helpers import _row_to_dict, _utc_now_iso
 from app.repositories.sqlite import get_connection
+
+
+_INSERT_MESSAGE_SQL = """
+INSERT INTO messages (
+    tenant_id,
+    platform,
+    platform_user_id,
+    contact_id,
+    reservation_id,
+    message_text,
+    category,
+    risk_level,
+    reply_text,
+    is_night,
+    is_urgent,
+    needs_manual_followup,
+    send_alert_to_owner,
+    handled,
+    system_state_at_time,
+    created_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
 
 
 class MessageRepository:
@@ -25,49 +49,41 @@ class MessageRepository:
         needs_manual_followup: bool = False,
         send_alert_to_owner: bool = False,
         handled: bool = False,
+        system_state_at_time: str = "unknown",
+        connection: sqlite3.Connection | None = None,
     ) -> int:
-        with closing(get_connection(self.database_path)) as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO messages (
-                    tenant_id,
-                    platform,
-                    platform_user_id,
-                    contact_id,
-                    reservation_id,
-                    message_text,
-                    category,
-                    risk_level,
-                    reply_text,
-                    is_night,
-                    is_urgent,
-                    needs_manual_followup,
-                    send_alert_to_owner,
-                    handled,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    tenant_id,
-                    platform,
-                    platform_user_id,
-                    contact_id,
-                    reservation_id,
-                    message_text,
-                    category,
-                    risk_level,
-                    reply_text,
-                    int(is_night),
-                    int(is_urgent),
-                    int(needs_manual_followup),
-                    int(send_alert_to_owner),
-                    int(handled),
-                    _utc_now_iso(),
-                ),
-            )
-            connection.commit()
-            return int(cursor.lastrowid)
+        params = (
+            tenant_id,
+            platform,
+            platform_user_id,
+            contact_id,
+            reservation_id,
+            message_text,
+            category,
+            risk_level,
+            reply_text,
+            int(is_night),
+            int(is_urgent),
+            int(needs_manual_followup),
+            int(send_alert_to_owner),
+            int(handled),
+            system_state_at_time,
+            _utc_now_iso(),
+        )
+        if connection is not None:
+            return self._insert_message(connection, params)
+        with closing(get_connection(self.database_path)) as own_connection:
+            row_id = self._insert_message(own_connection, params)
+            own_connection.commit()
+            return row_id
+
+    def _insert_message(
+        self,
+        connection: sqlite3.Connection,
+        params: tuple,
+    ) -> int:
+        cursor = connection.execute(_INSERT_MESSAGE_SQL, params)
+        return int(cursor.lastrowid)
 
     def list_unhandled(self, tenant_id: int, limit: int = 20) -> list[dict]:
         with closing(get_connection(self.database_path)) as connection:

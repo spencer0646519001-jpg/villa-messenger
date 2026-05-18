@@ -2,6 +2,7 @@ from datetime import datetime
 import shutil
 import uuid
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from app.repositories.contact_repository import ContactRepository
 from app.repositories.inquiry_repository import InquiryRepository
 from app.repositories.message_repository import MessageRepository
-from app.repositories.sqlite import init_db
+from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_repository import TenantRepository
 
 
@@ -252,3 +253,179 @@ def _create_tenant(database_path: Path, slug: str) -> int:
         timezone="Asia/Taipei",
         default_language="zh-TW",
     )
+
+
+# ============================================================
+# system_state_at_time column
+# ============================================================
+
+
+def test_message_default_system_state_at_time_is_unknown(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = MessageRepository(database_path)
+
+    message_id = repository.create_message(
+        tenant_id=tenant_id,
+        platform="line",
+        platform_user_id="guest-1",
+        message_text="hi",
+        category="question",
+        is_night=False,
+    )
+
+    assert repository.get_by_id(tenant_id, message_id)["system_state_at_time"] == "unknown"
+
+
+def test_message_explicit_system_state_at_time_is_persisted(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = MessageRepository(database_path)
+
+    message_id = repository.create_message(
+        tenant_id=tenant_id,
+        platform="line",
+        platform_user_id="guest-1",
+        message_text="hi",
+        category="question",
+        is_night=False,
+        system_state_at_time="off",
+    )
+
+    assert repository.get_by_id(tenant_id, message_id)["system_state_at_time"] == "off"
+
+
+# ============================================================
+# Transactional connection parameter
+# ============================================================
+
+
+def test_message_create_with_external_connection_does_not_commit(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = MessageRepository(database_path)
+
+    with closing(get_connection(database_path)) as shared_conn:
+        message_id = repository.create_message(
+            tenant_id=tenant_id,
+            platform="line",
+            platform_user_id="guest-1",
+            message_text="hi",
+            category="question",
+            is_night=False,
+            connection=shared_conn,
+        )
+        # Row is visible to the same connection but not yet committed.
+        with closing(get_connection(database_path)) as outside_conn:
+            row = outside_conn.execute(
+                "SELECT id FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone()
+            assert row is None
+        shared_conn.commit()
+
+    assert repository.get_by_id(tenant_id, message_id)["id"] == message_id
+
+
+def test_message_create_with_external_connection_rollback_discards_row(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = MessageRepository(database_path)
+
+    with closing(get_connection(database_path)) as shared_conn:
+        message_id = repository.create_message(
+            tenant_id=tenant_id,
+            platform="line",
+            platform_user_id="guest-1",
+            message_text="will be rolled back",
+            category="question",
+            is_night=False,
+            connection=shared_conn,
+        )
+        shared_conn.rollback()
+
+    assert repository.get_by_id(tenant_id, message_id) is None
+
+
+def test_inquiry_create_with_external_connection_does_not_commit(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = InquiryRepository(database_path)
+
+    with closing(get_connection(database_path)) as shared_conn:
+        inquiry_id = repository.create_inquiry(
+            tenant_id=tenant_id,
+            platform="line",
+            platform_user_id="guest-1",
+            inquiry_type="price",
+            original_message="how much?",
+            connection=shared_conn,
+        )
+        with closing(get_connection(database_path)) as outside_conn:
+            row = outside_conn.execute(
+                "SELECT id FROM inquiries WHERE id = ?",
+                (inquiry_id,),
+            ).fetchone()
+            assert row is None
+        shared_conn.commit()
+
+    assert repository.get_by_id(tenant_id, inquiry_id)["id"] == inquiry_id
+
+
+def test_inquiry_create_with_external_connection_rollback_discards_row(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = InquiryRepository(database_path)
+
+    with closing(get_connection(database_path)) as shared_conn:
+        inquiry_id = repository.create_inquiry(
+            tenant_id=tenant_id,
+            platform="line",
+            platform_user_id="guest-1",
+            inquiry_type="price",
+            original_message="how much?",
+            connection=shared_conn,
+        )
+        shared_conn.rollback()
+
+    assert repository.get_by_id(tenant_id, inquiry_id) is None
+
+
+def test_message_and_inquiry_share_transaction_via_external_connection(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    message_repo = MessageRepository(database_path)
+    inquiry_repo = InquiryRepository(database_path)
+
+    with closing(get_connection(database_path)) as shared_conn:
+        with shared_conn:  # transaction
+            message_id = message_repo.create_message(
+                tenant_id=tenant_id,
+                platform="line",
+                platform_user_id="guest-1",
+                message_text="how much?",
+                category="quoted",
+                is_night=False,
+                connection=shared_conn,
+            )
+            inquiry_id = inquiry_repo.create_inquiry(
+                tenant_id=tenant_id,
+                platform="line",
+                platform_user_id="guest-1",
+                inquiry_type="price",
+                original_message="how much?",
+                message_id=message_id,
+                connection=shared_conn,
+            )
+
+    assert message_repo.get_by_id(tenant_id, message_id)["id"] == message_id
+    persisted_inquiry = inquiry_repo.get_by_id(tenant_id, inquiry_id)
+    assert persisted_inquiry["id"] == inquiry_id
+    assert persisted_inquiry["message_id"] == message_id
