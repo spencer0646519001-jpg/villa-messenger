@@ -13,3 +13,6 @@ pytest-cache-files-*/
 
 # Claude Code workspace
 .claude/
+
+# Service account credentials (NEVER commit)
+secrets/
