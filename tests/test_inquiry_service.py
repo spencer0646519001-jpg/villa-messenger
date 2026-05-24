@@ -85,6 +85,7 @@ def _build_service(
     system_on: bool = True,
     tenant_pricing: dict | None = None,
     tenant_special_dates: dict | None = None,
+    availability_service=None,
 ) -> tuple[InquiryService, FakeOperationModeService]:
     fake = FakeOperationModeService(return_value=system_on)
     pricing = tenant_pricing if tenant_pricing is not None else _DEFAULT_PRICING
@@ -93,6 +94,7 @@ def _build_service(
         operation_mode_service=fake,
         tenant_pricing_loader=lambda tid: pricing,
         tenant_special_dates_loader=lambda tid: special,
+        availability_service=availability_service,
     )
     return service, fake
 
@@ -582,6 +584,259 @@ def test_is_night_uses_tenant_timezone_not_utc() -> None:
 
     # 15:00 UTC is daytime in UTC but 23:00 (night) in Asia/Taipei.
     assert decision.log_payload["is_night"] is True
+
+
+# ============================================================
+# AVAILABILITY-GATED PRICING
+# ============================================================
+
+
+from datetime import date as _date  # local alias so the new section is self-contained
+
+from app.domain.availability_models import AvailabilityResult, BlockedNight
+from app.domain.reply_text import (
+    FULL_HOUSE_MESSAGE,
+    OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_PREFIX,
+)
+from app.services.availability_service import AvailabilityCheckOutcome
+
+
+class _FakeAvailabilityService:
+    """Stand-in for AvailabilityService. Records calls; returns a canned
+    outcome. Lets tests exercise the three pricing-gate branches without
+    touching GoogleCalendarClient or the network."""
+
+    def __init__(self, *, outcome: AvailabilityCheckOutcome) -> None:
+        self._outcome = outcome
+        self.calls: list[tuple[_date, _date]] = []
+
+    def check(self, *, checkin_date, checkout_date) -> AvailabilityCheckOutcome:
+        self.calls.append((checkin_date, checkout_date))
+        return self._outcome
+
+
+def _outcome_blocked(*, nights: list[_date]) -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(
+        status="blocked",
+        result=AvailabilityResult(
+            has_any_blocked_nights=True,
+            blocked_nights=[
+                BlockedNight(
+                    night_date=n, blocking_event_summary="枕123", matched_keyword="枕"
+                )
+                for n in nights
+            ],
+        ),
+    )
+
+
+def _outcome_available() -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(
+        status="available",
+        result=AvailabilityResult(has_any_blocked_nights=False, blocked_nights=[]),
+    )
+
+
+def _outcome_error(reason: str) -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(status="error", error_reason=reason)
+
+
+# ---------- Default behavior preserved: no availability_service injected ----------
+
+
+def test_pricing_without_availability_service_quotes_as_before() -> None:
+    # This is the existing-tests invariant: when no availability_service is
+    # passed, behavior is identical to PR8.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.could_quote is True
+    assert decision.log_payload["action_taken"] == "quoted"
+
+
+# ---------- BLOCKED branch ----------
+
+
+def test_blocked_returns_reply_and_push_full_house_decision() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 5, 12)])
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_and_push"
+    assert decision.customer_reply_text == FULL_HOUSE_MESSAGE
+    assert decision.owner_push_text is not None
+    assert OWNER_PUSH_FULL_HOUSE_PREFIX in decision.owner_push_text
+    assert decision.could_quote is False  # default — no quote produced
+    assert decision.parsed_as_inquiry is True
+
+
+def test_blocked_log_payload_action_taken_and_blocked_count() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 5, 12), _date(2026, 5, 13)])
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/14 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "full_house"
+    assert decision.log_payload["blocked_nights_count"] == 2
+    assert decision.log_payload["parsed_checkin"] == "2026-05-12"
+    assert decision.log_payload["parsed_checkout"] == "2026-05-14"
+    assert decision.log_payload["quoted_total"] is None  # blocked path does not quote
+
+
+def test_blocked_owner_push_text_omits_inquiry_id_at_service_layer() -> None:
+    # The persistence layer (PR8) assigns inquiry_id; the service has none
+    # yet. The renderer was extended to omit the line when inquiry_id=None.
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 5, 12)])
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert "詢價編號" not in decision.owner_push_text
+
+
+def test_blocked_availability_service_called_with_parsed_dates() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 5, 12)])
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    service.handle_message(message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?"))
+
+    assert fake_avail.calls == [(_date(2026, 5, 12), _date(2026, 5, 13))]
+
+
+# ---------- AVAILABLE branch ----------
+
+
+def test_available_outcome_proceeds_to_normal_quote() -> None:
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.could_quote is True
+    assert decision.log_payload["action_taken"] == "quoted"
+    assert decision.log_payload["quoted_total"] == 9000
+
+
+# ---------- ERROR (fallback) branch ----------
+
+
+def test_error_outcome_falls_back_to_quote_plus_owner_notice() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_error("calendar fetch failed: HTTP 500")
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_and_push"
+    assert decision.could_quote is True
+    # Customer still sees the normal quote — graceful degradation.
+    assert decision.customer_reply_text is not None
+    assert "費用明細" in decision.customer_reply_text
+    # Owner gets the unverified-availability notice.
+    assert decision.owner_push_text is not None
+    assert OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX in decision.owner_push_text
+
+
+def test_error_outcome_log_payload_carries_action_and_reason() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_error("calendar fetch failed: network down")
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "quoted_unverified"
+    assert "network down" in decision.log_payload["availability_error_reason"]
+    assert decision.log_payload["quoted_total"] == 9000
+
+
+# ---------- INTERACTION WITH OTHER GATES ----------
+
+
+def test_invalid_date_short_circuits_before_availability_check() -> None:
+    # Invalid date is a pricing-layer failure that takes precedence: we
+    # should not even attempt a calendar lookup for nonsensical date ranges.
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "invalid_date"
+    assert fake_avail.calls == []  # availability service never called
+
+
+def test_over_capacity_short_circuits_before_availability_check() -> None:
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+    )
+
+    assert decision.log_payload["action_taken"] == "over_capacity"
+    assert fake_avail.calls == []
+
+
+def test_missing_info_does_not_call_availability_service() -> None:
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    service.handle_message(message=_build_message("5/12 入住 5/14 退房 多少錢?"))
+
+    assert fake_avail.calls == []
+
+
+def test_urgent_does_not_call_availability_service() -> None:
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    service.handle_message(message=_build_message("瓦斯漏氣! 5/12 入住 5/13 退房 4 大人"))
+
+    assert fake_avail.calls == []
+
+
+def test_off_mode_does_not_call_availability_service() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 5, 12)])
+    )
+    service, _ = _build_service(system_on=False, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+    )
+
+    assert decision.action_type == "do_nothing"
+    assert fake_avail.calls == []
 
 
 # ============================================================

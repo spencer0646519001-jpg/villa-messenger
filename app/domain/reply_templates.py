@@ -13,6 +13,7 @@ from app.domain.reply_text import (
     MISSING_INFO_HEADER,
     MISSING_PET_COUNT_LINE,
     OVER_CAPACITY_MESSAGE,
+    OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
     OWNER_PUSH_URGENT_PREFIX,
@@ -155,12 +156,24 @@ def render_owner_push_full_house(
     *,
     checkin_date: date,
     checkout_date: date,
-    inquiry_id: int,
+    inquiry_id: int | None = None,
+) -> str:
+    lines = [OWNER_PUSH_FULL_HOUSE_PREFIX]
+    if inquiry_id is not None:
+        lines.append(f"詢價編號:#{inquiry_id}")
+    lines.append(f"入住:{_format_date_with_weekday(checkin_date)}")
+    lines.append(f"退房:{_format_date_with_weekday(checkout_date)}")
+    return "\n".join(lines)
+
+
+def render_owner_push_availability_unverified(
+    *,
+    checkin_date: date,
+    checkout_date: date,
 ) -> str:
     return "\n".join(
         [
-            OWNER_PUSH_FULL_HOUSE_PREFIX,
-            f"詢價編號:#{inquiry_id}",
+            OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
             f"入住:{_format_date_with_weekday(checkin_date)}",
             f"退房:{_format_date_with_weekday(checkout_date)}",
         ]

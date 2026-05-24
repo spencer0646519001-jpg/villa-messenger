@@ -409,6 +409,35 @@ def test_render_owner_push_full_house() -> None:
     assert "退房:2026/05/14(四)" in out
 
 
+def test_render_owner_push_full_house_without_inquiry_id() -> None:
+    # InquiryService renders before persistence, so inquiry_id is None at
+    # that point. The line is omitted entirely; PR8's mapper can re-render
+    # with the assigned ID later if it wants.
+    out = render_owner_push_full_house(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+    )
+
+    assert OWNER_PUSH_FULL_HOUSE_PREFIX in out
+    assert "詢價編號" not in out
+    assert "入住:2026/05/12(二)" in out
+    assert "退房:2026/05/14(四)" in out
+
+
+def test_render_owner_push_availability_unverified() -> None:
+    from app.domain.reply_templates import render_owner_push_availability_unverified
+    from app.domain.reply_text import OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX
+
+    out = render_owner_push_availability_unverified(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+    )
+
+    assert OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX in out
+    assert "入住:2026/05/12(二)" in out
+    assert "退房:2026/05/14(四)" in out
+
+
 def test_render_owner_push_urgent() -> None:
     out = render_owner_push_urgent(
         original_text="廚房水龍頭沒水了怎麼辦",

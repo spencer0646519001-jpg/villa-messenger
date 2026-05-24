@@ -68,6 +68,9 @@ SINGLE_MISSING_PET_COUNT_MESSAGE: Final = (
 OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "系統判定為客滿,請確認:"
 OWNER_PUSH_URGENT_PREFIX: Final = "【緊急】客人訊息:"
 OWNER_PUSH_UNCATEGORIZED_PREFIX: Final = "非詢價訊息,待處理:"
+OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = (
+    "系統無法驗證日期可用性,已照常報價,請人工確認空房:"
+)
 
 WEEKDAY_ZH: Final = ["一", "二", "三", "四", "五", "六", "日"]
 

@@ -3,9 +3,10 @@ InquiryService — orchestrates one inbound customer message through the
 V1.5 decision pipeline. Returns an InquiryDecision; the caller (PR8)
 executes side effects (DB writes, LINE sends).
 
-Allowed imports: stdlib, pydantic, app.domain.*, app.schemas.
-Forbidden imports: app.repositories, app.api, app.adapters, app.clients,
-app.services.* (other services).
+Allowed imports: stdlib, pydantic, app.domain.*, app.schemas, plus
+app.services.availability_service (the anti-corruption boundary that
+hides Google API details from this orchestrator).
+Forbidden imports: app.repositories, app.api, app.adapters, app.clients.
 """
 
 from datetime import date, datetime, timezone
@@ -18,15 +19,22 @@ from app.domain.parser_models import InquiryParseResult
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_full_house_message,
     render_invalid_date_message,
     render_missing_info_message,
     render_over_capacity_message,
+    render_owner_push_availability_unverified,
+    render_owner_push_full_house,
     render_owner_push_uncategorized,
     render_owner_push_urgent,
     render_quote_message,
 )
 from app.domain.urgency_detector import UrgencyDetectionResult, detect_urgency
 from app.schemas import InboundMessage
+from app.services.availability_service import (
+    AvailabilityCheckOutcome,
+    AvailabilityService,
+)
 
 
 # Night window in tenant-local time: [_NIGHT_START_HOUR, 24) U [0, _NIGHT_END_HOUR).
@@ -63,11 +71,13 @@ class InquiryService:
         tenant_pricing_loader: Callable[[int], dict],
         tenant_special_dates_loader: Callable[[int], dict],
         now_provider: Callable[[], datetime] | None = None,
+        availability_service: AvailabilityService | None = None,
     ) -> None:
         self._operation_mode_service = operation_mode_service
         self._tenant_pricing_loader = tenant_pricing_loader
         self._tenant_special_dates_loader = tenant_special_dates_loader
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
+        self._availability_service = availability_service
 
     def handle_message(self, *, message: InboundMessage) -> InquiryDecision:
         urgency = detect_urgency(message.text)
@@ -257,7 +267,23 @@ class InquiryService:
         )
         if not pricing.can_quote:
             return self._handle_unquotable(message, inquiry, pricing)
+        # Availability gate applies only to otherwise-quotable inquiries:
+        # over-capacity and invalid-date are pricing-layer failures that
+        # take precedence over calendar state.
+        outcome = self._check_availability(inquiry)
+        if outcome.status == "blocked":
+            return self._handle_full_house(message, inquiry, outcome)
+        if outcome.status == "error":
+            return self._handle_quoted_unverified(message, inquiry, pricing, outcome)
         return self._handle_quoted(message, inquiry, pricing)
+
+    def _check_availability(self, inquiry: InquiryParseResult) -> AvailabilityCheckOutcome:
+        if self._availability_service is None:
+            return AvailabilityCheckOutcome(status="available")
+        return self._availability_service.check(
+            checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
+            checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
+        )
 
     def _handle_unquotable(
         self,
@@ -305,4 +331,68 @@ class InquiryService:
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=True,
+        )
+
+    def _handle_full_house(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        outcome: AvailabilityCheckOutcome,
+    ) -> InquiryDecision:
+        push_text = self._render_full_house_push(inquiry)
+        log = self._build_base_log_payload(
+            message, system_state="on", action_taken="full_house"
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        log["blocked_nights_count"] = len(outcome.result.blocked_nights)
+        return InquiryDecision(
+            action_type="reply_and_push",
+            customer_reply_text=render_full_house_message(),
+            owner_push_text=push_text,
+            log_payload=log,
+            parsed_as_inquiry=True,
+        )
+
+    def _render_full_house_push(self, inquiry: InquiryParseResult) -> str:
+        return render_owner_push_full_house(
+            checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
+            checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
+        )
+
+    def _handle_quoted_unverified(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        pricing: PricingResult,
+        outcome: AvailabilityCheckOutcome,
+    ) -> InquiryDecision:
+        log = self._quoted_log_with_error(message, inquiry, pricing, outcome)
+        return InquiryDecision(
+            action_type="reply_and_push",
+            customer_reply_text=render_quote_message(pricing=pricing, **self._stay_kwargs(inquiry)),
+            owner_push_text=self._render_unverified_push(inquiry),
+            log_payload=log,
+            parsed_as_inquiry=True,
+            could_quote=True,
+        )
+
+    def _quoted_log_with_error(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        pricing: PricingResult,
+        outcome: AvailabilityCheckOutcome,
+    ) -> dict:
+        log = self._build_base_log_payload(
+            message, system_state="on", action_taken="quoted_unverified"
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        log["quoted_total"] = pricing.total
+        log["availability_error_reason"] = outcome.error_reason
+        return log
+
+    def _render_unverified_push(self, inquiry: InquiryParseResult) -> str:
+        return render_owner_push_availability_unverified(
+            checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
+            checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
         )
