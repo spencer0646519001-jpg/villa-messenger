@@ -1,4 +1,5 @@
 import json
+import os
 from json import JSONDecodeError
 from pathlib import Path
 
@@ -76,3 +77,39 @@ def _validate_required_fields(config: dict, tenant_slug: str) -> None:
         raise TenantConfigLoadError(
             f"Tenant config for tenant '{tenant_slug}' is missing required field(s): {fields}"
         )
+
+
+def load_google_calendar_settings(config: dict) -> dict | None:
+    """Resolve the google_calendar block into runtime settings.
+
+    Returns None when the block is missing or v1_5_enabled is False — the
+    caller treats this as 'calendar gating disabled'. When enabled, the
+    calendar_id and credentials path are resolved from the env vars named
+    in the config; missing env vars raise TenantConfigLoadError so a broken
+    deployment surfaces at config-load time rather than at first call.
+    """
+    block = config.get("google_calendar")
+    if not block or not block.get("v1_5_enabled"):
+        return None
+    calendar_id = _require_env(block, "calendar_id_env_var")
+    credentials_path = _require_env(block, "credentials_env_var")
+    return {
+        "enabled": True,
+        "calendar_id": calendar_id,
+        "credentials_path": credentials_path,
+        "booking_keywords": list(block.get("booking_keywords", [])),
+    }
+
+
+def _require_env(block: dict, env_var_key: str) -> str:
+    env_var_name = block.get(env_var_key)
+    if not env_var_name:
+        raise TenantConfigLoadError(
+            f"google_calendar block missing '{env_var_key}'"
+        )
+    value = os.environ.get(env_var_name)
+    if not value:
+        raise TenantConfigLoadError(
+            f"google_calendar env var '{env_var_name}' is not set"
+        )
+    return value

@@ -9,6 +9,7 @@ import pytest
 from app.config_loader import (
     TenantConfigLoadError,
     build_tenant_context,
+    load_google_calendar_settings,
     load_tenant_config,
     load_tenant_context,
 )
@@ -103,6 +104,111 @@ def _base_config() -> dict:
         "default_language": "zh-TW",
         "emergency_phone": "0975-639-757",
     }
+
+
+# ============================================================
+# GOOGLE CALENDAR SETTINGS
+# ============================================================
+
+
+def _gc_block(**overrides) -> dict:
+    block = {
+        "v1_5_enabled": True,
+        "booking_keywords": ["枕"],
+        "calendar_id_env_var": "TEST_GC_CAL_ID",
+        "credentials_env_var": "TEST_GC_CREDS",
+    }
+    block.update(overrides)
+    return block
+
+
+def test_load_google_calendar_settings_returns_none_when_block_missing() -> None:
+    settings = load_google_calendar_settings(_base_config())
+    assert settings is None
+
+
+def test_load_google_calendar_settings_returns_none_when_v1_5_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Env vars set so we can confirm the disabled gate short-circuits BEFORE
+    # they are read — disabled means no resolution attempt at all.
+    monkeypatch.setenv("TEST_GC_CAL_ID", "should-not-be-read")
+    monkeypatch.setenv("TEST_GC_CREDS", "should-not-be-read")
+    config = {**_base_config(), "google_calendar": _gc_block(v1_5_enabled=False)}
+
+    assert load_google_calendar_settings(config) is None
+
+
+def test_load_google_calendar_settings_resolves_env_vars_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_GC_CAL_ID", "abc123@group.calendar.google.com")
+    monkeypatch.setenv("TEST_GC_CREDS", "secrets/service-account.json")
+    config = {**_base_config(), "google_calendar": _gc_block()}
+
+    settings = load_google_calendar_settings(config)
+
+    assert settings == {
+        "enabled": True,
+        "calendar_id": "abc123@group.calendar.google.com",
+        "credentials_path": "secrets/service-account.json",
+        "booking_keywords": ["枕"],
+    }
+
+
+def test_load_google_calendar_settings_missing_env_var_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TEST_GC_CAL_ID", raising=False)
+    monkeypatch.setenv("TEST_GC_CREDS", "secrets/service-account.json")
+    config = {**_base_config(), "google_calendar": _gc_block()}
+
+    with pytest.raises(TenantConfigLoadError, match="TEST_GC_CAL_ID"):
+        load_google_calendar_settings(config)
+
+
+def test_load_google_calendar_settings_missing_credentials_env_var_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_GC_CAL_ID", "abc123@group.calendar.google.com")
+    monkeypatch.delenv("TEST_GC_CREDS", raising=False)
+    config = {**_base_config(), "google_calendar": _gc_block()}
+
+    with pytest.raises(TenantConfigLoadError, match="TEST_GC_CREDS"):
+        load_google_calendar_settings(config)
+
+
+def test_load_google_calendar_settings_missing_env_var_name_in_block_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _gc_block()
+    del block["calendar_id_env_var"]
+    config = {**_base_config(), "google_calendar": block}
+
+    with pytest.raises(TenantConfigLoadError, match="calendar_id_env_var"):
+        load_google_calendar_settings(config)
+
+
+def test_load_google_calendar_settings_keywords_copied_so_external_mutation_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TEST_GC_CAL_ID", "abc123@group.calendar.google.com")
+    monkeypatch.setenv("TEST_GC_CREDS", "secrets/service-account.json")
+    keywords = ["枕"]
+    config = {**_base_config(), "google_calendar": _gc_block(booking_keywords=keywords)}
+
+    settings = load_google_calendar_settings(config)
+    keywords.append("妃")  # would be a config-corruption bug
+
+    assert settings["booking_keywords"] == ["枕"]
+
+
+def test_real_zhen123_config_has_single_booking_keyword() -> None:
+    # Locks in the PR8.5b decision: single "枕" keyword (confirmed against
+    # real calendar to match every booking title and exclude uncle's "妃").
+    config = load_tenant_config("zhen123-house")
+
+    assert config["google_calendar"]["booking_keywords"] == ["枕"]
 
 
 def _write_config(base_dir: Path, tenant_slug: str, config: dict) -> None:
