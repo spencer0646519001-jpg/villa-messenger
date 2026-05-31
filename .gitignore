@@ -16,3 +16,4 @@ pytest-cache-files-*/
 
 # Service account credentials (NEVER commit)
 secrets/
+.pytest-tmp/
