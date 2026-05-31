@@ -23,9 +23,10 @@ INSERT INTO messages (
     send_alert_to_owner,
     handled,
     system_state_at_time,
-    created_at
+    created_at,
+    raw_log_payload
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -50,6 +51,7 @@ class MessageRepository:
         send_alert_to_owner: bool = False,
         handled: bool = False,
         system_state_at_time: str = "unknown",
+        raw_log_payload: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> int:
         params = (
@@ -69,6 +71,7 @@ class MessageRepository:
             int(handled),
             system_state_at_time,
             _utc_now_iso(),
+            raw_log_payload,
         )
         if connection is not None:
             return self._insert_message(connection, params)

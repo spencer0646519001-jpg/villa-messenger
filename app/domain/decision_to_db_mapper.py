@@ -8,6 +8,7 @@ naming) and PR3A's table schemas (DB naming). Future schema changes or
 log_payload changes only need to touch this mapper.
 """
 
+import json
 from dataclasses import dataclass
 
 from app.domain.inquiry_decision import InquiryDecision
@@ -55,6 +56,7 @@ def _build_messages_row(payload: dict) -> dict:
         "is_night": payload["is_night"],
         "system_state_at_time": payload["system_state_at_time"],
         "is_urgent": payload["action_taken"] == "urgent",
+        "raw_log_payload": json.dumps(payload, ensure_ascii=False, default=str),
     }
 
 

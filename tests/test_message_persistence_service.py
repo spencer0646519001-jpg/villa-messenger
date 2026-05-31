@@ -1,4 +1,5 @@
 import inspect
+import json
 import shutil
 import sqlite3
 import uuid
@@ -345,6 +346,34 @@ def test_inquiry_row_round_trip_matches_mapper_output(
     assert persisted["adult_count"] == 4
     assert persisted["estimated_total_price"] == 9000
     assert persisted["message_id"] == result["message_id"]
+
+
+# ============================================================
+# RAW LOG PAYLOAD ROUND TRIP (PR8 debt: recover received_at + urgency fields)
+# ============================================================
+
+
+def test_raw_log_payload_survives_full_persistence_round_trip(
+    database_path: Path,
+) -> None:
+    # The key test: persist an urgent decision, read the message row back, and
+    # confirm the two PR8-dropped fields (urgency_category,
+    # urgency_matched_keywords) AND the original event time (received_at) are
+    # all recoverable from raw_log_payload after mapper->service->repo->DB->read.
+    tenant_id = _create_tenant(database_path)
+    decision = _decision_for("火災!", tenant_id=tenant_id)
+    service = MessagePersistenceService(database_path=database_path)
+
+    result = service.persist(decision=decision)
+
+    row = MessageRepository(database_path).get_by_id(tenant_id, result["message_id"])
+    recovered = json.loads(row["raw_log_payload"])
+    assert recovered["received_at"] == "2026-05-13T10:00:00+00:00"
+    assert recovered["urgency_category"] == decision.log_payload["urgency_category"]
+    assert (
+        recovered["urgency_matched_keywords"]
+        == decision.log_payload["urgency_matched_keywords"]
+    )
 
 
 # ============================================================

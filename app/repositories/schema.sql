@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS messages (
     handled INTEGER NOT NULL DEFAULT 0,
     system_state_at_time TEXT NOT NULL DEFAULT 'unknown',
     created_at TEXT NOT NULL,
+    raw_log_payload TEXT,
     FOREIGN KEY (tenant_id) REFERENCES tenants(id),
     FOREIGN KEY (contact_id) REFERENCES contacts(id),
     FOREIGN KEY (reservation_id) REFERENCES reservations(id)

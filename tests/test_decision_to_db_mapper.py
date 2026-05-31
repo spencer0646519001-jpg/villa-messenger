@@ -1,5 +1,6 @@
 import dataclasses
 import inspect
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -203,6 +204,7 @@ def test_messages_row_keys_match_message_repository_kwargs() -> None:
         "is_night",
         "system_state_at_time",
         "is_urgent",
+        "raw_log_payload",
     }
     assert set(plan.messages_row.keys()) == expected_keys
 
@@ -261,6 +263,38 @@ def test_none_log_payload_values_pass_through_as_none() -> None:
     # And the non-inquiry messages_row preserves None passthrough indirectly
     # via category (which is "non_inquiry_uncategorized", not the string "None")
     assert plan.messages_row["category"] == "non_inquiry_uncategorized"
+
+
+# ============================================================
+# RAW LOG PAYLOAD (recovers received_at + urgency fields; PR8 debt)
+# ============================================================
+
+
+def test_raw_log_payload_round_trips_dropped_fields() -> None:
+    # Urgent path exercises both fields PR8 dropped (urgency_category,
+    # urgency_matched_keywords) plus received_at (lost when the repo
+    # overwrites created_at with _utc_now_iso()).
+    decision = _decision_for("火災!")
+
+    plan = build_db_write_plan(decision)
+    recovered = json.loads(plan.messages_row["raw_log_payload"])
+
+    assert recovered["urgency_category"] == decision.log_payload["urgency_category"]
+    assert (
+        recovered["urgency_matched_keywords"]
+        == decision.log_payload["urgency_matched_keywords"]
+    )
+    assert recovered["received_at"] == decision.log_payload["received_at"]
+
+
+def test_raw_log_payload_is_valid_json_with_unescaped_chinese() -> None:
+    decision = _decision_for("火災!")
+
+    raw = build_db_write_plan(decision).messages_row["raw_log_payload"]
+
+    # ensure_ascii=False keeps the original Chinese literal, not \uXXXX escapes.
+    assert "火災" in raw
+    assert json.loads(raw)["raw_text"] == "火災!"
 
 
 # ============================================================
