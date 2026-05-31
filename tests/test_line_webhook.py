@@ -1,0 +1,256 @@
+import base64
+import hashlib
+import hmac
+import inspect
+import json
+import shutil
+import uuid
+from collections.abc import Iterator
+from contextlib import closing
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api import line_webhook_routes
+from app.api.dependencies import get_database_path
+from app.main import app
+from app.repositories.operation_state_repository import OperationStateRepository
+from app.repositories.sqlite import get_connection, init_db
+from app.repositories.tenant_channel_repository import TenantChannelRepository
+from app.repositories.tenant_repository import TenantRepository
+from app.services.operation_mode_service import OperationModeService
+
+
+_SECRET_REF = "LINE_TEST_CHANNEL_SECRET"
+_SECRET = "test-channel-secret-value"
+_DESTINATION = "Udest123"
+_TZ = "Asia/Taipei"
+
+
+# ============================================================
+# FIXTURES & HELPERS
+# ============================================================
+
+
+@pytest.fixture
+def database_path() -> Iterator[Path]:
+    parent_dir = Path("pytest-cache-files-webhook")
+    temp_dir = parent_dir / str(uuid.uuid4())
+    temp_dir.mkdir(parents=True)
+    path = temp_dir / "webhook-tests.db"
+    try:
+        init_db(path)
+        yield path
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        try:
+            parent_dir.rmdir()
+        except OSError:
+            pass
+
+
+@pytest.fixture
+def client(database_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    monkeypatch.setenv(_SECRET_REF, _SECRET)
+    app.dependency_overrides[get_database_path] = lambda: database_path
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _seed_channel(database_path: Path, *, slug: str = "zhen123-house") -> int:
+    tenant_id = TenantRepository(database_path).create_tenant(
+        slug=slug,
+        name=slug.title(),
+        timezone=_TZ,
+        default_language="zh-TW",
+        emergency_phone="0975-639-757",
+    )
+    TenantChannelRepository(database_path).create_channel(
+        tenant_id=tenant_id,
+        platform="line",
+        channel_id=_DESTINATION,
+        channel_secret_ref=_SECRET_REF,
+    )
+    return tenant_id
+
+
+def _set_system_on(database_path: Path, tenant_id: int) -> None:
+    service = OperationModeService(repo=OperationStateRepository(database_path))
+    service.turn_on(tenant_id=tenant_id, tenant_timezone=_TZ)
+
+
+def _text_event(text: str) -> dict:
+    return {
+        "type": "message",
+        "timestamp": 1700000000000,
+        "source": {"type": "user", "userId": "Uguest"},
+        "message": {"type": "text", "id": "1", "text": text},
+    }
+
+
+def _payload_bytes(events: list[dict], *, destination: str = _DESTINATION) -> bytes:
+    payload = {"destination": destination, "events": events}
+    return json.dumps(payload).encode("utf-8")
+
+
+def _sign(body: bytes, secret: str = _SECRET) -> str:
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
+def _post(client: TestClient, body: bytes, signature: str | None) -> object:
+    headers = {"Content-Type": "application/json"}
+    if signature is not None:
+        headers["X-Line-Signature"] = signature
+    return client.post("/webhooks/line", content=body, headers=headers)
+
+
+def _rows(database_path: Path, table: str) -> list[dict]:
+    with closing(get_connection(database_path)) as conn:
+        return [dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()]
+
+
+# ============================================================
+# CASE 1: valid signature + quote message -> 200 + rows persisted
+# ============================================================
+
+
+def test_valid_quote_persists_message_and_inquiry(client: TestClient, database_path: Path) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 多少錢?")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    messages = _rows(database_path, "messages")
+    inquiries = _rows(database_path, "inquiries")
+    assert len(messages) == 1
+    assert len(inquiries) == 1
+    # Real config-backed loader ran end-to-end: a concrete quote was produced.
+    assert inquiries[0]["estimated_total_price"] is not None
+
+
+# ============================================================
+# CASE 2: bad signature -> 400, nothing persisted
+# ============================================================
+
+
+def test_bad_signature_rejected_and_nothing_persisted(client: TestClient, database_path: Path) -> None:
+    _seed_channel(database_path)
+    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 多少錢?")])
+
+    response = _post(client, body, "not-a-valid-signature")
+
+    assert response.status_code == 400
+    assert _rows(database_path, "messages") == []
+    assert _rows(database_path, "inquiries") == []
+
+
+# ============================================================
+# CASE 3: unknown channel -> 400
+# ============================================================
+
+
+def test_unknown_channel_rejected(client: TestClient, database_path: Path) -> None:
+    _seed_channel(database_path)  # known channel is _DESTINATION; we send another
+    body = _payload_bytes([_text_event("hi")], destination="Uunknown")
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 400
+    assert _rows(database_path, "messages") == []
+
+
+# ============================================================
+# CASE 4: non-text event -> 200, nothing persisted
+# ============================================================
+
+
+def test_non_text_event_acknowledged_without_persisting(client: TestClient, database_path: Path) -> None:
+    _seed_channel(database_path)
+    image_event = {
+        "type": "message",
+        "timestamp": 1700000000000,
+        "source": {"type": "user", "userId": "Uguest"},
+        "message": {"type": "image", "id": "2"},
+    }
+    body = _payload_bytes([image_event])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert _rows(database_path, "messages") == []
+
+
+# ============================================================
+# CASE 5: urgent message persists (clock-independent path)
+# ============================================================
+
+
+def test_urgent_message_persists_as_urgent(client: TestClient, database_path: Path) -> None:
+    _seed_channel(database_path)
+    body = _payload_bytes([_text_event("房間漏水了怎麼辦")])  # 漏水 = water leak (urgent)
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    messages = _rows(database_path, "messages")
+    assert len(messages) == 1
+    assert messages[0]["is_urgent"] == 1
+    assert messages[0]["category"] == "urgent"
+    # Urgent path never reaches the quote pipeline -> no inquiry row.
+    assert _rows(database_path, "inquiries") == []
+
+
+# ============================================================
+# OUTWARD-OPAQUE GUARANTEE: all three 400 bodies are byte-identical
+# ============================================================
+
+
+def test_all_400_bodies_are_byte_identical(client: TestClient, database_path: Path) -> None:
+    _seed_channel(database_path)
+    good_body = _payload_bytes([_text_event("hi")])
+
+    malformed = _post(client, b"{not json", _sign(b"{not json"))
+    unknown = _post(client, _payload_bytes([_text_event("hi")], destination="Ux"), _sign(_payload_bytes([_text_event("hi")], destination="Ux")))
+    bad_sig = _post(client, good_body, "wrong-signature")
+
+    assert malformed.status_code == unknown.status_code == bad_sig.status_code == 400
+    # Outward-opaque: an attacker cannot distinguish which check failed.
+    assert malformed.content == unknown.content == bad_sig.content
+
+
+# ============================================================
+# METHOD-LENGTH DISCIPLINE
+# ============================================================
+
+
+def _body_line_count(func) -> int:
+    src = inspect.getsource(func)
+    lines = [line for line in src.splitlines()[1:] if line.strip() and not line.strip().startswith("#")]
+    return len(lines)
+
+
+@pytest.mark.parametrize(
+    "func",
+    [
+        line_webhook_routes._reject,
+        line_webhook_routes._parse_payload,
+        line_webhook_routes._resolve_channel,
+        line_webhook_routes._verify,
+        line_webhook_routes._resolve_tenant,
+        line_webhook_routes._extract_events,
+        line_webhook_routes._build_inquiry_service,
+        line_webhook_routes._run_pipeline,
+    ],
+)
+def test_methods_under_15_body_lines(func) -> None:
+    assert _body_line_count(func) <= 15, (
+        f"{func.__qualname__} body too long: {_body_line_count(func)} lines"
+    )
