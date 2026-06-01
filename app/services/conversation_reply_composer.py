@@ -137,12 +137,14 @@ class ConversationReplyComposer:
                 check_in_after=sp.get("check_in_after"),
                 checkout_before=sp.get("checkout_before"),
             )
-        pets = self._pricing_loader(tenant_id).get("pets") or {}
-        return render_faq_pets(
-            allowed_with_notice=bool(pets.get("allowed_with_notice")),
-            small_dogs_only=bool(pets.get("small_dogs_only_for_now")),
-            fee_twd_per_pet=pets.get("fee_twd_per_pet_per_stay") or 0,
-        )
+        if topic == "pets":
+            pets = self._pricing_loader(tenant_id).get("pets") or {}
+            return render_faq_pets(
+                allowed_with_notice=bool(pets.get("allowed_with_notice")),
+                small_dogs_only=bool(pets.get("small_dogs_only_for_now")),
+                fee_twd_per_pet=pets.get("fee_twd_per_pet_per_stay") or 0,
+            )
+        raise ValueError(f"unhandled tier-1 FAQ topic: {topic!r}")
 
     def _missing_for_state(self, state: dict) -> list[str]:
         return compute_missing_fields(

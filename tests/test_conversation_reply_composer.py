@@ -370,6 +370,20 @@ def test_regression_non_priceable_does_not_fire_when_urgent() -> None:
     assert result.owner_push_text is None
 
 
+# ============================================================
+# M2.0: _tier1_answer safety net — unknown topic must raise
+# ============================================================
+
+
+def test_tier1_answer_raises_for_unknown_topic() -> None:
+    """_tier1_answer with a topic not in the handled set must raise ValueError,
+    not silently fall through to the pets branch.  FaqTopic is a Literal so the
+    type-checker would catch this at analysis time, but Literal is not enforced
+    at runtime — we verify the explicit raise guard here."""
+    with pytest.raises(ValueError, match="unhandled tier-1 FAQ topic"):
+        _composer()._tier1_answer(1, "facilities")
+
+
 def test_regression_faq_fallback_no_topic_still_works() -> None:
     """'附近有什麼好玩的嗎' has no FAQ topic → faq_match is None → existing
     _is_faq fallback path handles it unchanged."""
