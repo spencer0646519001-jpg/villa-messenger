@@ -67,3 +67,49 @@ def test_pet_count_is_required_when_pet_is_mentioned() -> None:
     assert result.pets.pet_count is None
     assert result.missing_fields == ["pet_count"]
     assert result.can_preliminarily_quote is False
+
+
+# ---------- full-width IME input (NFKC normalization) ----------
+
+
+def test_full_width_slash_date_parses() -> None:
+    # The reported live bug: full-width slash "6／14" parsed to null before NFKC.
+    result = parse_inquiry("6／14有房嗎", reference_year=2026)
+
+    assert result.dates.checkin_date == "2026-06-14"
+
+
+def test_full_width_digits_date_parses() -> None:
+    result = parse_inquiry("６／１４有房嗎", reference_year=2026)
+
+    assert result.dates.checkin_date == "2026-06-14"
+
+
+def test_full_width_space_date_variant_parses() -> None:
+    # Full-width space (U+3000) between date and label must not block matching.
+    result = parse_inquiry("5／12　入住　5／14　退房", reference_year=2026)
+
+    assert result.dates.checkin_date == "2026-05-12"
+    assert result.dates.checkout_date == "2026-05-14"
+    assert result.dates.nights == 2
+
+
+def test_full_width_digit_guest_count_parses() -> None:
+    result = parse_inquiry("２大人", reference_year=2026)
+
+    assert result.guests.adult_count == 2
+
+
+def test_half_width_slash_date_still_parses() -> None:
+    # Regression guard: NFKC is a no-op on half-width input.
+    result = parse_inquiry("6/14有房嗎", reference_year=2026)
+
+    assert result.dates.checkin_date == "2026-06-14"
+
+
+def test_original_text_keeps_unnormalized_full_width_form() -> None:
+    # We parse the normalized copy but STORE the customer's original text.
+    result = parse_inquiry("6／14有房嗎", reference_year=2026)
+
+    assert result.original_text == "6／14有房嗎"
+    assert result.dates.checkin_date == "2026-06-14"

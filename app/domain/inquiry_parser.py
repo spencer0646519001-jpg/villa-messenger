@@ -3,16 +3,22 @@ from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.inquiry_intent import parse_inquiry_intent
 from app.domain.parser_models import InquiryParseResult
 from app.domain.pet_parser import parse_pets
+from app.domain.text_normalizer import normalize_for_parsing
 
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 
 
 def parse_inquiry(text: str, reference_year: int | None = None) -> InquiryParseResult:
-    intent = parse_inquiry_intent(text)
-    dates = parse_stay_dates(text, reference_year=reference_year)
-    guests = parse_guest_counts(text)
-    pets = parse_pets(text)
+    # Normalize ONCE here, before every sub-parser, so full-width IME input
+    # (／ ６ １４ 　) matches the half-width-assuming regexes. original_text below
+    # keeps the UN-normalized `text` so the stored record / owner push preserve
+    # exactly what the customer typed.
+    normalized = normalize_for_parsing(text)
+    intent = parse_inquiry_intent(normalized)
+    dates = parse_stay_dates(normalized, reference_year=reference_year)
+    guests = parse_guest_counts(normalized)
+    pets = parse_pets(normalized)
 
     missing_fields = []
     if intent.inquiry_type in _QUOTE_RELEVANT_INTENTS:

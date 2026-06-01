@@ -825,6 +825,23 @@ def test_urgent_does_not_call_availability_service() -> None:
     assert fake_avail.calls == []
 
 
+# ---------- FULL-WIDTH IME INPUT (parse-normalized / store-original) ----------
+
+
+def test_full_width_input_parses_dates_but_logs_original_raw_text() -> None:
+    # End-to-end proof of the split: a full-width customer message must parse
+    # (parsed_checkin populated) while log_payload["raw_text"] keeps the exact
+    # original full-width text for the stored record / raw_log_payload.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("６／１４有房嗎")
+    )
+
+    assert decision.log_payload["raw_text"] == "６／１４有房嗎"
+    assert decision.log_payload["parsed_checkin"] == "2026-06-14"
+
+
 def test_off_mode_does_not_call_availability_service() -> None:
     fake_avail = _FakeAvailabilityService(
         outcome=_outcome_blocked(nights=[_date(2026, 5, 12)])
