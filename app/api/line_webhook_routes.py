@@ -34,6 +34,7 @@ from app.adapters.line_adapter import (
 )
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
+from app.clients.line_send_client import reply_message
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
@@ -50,6 +51,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _GENERIC_400_DETAIL = "Bad Request"
+
+# Stage 1 (proof-of-send): every inbound text event gets ONE hardcoded reply,
+# unconditionally (no operation-mode gate -- intentional for the proof). Stage 2
+# will replace this with the field-composed reply text from the decision.
+_STAGE1_REPLY_TEXT = "收到您的訊息,測試回覆 ✅"
+_ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -111,6 +118,25 @@ def _build_inquiry_service(database_path: str) -> InquiryService:
     )
 
 
+def _send_stage1_reply(event: dict) -> None:
+    """Best-effort Stage 1 proof-of-send. Fully isolated from receiving: any
+    failure (missing replyToken, missing token, LINE API error, network error,
+    timeout) is logged at WARNING and swallowed so persistence is untouched and
+    the webhook still returns 200."""
+    reply_token = event.get("replyToken")
+    if not reply_token:
+        logger.warning("LINE reply skipped: event has no replyToken")
+        return
+    access_token = os.environ.get(_ACCESS_TOKEN_ENV)
+    if not access_token:
+        logger.warning("LINE reply skipped: %s not set", _ACCESS_TOKEN_ENV)
+        return
+    try:
+        reply_message(reply_token=reply_token, text=_STAGE1_REPLY_TEXT, access_token=access_token)
+    except Exception:  # noqa: BLE001 -- send must NEVER break receiving
+        logger.warning("LINE reply send failed", exc_info=True)
+
+
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
     service = _build_inquiry_service(database_path)
     persistence = MessagePersistenceService(database_path=database_path)
@@ -122,6 +148,7 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
             tenant_timezone=tenant["timezone"],
         )
         persistence.persist(decision=service.handle_message(message=message))
+        _send_stage1_reply(event)
 
 
 @router.post("/webhooks/line")

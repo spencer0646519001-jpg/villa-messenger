@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -224,6 +225,95 @@ def test_all_400_bodies_are_byte_identical(client: TestClient, database_path: Pa
     assert malformed.status_code == unknown.status_code == bad_sig.status_code == 400
     # Outward-opaque: an attacker cannot distinguish which check failed.
     assert malformed.content == unknown.content == bad_sig.content
+
+
+# ============================================================
+# STAGE 1: outbound proof-of-send (hardcoded reply)
+#
+# The send is best-effort and MUST NOT affect receiving: a failed/skipped send
+# still returns 200 and still persists. reply_message is patched so no test
+# touches the network.
+# ============================================================
+
+
+_ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
+
+
+def _text_event_with_reply_token(text: str, reply_token: str = "rtok-123") -> dict:
+    event = _text_event(text)
+    event["replyToken"] = reply_token
+    return event
+
+
+def test_send_invoked_with_token_and_hardcoded_text(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_channel(database_path)
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+    body = _payload_bytes([_text_event_with_reply_token("hi")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["reply_token"] == "rtok-123"
+    assert calls[0]["access_token"] == "tok-abc"
+    assert calls[0]["text"] == line_webhook_routes._STAGE1_REPLY_TEXT
+    assert len(_rows(database_path, "messages")) == 1  # receiving unaffected
+
+
+def test_send_failure_swallowed_still_200_and_persisted(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_channel(database_path)
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+
+    def _boom(**_kw: object) -> None:
+        raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr(line_webhook_routes, "reply_message", _boom)
+    body = _payload_bytes([_text_event_with_reply_token("hi")])
+
+    response = _post(client, body, _sign(body))
+
+    # Send blew up, but receiving + persistence are untouched and we still ack.
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert len(_rows(database_path, "messages")) == 1
+
+
+def test_missing_reply_token_skips_send_still_200(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_channel(database_path)
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+    body = _payload_bytes([_text_event("hi")])  # no replyToken
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert calls == []  # skipped, not crashed
+    assert len(_rows(database_path, "messages")) == 1
+
+
+def test_missing_access_token_env_skips_send_still_200(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_channel(database_path)
+    monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+    body = _payload_bytes([_text_event_with_reply_token("hi")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert calls == []  # no token -> skipped, not crashed
+    assert len(_rows(database_path, "messages")) == 1
 
 
 # ============================================================
