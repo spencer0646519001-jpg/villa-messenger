@@ -62,16 +62,28 @@ def test_pets_not_allowed_when_config_disallows() -> None:
 # ---- tier 2 / fallback: "已通知" only when notified -------------------------
 
 
-def test_wifi_claims_notified_only_when_notified() -> None:
-    assert _NOTIFIED in render_faq_wifi(notified=True)
-    assert _NOTIFIED not in render_faq_wifi(notified=False)
-    assert "WiFi" in render_faq_wifi(notified=True)
+def test_wifi_answer_tracks_config_value() -> None:
+    free = render_faq_wifi(provided=True, free=True)
+    not_free = render_faq_wifi(provided=True, free=False)
+    not_provided = render_faq_wifi(provided=False, free=False)
+    assert "免費" in free and "WiFi" in free
+    assert _NOTIFIED not in free
+    assert "免費" not in not_free and "WiFi" in not_free
+    assert _NOTIFIED not in not_free
+    assert "沒有" in not_provided
+    assert _NOTIFIED not in not_provided
 
 
-def test_parking_claims_notified_only_when_notified() -> None:
-    assert _NOTIFIED in render_faq_parking(notified=True)
-    assert _NOTIFIED not in render_faq_parking(notified=False)
-    assert "停車" in render_faq_parking(notified=False)
+def test_parking_answer_tracks_config_value() -> None:
+    free = render_faq_parking(available=True, free=True)
+    not_free = render_faq_parking(available=True, free=False)
+    not_available = render_faq_parking(available=False, free=False)
+    assert "免費" in free and "停車" in free
+    assert _NOTIFIED not in free
+    assert "免費" not in not_free and "停車" in not_free
+    assert _NOTIFIED not in not_free
+    assert "沒有" in not_available
+    assert _NOTIFIED not in not_available
 
 
 def test_fallback_claims_notified_only_when_notified() -> None:

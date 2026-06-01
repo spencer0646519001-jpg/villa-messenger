@@ -33,7 +33,9 @@ from app.domain.reply_templates import (
     render_faq_breakfast,
     render_faq_checkout,
     render_faq_confirm_and_defer,
+    render_faq_parking,
     render_faq_pets,
+    render_faq_wifi,
     render_invalid_date_message,
     render_missing_info_message,
     render_over_capacity_message,
@@ -42,14 +44,13 @@ from app.domain.reply_templates import (
 )
 from app.domain.reply_text import (
     FAQ_FALLBACK_LEAD,
-    FAQ_PARKING_LEAD,
-    FAQ_WIFI_LEAD,
 )
 from app.domain.text_normalizer import normalize_for_parsing
 from app.schemas import InboundMessage
 
 # confirm-and-defer lead per tier-2 topic; non-whitelist faq uses the fallback.
-_DEFER_LEADS: dict[str, str] = {"wifi": FAQ_WIFI_LEAD, "parking": FAQ_PARKING_LEAD}
+# wifi and parking are now tier-1; no tier-2 topics remain.
+_DEFER_LEADS: dict[str, str] = {}
 
 
 class ComposedReply(BaseModel):
@@ -143,6 +144,18 @@ class ConversationReplyComposer:
                 allowed_with_notice=bool(pets.get("allowed_with_notice")),
                 small_dogs_only=bool(pets.get("small_dogs_only_for_now")),
                 fee_twd_per_pet=pets.get("fee_twd_per_pet_per_stay") or 0,
+            )
+        if topic == "wifi":
+            sp = self._stay_policy_loader(tenant_id)
+            return render_faq_wifi(
+                provided=bool(sp.get("wifi_provided")),
+                free=bool(sp.get("wifi_free")),
+            )
+        if topic == "parking":
+            sp = self._stay_policy_loader(tenant_id)
+            return render_faq_parking(
+                available=bool(sp.get("parking_available")),
+                free=bool(sp.get("parking_free")),
             )
         raise ValueError(f"unhandled tier-1 FAQ topic: {topic!r}")
 

@@ -8,9 +8,13 @@ from app.domain.reply_text import (
     FAQ_DEFER_CLOSE,
     FAQ_FALLBACK_LEAD,
     FAQ_NOTIFIED_CLOSE,
-    FAQ_PARKING_LEAD,
+    FAQ_PARKING_AVAILABLE,
+    FAQ_PARKING_AVAILABLE_FREE,
+    FAQ_PARKING_NOT_AVAILABLE,
     FAQ_PETS_NOT_ALLOWED,
-    FAQ_WIFI_LEAD,
+    FAQ_WIFI_NOT_PROVIDED,
+    FAQ_WIFI_PROVIDED,
+    FAQ_WIFI_PROVIDED_FREE,
     FULL_HOUSE_MESSAGE,
     INFANTS_CONFIRMATION,
     INVALID_DATE_MESSAGE,
@@ -253,12 +257,16 @@ def render_faq_confirm_and_defer(*, lead: str, notified: bool) -> str:
     return lead + (FAQ_NOTIFIED_CLOSE if notified else FAQ_DEFER_CLOSE)
 
 
-def render_faq_wifi(*, notified: bool) -> str:
-    return render_faq_confirm_and_defer(lead=FAQ_WIFI_LEAD, notified=notified)
+def render_faq_wifi(*, provided: bool, free: bool) -> str:
+    if not provided:
+        return FAQ_WIFI_NOT_PROVIDED
+    return FAQ_WIFI_PROVIDED_FREE if free else FAQ_WIFI_PROVIDED
 
 
-def render_faq_parking(*, notified: bool) -> str:
-    return render_faq_confirm_and_defer(lead=FAQ_PARKING_LEAD, notified=notified)
+def render_faq_parking(*, available: bool, free: bool) -> str:
+    if not available:
+        return FAQ_PARKING_NOT_AVAILABLE
+    return FAQ_PARKING_AVAILABLE_FREE if free else FAQ_PARKING_AVAILABLE
 
 
 def render_faq_fallback(*, notified: bool) -> str:

@@ -18,13 +18,13 @@ from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
     render_faq_breakfast,
     render_faq_checkout,
+    render_faq_parking,
     render_faq_pets,
+    render_faq_wifi,
     render_over_capacity_message,
     render_quote_message,
 )
 from app.domain.reply_text import (
-    FAQ_PARKING_LEAD,
-    FAQ_WIFI_LEAD,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
@@ -49,6 +49,10 @@ _STAY_POLICY = {
     "breakfast_provided": False,
     "check_in_after": "15:00",
     "checkout_before": "11:00",
+    "wifi_provided": True,
+    "wifi_free": True,
+    "parking_available": True,
+    "parking_free": True,
 }
 
 
@@ -201,24 +205,24 @@ def test_faq_pets_tier1_answers_from_pricing_config() -> None:
     assert result.owner_push_text is None
 
 
-def test_faq_wifi_tier2_confirm_and_defer_sets_push_and_both_variants() -> None:
+def test_faq_wifi_tier1_answers_from_config() -> None:
     result = _composer().compose(
         message=_message("有wifi嗎"), decision=_faq_decision(), state=None
     )
-    assert result.text.startswith(FAQ_WIFI_LEAD)
-    assert "已通知服務人員" in result.text  # the notified (push-success) wording
-    assert result.push_failed_text.startswith(FAQ_WIFI_LEAD)
-    assert "已通知服務人員" not in result.push_failed_text  # softer wording
-    assert result.owner_push_text is not None  # a REAL push is requested
-    assert result.completed_state_id is None  # FAQ never completes a state
+    assert result.text == render_faq_wifi(provided=True, free=True)
+    assert "免費" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
 
 
-def test_faq_parking_tier2_confirm_and_defer() -> None:
+def test_faq_parking_tier1_answers_from_config() -> None:
     result = _composer().compose(
         message=_message("有停車位嗎"), decision=_faq_decision(), state=None
     )
-    assert result.text.startswith(FAQ_PARKING_LEAD)
-    assert result.owner_push_text is not None
+    assert result.text == render_faq_parking(available=True, free=True)
+    assert "免費" in result.text
+    assert result.owner_push_text is None
 
 
 def test_non_whitelist_faq_falls_back_with_push() -> None:
@@ -298,14 +302,16 @@ def test_non_priceable_breakfast_overrides_price_intent() -> None:
 
 def test_non_priceable_parking_overrides_price_intent() -> None:
     """'停車要多少錢嗎' contains a price keyword + parking topic;
-    parking ∈ NON_PRICEABLE → tier-2 confirm-and-defer, NOT a quote."""
+    parking ∈ NON_PRICEABLE → tier-1 direct answer, NOT a quote."""
     result = _composer().compose(
         message=_message("停車要多少錢嗎"),
         decision=_price_intent_decision(),
         state=None,
     )
-    assert result.text.startswith(FAQ_PARKING_LEAD)
-    assert result.owner_push_text is not None
+    assert result.text == render_faq_parking(available=True, free=True)
+    assert "免費" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
     assert result.completed_state_id is None
 
 
@@ -324,14 +330,16 @@ def test_non_priceable_pets_overrides_price_intent() -> None:
 
 
 def test_non_priceable_wifi_overrides_price_intent() -> None:
-    """'請問有wifi費用嗎' hits wifi ∈ NON_PRICEABLE → tier-2 confirm-and-defer."""
+    """'請問有wifi費用嗎' hits wifi ∈ NON_PRICEABLE → tier-1 direct answer."""
     result = _composer().compose(
         message=_message("請問有wifi費用嗎"),
         decision=_price_intent_decision(),
         state=None,
     )
-    assert result.text.startswith(FAQ_WIFI_LEAD)
-    assert result.owner_push_text is not None
+    assert result.text == render_faq_wifi(provided=True, free=True)
+    assert "免費" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
     assert result.completed_state_id is None
 
 

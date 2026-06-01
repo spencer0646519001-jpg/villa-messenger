@@ -39,12 +39,11 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("breakfast", ("早餐", "早飯")),
     ("checkout", ("退房", "退房時間", "幾點退", "checkout")),
     ("pets", ("寵物", "毛孩", "帶狗", "帶寵物")),
-)
-
-_TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("wifi", ("wifi", "wi-fi", "網路", "無線網路")),
     ("parking", ("停車", "車位", "停車場")),
 )
+
+_TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()
 
 # Informational topics that are NOT stage-C pricing line-items.  When match_faq
 # hits one of these, the composer overrides the per-message price/availability

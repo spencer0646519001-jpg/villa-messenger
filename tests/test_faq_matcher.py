@@ -36,23 +36,20 @@ def test_pets_is_tier1(text: str) -> None:
     assert match.tier == 1
 
 
-# ---- tier 2 (confirm-and-defer) -------------------------------------------
-
-
 @pytest.mark.parametrize("text", ["有wifi嗎", "有 Wi-Fi 嗎", "有網路嗎", "有無線網路嗎"])
-def test_wifi_is_tier2(text: str) -> None:
+def test_wifi_is_tier1(text: str) -> None:
     match = match_faq(text)
     assert match is not None
     assert match.topic == "wifi"
-    assert match.tier == 2
+    assert match.tier == 1
 
 
 @pytest.mark.parametrize("text", ["有停車位嗎", "可以停車嗎", "有車位嗎", "有停車場嗎"])
-def test_parking_is_tier2(text: str) -> None:
+def test_parking_is_tier1(text: str) -> None:
     match = match_faq(text)
     assert match is not None
     assert match.topic == "parking"
-    assert match.tier == 2
+    assert match.tier == 1
 
 
 # ---- non-whitelist + collision guard --------------------------------------

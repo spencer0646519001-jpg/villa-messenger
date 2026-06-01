@@ -93,15 +93,20 @@ FAQ_BREAKFAST_NOT_PROVIDED: Final = (
 )
 FAQ_PETS_NOT_ALLOWED: Final = "您好,不好意思,我們目前暫不接受寵物入住喔。"
 
-# Tier-2 (wifi/parking) + non-whitelist faq fallback = confirm-and-defer.
-# The lead is topic-specific; the closer depends on whether the owner push
-# ACTUALLY succeeded. NOTIFIED claims "已通知服務人員" (truthful only after a
-# successful push); DEFER is the softer non-asserting line used on push failure.
+# Tier-1 (config-driven): wifi / parking -- three branches each.
+FAQ_WIFI_PROVIDED_FREE: Final = "您好,我們有提供免費 WiFi 喔。"
+FAQ_WIFI_PROVIDED: Final = "您好,我們有提供 WiFi 喔,費用部分入住時服務人員會與您說明。"
+FAQ_WIFI_NOT_PROVIDED: Final = "您好,不好意思,我們目前沒有提供 WiFi 喔。"
+FAQ_PARKING_AVAILABLE_FREE: Final = "您好,我們有提供免費停車位喔。"
+FAQ_PARKING_AVAILABLE: Final = "您好,我們有提供停車位喔,費用部分入住時服務人員會與您說明。"
+FAQ_PARKING_NOT_AVAILABLE: Final = "您好,不好意思,我們目前沒有提供停車位喔。"
+
+# Non-whitelist faq fallback = confirm-and-defer.
+# NOTIFIED claims "已通知服務人員" (truthful only after a successful push);
+# DEFER is the softer non-asserting line used on push failure.
 FAQ_NOTIFIED_CLOSE: Final = "細節已通知服務人員,稍後會有專人與您對接。"
 FAQ_DEFER_CLOSE: Final = "這部分我們會再請服務人員與您聯繫。"
 
-FAQ_WIFI_LEAD: Final = "您好,我們有提供 WiFi,"
-FAQ_PARKING_LEAD: Final = "您好,我們有提供停車空間,"
 FAQ_FALLBACK_LEAD: Final = "您好,已收到您的訊息,"
 
 WEEKDAY_ZH: Final = ["一", "二", "三", "四", "五", "六", "日"]

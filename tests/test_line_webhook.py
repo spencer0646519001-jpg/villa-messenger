@@ -696,7 +696,7 @@ def test_faq_tier1_breakfast_answers_with_no_push(
     assert _rows(database_path, "conversation_states") == []  # FAQ touches no state
 
 
-def test_faq_tier2_wifi_pushes_owner_then_claims_notified(
+def test_faq_tier1_wifi_answers_with_no_push(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant_id = _seed_channel(database_path)
@@ -705,16 +705,13 @@ def test_faq_tier2_wifi_pushes_owner_then_claims_notified(
     body = _payload_bytes([_text_event_with_reply_token("請問有wifi嗎")])
 
     assert _post(client, body, _sign(body)).status_code == 200
-    # Owner push fired to the configured owner id...
-    assert len(pushes) == 1
-    assert pushes[0]["to_user_id"] == "Uowner"
-    assert pushes[0]["access_token"] == "tok-abc"
-    # ...and only then did the customer get the truthful "已通知" wording.
     assert len(replies) == 1
-    assert _NOTIFIED in replies[0]["text"]
+    assert "免費" in replies[0]["text"]  # real config: wifi_provided=true, wifi_free=true
+    assert _NOTIFIED not in replies[0]["text"]
+    assert pushes == []  # tier-1 self-contained -> no owner push
 
 
-def test_faq_tier2_push_failure_uses_softer_wording_still_200(
+def test_faq_tier1_wifi_no_push_even_when_push_infra_unavailable(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant_id = _seed_channel(database_path)
@@ -724,12 +721,12 @@ def test_faq_tier2_push_failure_uses_softer_wording_still_200(
 
     response = _post(client, body, _sign(body))
 
-    # Push was attempted but failed -> customer reply must NOT claim "已通知".
+    # Tier-1 requires no owner push; push infra being down must not affect anything.
     assert response.status_code == 200
-    assert len(pushes) == 1
+    assert pushes == []  # push never attempted
     assert len(replies) == 1
+    assert "免費" in replies[0]["text"]
     assert _NOTIFIED not in replies[0]["text"]
-    assert "會再請服務人員" in replies[0]["text"]  # softer non-asserting line
     assert len(_rows(database_path, "messages")) == 1  # persistence intact
 
 
