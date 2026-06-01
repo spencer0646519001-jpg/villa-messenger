@@ -76,6 +76,18 @@ def _faq_decision() -> InquiryDecision:
     )
 
 
+def _price_intent_decision() -> InquiryDecision:
+    """Simulates what inquiry_service returns for a price-intent message
+    (e.g. '早餐多少錢嗎' classifies as 'price' but also hits a NON_PRICEABLE
+    topic — the composer override should route it to FAQ regardless)."""
+    return InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="PER_MESSAGE_PRICE_REPLY",
+        log_payload={"inquiry_intent": "price"},
+        parsed_as_inquiry=True,
+    )
+
+
 def _decision(*, off: bool = False, urgent: bool = False) -> InquiryDecision:
     if urgent:
         return InquiryDecision(
@@ -264,3 +276,107 @@ def test_faq_does_not_override_urgent() -> None:
     )
     assert result.text is None
     assert result.owner_push_text is None
+
+
+# ============================================================
+# M1: NON_PRICEABLE override — FAQ topic wins over price intent
+# ============================================================
+
+
+def test_non_priceable_breakfast_overrides_price_intent() -> None:
+    """'早餐多少錢嗎' classifies as price intent, but breakfast ∈ NON_PRICEABLE
+    → composer overrides and answers the breakfast FAQ instead of quoting."""
+    result = _composer().compose(
+        message=_message("早餐多少錢嗎"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_breakfast(breakfast_provided=False)
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_non_priceable_parking_overrides_price_intent() -> None:
+    """'停車要多少錢嗎' contains a price keyword + parking topic;
+    parking ∈ NON_PRICEABLE → tier-2 confirm-and-defer, NOT a quote."""
+    result = _composer().compose(
+        message=_message("停車要多少錢嗎"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text.startswith(FAQ_PARKING_LEAD)
+    assert result.owner_push_text is not None
+    assert result.completed_state_id is None
+
+
+def test_non_priceable_pets_overrides_price_intent() -> None:
+    """'帶寵物多少錢嗎' hits pets ∈ NON_PRICEABLE → pets FAQ answer."""
+    result = _composer().compose(
+        message=_message("帶寵物多少錢嗎"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_pets(
+        allowed_with_notice=True, small_dogs_only=True, fee_twd_per_pet=500
+    )
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_non_priceable_wifi_overrides_price_intent() -> None:
+    """'請問有wifi費用嗎' hits wifi ∈ NON_PRICEABLE → tier-2 confirm-and-defer."""
+    result = _composer().compose(
+        message=_message("請問有wifi費用嗎"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text.startswith(FAQ_WIFI_LEAD)
+    assert result.owner_push_text is not None
+    assert result.completed_state_id is None
+
+
+def test_regression_pure_price_inquiry_no_faq_topic_not_hijacked() -> None:
+    """'四房全開多少錢' has no FAQ topic match → faq_match is None →
+    NON_PRICEABLE override skips → falls through to state-driven path."""
+    result = _composer().compose(
+        message=_message("四房全開多少錢"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    # No active state → per-message price reply returned unchanged.
+    assert result.text == "PER_MESSAGE_PRICE_REPLY"
+    assert result.completed_state_id is None
+
+
+def test_regression_non_priceable_does_not_fire_in_off_mode() -> None:
+    """was_system_off is still highest priority — overrides even NON_PRICEABLE."""
+    result = _composer().compose(
+        message=_message("早餐多少錢嗎"),
+        decision=_decision(off=True),
+        state=None,
+    )
+    assert result.text is None
+    assert result.owner_push_text is None
+
+
+def test_regression_non_priceable_does_not_fire_when_urgent() -> None:
+    """was_urgent is still highest priority."""
+    result = _composer().compose(
+        message=_message("早餐多少錢嗎"),
+        decision=_decision(urgent=True),
+        state=None,
+    )
+    assert result.text is None
+    assert result.owner_push_text is None
+
+
+def test_regression_faq_fallback_no_topic_still_works() -> None:
+    """'附近有什麼好玩的嗎' has no FAQ topic → faq_match is None → existing
+    _is_faq fallback path handles it unchanged."""
+    result = _composer().compose(
+        message=_message("附近有什麼好玩的嗎"),
+        decision=_faq_decision(),
+        state=None,
+    )
+    assert "已收到您的訊息" in result.text
+    assert result.owner_push_text is not None

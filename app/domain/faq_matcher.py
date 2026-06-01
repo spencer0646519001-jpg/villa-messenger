@@ -46,6 +46,18 @@ _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("parking", ("停車", "車位", "停車場")),
 )
 
+# Informational topics that are NOT stage-C pricing line-items.  When match_faq
+# hits one of these, the composer overrides the per-message price/availability
+# intent and routes directly to the FAQ branch.
+# NOTE: "checkout" is intentionally excluded — its keyword "退房" collides with
+# the checkout-date slot in pricing inquiries (e.g. "5/14 退房 多少錢"),
+# causing price-intent messages to be wrongly hijacked into a checkout-time
+# answer.  Safe inclusion requires date-parsing to run before FAQ matching;
+# that is a separate follow-up item.
+NON_PRICEABLE: frozenset[FaqTopic] = frozenset({
+    "breakfast", "pets", "wifi", "parking"
+})
+
 
 def match_faq(text: str) -> FaqMatch | None:
     """Return the whitelisted FAQ topic+tier this text hits, or None."""

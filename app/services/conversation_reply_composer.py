@@ -24,7 +24,7 @@ from typing import Callable
 
 from pydantic import BaseModel
 
-from app.domain.faq_matcher import FaqMatch, match_faq
+from app.domain.faq_matcher import FaqMatch, NON_PRICEABLE, match_faq
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_models import PricingResult
@@ -89,11 +89,15 @@ class ConversationReplyComposer:
         decision: InquiryDecision,
         state: dict | None,
     ) -> ComposedReply:
-        """Pick the reply. Order: off/urgent stay silent; whitelist FAQ answers
-        (BEFORE the quote path, so a mid-quote FAQ question never re-quotes nor
-        completes the open state); then the state-driven quote/missing path."""
+        """Pick the reply. Order: off/urgent stay silent; NON_PRICEABLE FAQ
+        topics override price/availability intent (so '早餐多少錢嗎' answers
+        breakfast, not quotes); remaining faq-intent fallback; then the
+        state-driven quote/missing path."""
         if decision.was_system_off or decision.was_urgent:
             return ComposedReply(text=decision.customer_reply_text)
+        faq_match = match_faq(normalize_for_parsing(message.text))
+        if faq_match is not None and faq_match.topic in NON_PRICEABLE:
+            return self._compose_faq(message)
         if _is_faq(decision):
             return self._compose_faq(message)
         if state is None:
@@ -162,10 +166,10 @@ class ConversationReplyComposer:
 
 
 def _is_faq(decision: InquiryDecision) -> bool:
-    """Key the FAQ branch on the per-message intent, NOT on match_faq alone:
-    intent classification already runs price>availability>booking>faq, so a
-    quote inquiry that merely mentions a whitelist word (e.g. "早餐多少錢嗎"
-    -> price) never enters here and is never hijacked."""
+    """True when the per-message intent classifier said 'faq'.
+    NON_PRICEABLE topic override (e.g. breakfast/pets while text also
+    contains a price keyword) is handled at the call site in compose() —
+    before this check — so this function only fires for non-NON_PRICEABLE faq."""
     return decision.log_payload.get("inquiry_intent") == "faq"
 
 
