@@ -154,3 +154,33 @@ CREATE TABLE IF NOT EXISTS tenant_operation_state (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
+
+CREATE TABLE IF NOT EXISTS conversation_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    intent TEXT,
+    checkin_date TEXT,
+    checkout_date TEXT,
+    adult_count INTEGER,
+    child_count INTEGER,
+    infant_count INTEGER,
+    pet_count INTEGER,
+    has_pet INTEGER NOT NULL DEFAULT 0,
+    last_message_text TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conv_states_lookup
+    ON conversation_states (tenant_id, platform_user_id, status);
+
+-- At most one active (in_progress) conversation per user. Completed/expired
+-- rows are excluded from the constraint, so history accumulates freely.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_states_one_active
+    ON conversation_states (tenant_id, platform, platform_user_id)
+    WHERE status = 'in_progress';
