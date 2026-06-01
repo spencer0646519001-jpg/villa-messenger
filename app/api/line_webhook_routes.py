@@ -35,9 +35,13 @@ from app.adapters.line_adapter import (
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.line_send_client import reply_message
+from app.domain.inquiry_decision import InquiryDecision
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
+from app.schemas import InboundMessage
+from app.services.conversation_state_service import ConversationStateService
 from app.services.inquiry_service import InquiryService
 from app.services.message_persistence_service import MessagePersistenceService
 from app.services.operation_mode_service import OperationModeService
@@ -138,9 +142,26 @@ def _send_reply(event: dict, text: str | None) -> None:
         logger.warning("LINE reply send failed", exc_info=True)
 
 
+def _record_state(
+    state_service: ConversationStateService,
+    message: InboundMessage,
+    decision: InquiryDecision,
+) -> None:
+    """Best-effort multi-turn state accumulation (STAGE B). Fully isolated from
+    receiving: any failure (DB error, unique-index race on the one-active
+    constraint) is logged at WARNING and swallowed so persistence and the reply
+    are untouched and the webhook still returns 200. Records state only -- it
+    changes no reply text."""
+    try:
+        state_service.record(message=message, decision=decision)
+    except Exception:  # noqa: BLE001 -- state write must NEVER break receiving
+        logger.warning("LINE conversation-state record failed", exc_info=True)
+
+
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
     service = _build_inquiry_service(database_path)
     persistence = MessagePersistenceService(database_path=database_path)
+    state_service = ConversationStateService(ConversationStateRepository(database_path))
     for event in events:
         message = line_event_to_inbound_message(
             event=event,
@@ -150,6 +171,7 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
         )
         decision = service.handle_message(message=message)
         persistence.persist(decision=decision)
+        _record_state(state_service, message, decision)
         _send_reply(event, decision.customer_reply_text)
 
 

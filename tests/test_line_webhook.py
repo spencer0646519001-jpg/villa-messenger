@@ -17,6 +17,7 @@ from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
 from app.domain.reply_text import SINGLE_MISSING_GUEST_COUNT_MESSAGE
 from app.main import app
+from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
@@ -352,6 +353,91 @@ def test_missing_access_token_env_skips_send_still_200(
 
 
 # ============================================================
+# STAGE B: conversation-state accumulation (records state only; reply unchanged)
+#
+# Two-tier policy: a quote-relevant inquiry OPENS a state; any slot-bearing
+# follow-up (even one that does not itself classify as an inquiry) UPDATES it.
+# State writing is best-effort: a failure must not break persistence/reply/200.
+# ============================================================
+
+
+# Dates + price intent, guests missing -> quote-relevant, opens a state.
+_DATES_ONLY_INQUIRY = "5/12 入住 5/14 退房 多少錢?"
+
+
+def test_two_message_accumulation_leaves_one_filled_state(
+    client: TestClient, database_path: Path
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+
+    body1 = _payload_bytes([_text_event(_DATES_ONLY_INQUIRY)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event("4 大人")])  # bare follow-up, same user
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["status"] == "in_progress"
+    assert states[0]["checkin_date"] == "2026-05-12"
+    assert states[0]["checkout_date"] == "2026-05-14"
+    assert states[0]["adult_count"] == 4
+
+
+def test_non_inquiry_creates_no_state(client: TestClient, database_path: Path) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    body = _payload_bytes([_text_event("你好")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert _rows(database_path, "conversation_states") == []
+    assert len(_rows(database_path, "messages")) == 1  # still persisted
+
+
+def test_quote_relevant_message_opens_one_state(
+    client: TestClient, database_path: Path
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    body = _payload_bytes([_text_event(_DATES_ONLY_INQUIRY)])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["checkin_date"] == "2026-05-12"
+
+
+def test_state_write_failure_isolated_still_200_and_persisted(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("state DB exploded")
+
+    monkeypatch.setattr(ConversationStateRepository, "create", _boom)
+    monkeypatch.setattr(ConversationStateRepository, "update_slots", _boom)
+    body = _payload_bytes([_text_event_with_reply_token(_DATES_ONLY_INQUIRY)])
+
+    response = _post(client, body, _sign(body))
+
+    # State write blew up, but receiving + persistence + reply + ack are intact.
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert len(_rows(database_path, "messages")) == 1
+    assert len(_rows(database_path, "inquiries")) == 1
+    assert len(calls) == 1  # reply path unaffected
+
+
+# ============================================================
 # METHOD-LENGTH DISCIPLINE
 # ============================================================
 
@@ -372,6 +458,7 @@ def _body_line_count(func) -> int:
         line_webhook_routes._resolve_tenant,
         line_webhook_routes._extract_events,
         line_webhook_routes._build_inquiry_service,
+        line_webhook_routes._record_state,
         line_webhook_routes._run_pipeline,
     ],
 )
