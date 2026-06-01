@@ -40,13 +40,35 @@ _SLOT_KEYS = (
     "pet_count",
 )
 
+# Column template for a freshly-created row, so the in-hand merged row mirrors a
+# real DB row's shape (every column present, None when absent) -- STAGE C reads
+# these keys directly. id is filled in by _open_if_inquiry.
+_EMPTY_STATE_ROW: dict = {
+    "id": None,
+    "status": "in_progress",
+    "intent": None,
+    "checkin_date": None,
+    "checkout_date": None,
+    "adult_count": None,
+    "child_count": None,
+    "infant_count": None,
+    "pet_count": None,
+    "has_pet": False,
+    "last_message_text": None,
+}
+
 
 class ConversationStateService:
     def __init__(self, repo: ConversationStateRepository) -> None:
         self._repo = repo
 
-    def record(self, *, message: InboundMessage, decision: InquiryDecision) -> None:
+    def record(
+        self, *, message: InboundMessage, decision: InquiryDecision
+    ) -> dict | None:
         """Merge this message's slots into the user's active state (or open one)."""
+        # Returns the merged in_progress row (or None) so STAGE C drives the reply
+        # from the ACCUMULATED slots; assembled in-hand (mirrors the repo COALESCE),
+        # no extra query.
         slots = log_payload_to_state_slots(decision.log_payload)
         active = self._repo.get_active_for_user(
             tenant_id=message.tenant_id,
@@ -54,21 +76,38 @@ class ConversationStateService:
             platform_user_id=message.platform_user_id,
         )
         if active is None:
-            self._open_if_inquiry(message, decision, slots)
-        elif self._has_slot(slots):
+            return self._open_if_inquiry(message, decision, slots)
+        if self._has_slot(slots):
             self._repo.update_slots(state_id=active["id"], **slots)
+            return _merge_row(active, slots)
+        return active
+
+    def mark_completed(self, *, state_id: int) -> None:
+        """Flip a state to completed (STAGE C, after a quote is sent)."""
+        self._repo.mark_completed(state_id=state_id)
 
     def _open_if_inquiry(
         self, message: InboundMessage, decision: InquiryDecision, slots: dict
-    ) -> None:
+    ) -> dict | None:
         intent = decision.log_payload.get("inquiry_intent")
-        if decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS:
-            self._repo.create(
-                tenant_id=message.tenant_id,
-                platform=message.platform,
-                platform_user_id=message.platform_user_id,
-                **slots,
-            )
+        if not (decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS):
+            return None
+        state_id = self._repo.create(
+            tenant_id=message.tenant_id,
+            platform=message.platform,
+            platform_user_id=message.platform_user_id,
+            **slots,
+        )
+        return _merge_row({**_EMPTY_STATE_ROW, "id": state_id}, slots)
 
     def _has_slot(self, slots: dict) -> bool:
         return any(slots.get(key) is not None for key in _SLOT_KEYS)
+
+
+def _merge_row(base: dict, slots: dict) -> dict:
+    """Apply non-None slots over a base row (mirrors the repo's COALESCE merge)."""
+    merged = dict(base)
+    for key, value in slots.items():
+        if value is not None:
+            merged[key] = value
+    return merged

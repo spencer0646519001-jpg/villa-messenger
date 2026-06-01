@@ -6,6 +6,7 @@ import json
 import shutil
 import uuid
 from collections.abc import Iterator
+from datetime import date
 from contextlib import closing
 from pathlib import Path
 
@@ -15,14 +16,24 @@ from fastapi.testclient import TestClient
 
 from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
-from app.domain.reply_text import SINGLE_MISSING_GUEST_COUNT_MESSAGE
+from app.domain.pricing_policy import calculate_price
+from app.domain.reply_templates import render_quote_message
+from app.domain.reply_text import (
+    SINGLE_MISSING_CHECKOUT_MESSAGE,
+    SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+)
 from app.main import app
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
+from app.services.conversation_state_service import ConversationStateService
 from app.services.operation_mode_service import OperationModeService
+from app.services.tenant_config_loaders import (
+    make_tenant_pricing_loader,
+    make_tenant_special_dates_loader,
+)
 
 
 _SECRET_REF = "LINE_TEST_CHANNEL_SECRET"
@@ -365,23 +376,31 @@ def test_missing_access_token_env_skips_send_still_200(
 _DATES_ONLY_INQUIRY = "5/12 入住 5/14 退房 多少錢?"
 
 
+# Price intent + checkin only (checkout + guests missing) -> opens an
+# INCOMPLETE state. A bare-guest follow-up then merges in but the accumulation
+# stays incomplete (checkout still absent), so this stays a pure STAGE B merge
+# test -- the complete -> quote/completed flow is covered in the STAGE C section.
+_CHECKIN_ONLY_INQUIRY = "5/12 入住 多少錢"
+
+
 def test_two_message_accumulation_leaves_one_filled_state(
     client: TestClient, database_path: Path
 ) -> None:
     tenant_id = _seed_channel(database_path)
     _set_system_on(database_path, tenant_id)
 
-    body1 = _payload_bytes([_text_event(_DATES_ONLY_INQUIRY)])
+    body1 = _payload_bytes([_text_event(_CHECKIN_ONLY_INQUIRY)])
     assert _post(client, body1, _sign(body1)).status_code == 200
     body2 = _payload_bytes([_text_event("4 大人")])  # bare follow-up, same user
     assert _post(client, body2, _sign(body2)).status_code == 200
 
     states = _rows(database_path, "conversation_states")
     assert len(states) == 1
+    # Still incomplete (no checkout) -> never completed by STAGE C.
     assert states[0]["status"] == "in_progress"
     assert states[0]["checkin_date"] == "2026-05-12"
-    assert states[0]["checkout_date"] == "2026-05-14"
-    assert states[0]["adult_count"] == 4
+    assert states[0]["checkout_date"] is None
+    assert states[0]["adult_count"] == 4  # merged from the follow-up
 
 
 def test_non_inquiry_creates_no_state(client: TestClient, database_path: Path) -> None:
@@ -438,6 +457,192 @@ def test_state_write_failure_isolated_still_200_and_persisted(
 
 
 # ============================================================
+# STAGE C: the ACCUMULATED state drives the reply
+#
+# When the merged state completes, send a quote (from the accumulated slots,
+# not just this message's) and mark the state completed; when still incomplete,
+# ask for the missing slot. Off mode / urgent stay silent. No active state ->
+# the per-message reply (today's behavior). reply_message is patched -> no net.
+# ============================================================
+
+
+# Dates + price, guests missing -> opens an INCOMPLETE state (no quote yet).
+_DATES_PRICE_NO_GUESTS = "5/12 入住 5/13 退房 多少錢?"
+
+
+def _expected_quote(
+    database_path: Path, tenant_id: int, *, checkin: str, checkout: str, adults: int
+) -> str:
+    """The quote the single-message path would produce for these slots, built
+    from the SAME domain functions + config loaders the route uses. Guards
+    against STAGE C growing a divergent quote computation."""
+    kwargs = dict(
+        checkin_date=date.fromisoformat(checkin),
+        checkout_date=date.fromisoformat(checkout),
+        adult_count=adults,
+        child_count=0,
+        infant_count=0,
+        pet_count=0,
+    )
+    pricing = calculate_price(
+        **kwargs,
+        tenant_pricing=make_tenant_pricing_loader(database_path)(tenant_id),
+        tenant_special_dates=make_tenant_special_dates_loader(database_path)(tenant_id),
+    )
+    return render_quote_message(pricing=pricing, **kwargs)
+
+
+def _capture_replies(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+    return calls
+
+
+def test_two_message_complete_flow_quotes_from_accumulation_and_completes(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token("4 大人")])  # completes it
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    # The SECOND reply is a quote reflecting accumulated dates (msg1) + guests
+    # (msg2) -- equal to the single-message path's quote for the same slots.
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-05-12", checkout="2026-05-13", adults=4
+    )
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["status"] == "completed"  # marked done after the quote
+
+
+def test_two_message_incomplete_prompts_for_missing_slot(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    # Opens with checkin + price (checkout + guests missing); a bare-guest
+    # follow-up fills guests but checkout is still absent -> ask for checkout.
+    body1 = _payload_bytes([_text_event_with_reply_token(_CHECKIN_ONLY_INQUIRY)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token("4 大人")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    # Prompt is driven by what's missing in the ACCUMULATED state (checkout).
+    assert calls[-1]["text"] == SINGLE_MISSING_CHECKOUT_MESSAGE
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "in_progress"  # not completed -- still missing
+
+
+def test_off_mode_complete_state_stays_silent_but_accumulates(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    calls = _capture_replies(monkeypatch)
+
+    # A SINGLE complete inquiry in off mode: slots are complete, but off mode is
+    # receive-only -> no outbound, even though it would otherwise quote.
+    complete = "5/12 入住 5/13 退房 4 大人 多少錢?"
+    body = _payload_bytes([_text_event_with_reply_token(complete)])
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    assert calls == []  # silent
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1  # but state still accumulated
+    assert states[0]["status"] == "in_progress"  # never completed (no quote sent)
+
+
+def test_no_active_state_falls_back_to_per_message_reply(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    # Non-inquiry chatter opens no state -> compose returns the per-message
+    # reply unchanged (None here -> nothing sent), exactly as before STAGE C.
+    body = _payload_bytes([_text_event_with_reply_token("你好")])
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    assert calls == []
+    assert _rows(database_path, "conversation_states") == []
+
+
+def test_single_complete_message_quotes_once_and_completes(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    # Unified path: a single complete message flows through the state-driven
+    # reply too -> one quote, state immediately completed.
+    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 多少錢?")])
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    assert len(calls) == 1
+    assert calls[0]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-05-12", checkout="2026-05-13", adults=4
+    )
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["status"] == "completed"
+
+
+def test_mark_completed_failure_isolated_reply_still_sent(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    def _boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("mark_completed exploded")
+
+    monkeypatch.setattr(ConversationStateService, "mark_completed", _boom)
+    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 多少錢?")])
+
+    response = _post(client, body, _sign(body))
+
+    # Send-first: the quote already went out; the mark failure is swallowed.
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-05-12", checkout="2026-05-13", adults=4
+    )
+
+
+def test_urgent_with_active_state_not_overridden_by_quote(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    # Open an active (incomplete) state, then an urgent message from same user:
+    # the urgent path must NOT be hijacked into a customer-facing quote.
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    calls.clear()
+    body2 = _payload_bytes([_text_event_with_reply_token("火災!!")])  # urgent
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert calls == []  # urgent -> no customer reply (owner push path untouched)
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "in_progress"  # not completed by the urgent msg
+
+
+# ============================================================
 # METHOD-LENGTH DISCIPLINE
 # ============================================================
 
@@ -458,7 +663,11 @@ def _body_line_count(func) -> int:
         line_webhook_routes._resolve_tenant,
         line_webhook_routes._extract_events,
         line_webhook_routes._build_inquiry_service,
+        line_webhook_routes._build_reply_composer,
+        line_webhook_routes._event_to_message,
         line_webhook_routes._record_state,
+        line_webhook_routes._compose_reply,
+        line_webhook_routes._mark_if_complete,
         line_webhook_routes._run_pipeline,
     ],
 )

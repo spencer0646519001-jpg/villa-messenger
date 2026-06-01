@@ -1,5 +1,6 @@
 from app.domain.date_parser import parse_stay_dates
 from app.domain.guest_count_parser import parse_guest_counts
+from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_intent import parse_inquiry_intent
 from app.domain.parser_models import InquiryParseResult
 from app.domain.pet_parser import parse_pets
@@ -20,16 +21,17 @@ def parse_inquiry(text: str, reference_year: int | None = None) -> InquiryParseR
     guests = parse_guest_counts(normalized)
     pets = parse_pets(normalized)
 
-    missing_fields = []
+    # Only quote-relevant intents ask for these slots; the shared rule then says
+    # which are missing (same function STAGE C runs over the accumulated state).
+    missing_fields: list[str] = []
     if intent.inquiry_type in _QUOTE_RELEVANT_INTENTS:
-        if dates.checkin_date is None:
-            missing_fields.append("checkin_date")
-        if dates.checkout_date is None:
-            missing_fields.append("checkout_date")
-        if guests.guest_count is None:
-            missing_fields.append("guest_count")
-        if pets.has_pet and pets.pet_count is None:
-            missing_fields.append("pet_count")
+        missing_fields = compute_missing_fields(
+            checkin_date=dates.checkin_date,
+            checkout_date=dates.checkout_date,
+            guest_count=guests.guest_count,
+            has_pet=pets.has_pet,
+            pet_count=pets.pet_count,
+        )
 
     can_preliminarily_quote = (
         intent.inquiry_type in _QUOTE_RELEVANT_INTENTS

@@ -41,6 +41,10 @@ from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas import InboundMessage
+from app.services.conversation_reply_composer import (
+    ComposedReply,
+    ConversationReplyComposer,
+)
 from app.services.conversation_state_service import ConversationStateService
 from app.services.inquiry_service import InquiryService
 from app.services.message_persistence_service import MessagePersistenceService
@@ -121,6 +125,22 @@ def _build_inquiry_service(database_path: str) -> InquiryService:
     )
 
 
+def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
+    return ConversationReplyComposer(
+        tenant_pricing_loader=make_tenant_pricing_loader(database_path),
+        tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
+    )
+
+
+def _event_to_message(event: dict, tenant: dict) -> InboundMessage:
+    return line_event_to_inbound_message(
+        event=event,
+        tenant_id=tenant["id"],
+        tenant_slug=tenant["slug"],
+        tenant_timezone=tenant["timezone"],
+    )
+
+
 def _send_reply(event: dict, text: str | None) -> None:
     """Best-effort outbound reply. Fully isolated from receiving: any failure
     (no reply text, missing replyToken, missing token, LINE API error, network
@@ -146,33 +166,63 @@ def _record_state(
     state_service: ConversationStateService,
     message: InboundMessage,
     decision: InquiryDecision,
-) -> None:
-    """Best-effort multi-turn state accumulation (STAGE B). Fully isolated from
-    receiving: any failure (DB error, unique-index race on the one-active
-    constraint) is logged at WARNING and swallowed so persistence and the reply
-    are untouched and the webhook still returns 200. Records state only -- it
-    changes no reply text."""
+) -> dict | None:
+    """Best-effort multi-turn state accumulation (STAGE B). Returns the merged
+    in_progress state row (or None) so STAGE C can drive the reply from the
+    ACCUMULATED slots. Fully isolated from receiving: any failure (DB error,
+    unique-index race on the one-active constraint) is logged at WARNING and
+    swallowed -- returning None falls back to the per-message reply -- so
+    persistence/reply are untouched and the webhook still returns 200."""
     try:
-        state_service.record(message=message, decision=decision)
+        return state_service.record(message=message, decision=decision)
     except Exception:  # noqa: BLE001 -- state write must NEVER break receiving
         logger.warning("LINE conversation-state record failed", exc_info=True)
+        return None
+
+
+def _compose_reply(
+    composer: ConversationReplyComposer,
+    message: InboundMessage,
+    decision: InquiryDecision,
+    state: dict | None,
+) -> ComposedReply:
+    """Best-effort STAGE C reply composition. Any failure (e.g. a malformed
+    accumulated state) is logged and falls back to the per-message reply, so a
+    compose/quote error NEVER breaks receiving or the 200."""
+    try:
+        return composer.compose(message=message, decision=decision, state=state)
+    except Exception:  # noqa: BLE001 -- compose must NEVER break receiving
+        logger.warning("LINE state-reply compose failed", exc_info=True)
+        return ComposedReply(text=decision.customer_reply_text)
+
+
+def _mark_if_complete(
+    state_service: ConversationStateService, composed: ComposedReply
+) -> None:
+    """Best-effort completion AFTER the reply is sent (send-first). A failure is
+    logged and swallowed: the quote already went out, so at worst the still-open
+    state re-quotes next turn (at-least-once), never a double-send this turn."""
+    if composed.completed_state_id is None:
+        return
+    try:
+        state_service.mark_completed(state_id=composed.completed_state_id)
+    except Exception:  # noqa: BLE001 -- completion must NEVER break the sent reply
+        logger.warning("LINE conversation-state mark_completed failed", exc_info=True)
 
 
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
     service = _build_inquiry_service(database_path)
     persistence = MessagePersistenceService(database_path=database_path)
     state_service = ConversationStateService(ConversationStateRepository(database_path))
+    composer = _build_reply_composer(database_path)
     for event in events:
-        message = line_event_to_inbound_message(
-            event=event,
-            tenant_id=tenant["id"],
-            tenant_slug=tenant["slug"],
-            tenant_timezone=tenant["timezone"],
-        )
+        message = _event_to_message(event, tenant)
         decision = service.handle_message(message=message)
         persistence.persist(decision=decision)
-        _record_state(state_service, message, decision)
-        _send_reply(event, decision.customer_reply_text)
+        state = _record_state(state_service, message, decision)
+        composed = _compose_reply(composer, message, decision, state)
+        _send_reply(event, composed.text)
+        _mark_if_complete(state_service, composed)
 
 
 @router.post("/webhooks/line")
