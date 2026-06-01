@@ -3,6 +3,14 @@ from datetime import date
 from app.domain.pricing_models import PricingResult
 from app.domain.reply_text import (
     CHILDREN_CONFIRMATION,
+    FAQ_BREAKFAST_NOT_PROVIDED,
+    FAQ_BREAKFAST_PROVIDED,
+    FAQ_DEFER_CLOSE,
+    FAQ_FALLBACK_LEAD,
+    FAQ_NOTIFIED_CLOSE,
+    FAQ_PARKING_LEAD,
+    FAQ_PETS_NOT_ALLOWED,
+    FAQ_WIFI_LEAD,
     FULL_HOUSE_MESSAGE,
     INFANTS_CONFIRMATION,
     INVALID_DATE_MESSAGE,
@@ -195,6 +203,55 @@ def render_owner_push_urgent(
             original_text,
         ]
     )
+
+
+# ---- STAGE D: FAQ answers -------------------------------------------------
+# Tier-1 renderers read tenant config values (passed in by the composer's
+# loaders) so the answer text tracks the config, never a hardcoded fact.
+
+
+def render_faq_breakfast(*, breakfast_provided: bool) -> str:
+    return FAQ_BREAKFAST_PROVIDED if breakfast_provided else FAQ_BREAKFAST_NOT_PROVIDED
+
+
+def render_faq_checkout(*, check_in_after: str, checkout_before: str) -> str:
+    return (
+        f"您好,我們的入住時間為 {check_in_after} 之後,"
+        f"退房時間為 {checkout_before} 前。"
+    )
+
+
+def render_faq_pets(
+    *,
+    allowed_with_notice: bool,
+    small_dogs_only: bool,
+    fee_twd_per_pet: int,
+) -> str:
+    if not allowed_with_notice:
+        return FAQ_PETS_NOT_ALLOWED
+    scope = "(目前僅限小型犬)" if small_dogs_only else ""
+    return (
+        f"您好,我們可以接受寵物入住{scope},"
+        f"寵物清潔費每隻 NT${fee_twd_per_pet:,},入住前再麻煩先告知喔。"
+    )
+
+
+# Tier-2 / fallback renderer: lead chosen by topic, closer chosen by whether the
+# owner push succeeded (notified=True -> the truthful "已通知" close).
+def render_faq_confirm_and_defer(*, lead: str, notified: bool) -> str:
+    return lead + (FAQ_NOTIFIED_CLOSE if notified else FAQ_DEFER_CLOSE)
+
+
+def render_faq_wifi(*, notified: bool) -> str:
+    return render_faq_confirm_and_defer(lead=FAQ_WIFI_LEAD, notified=notified)
+
+
+def render_faq_parking(*, notified: bool) -> str:
+    return render_faq_confirm_and_defer(lead=FAQ_PARKING_LEAD, notified=notified)
+
+
+def render_faq_fallback(*, notified: bool) -> str:
+    return render_faq_confirm_and_defer(lead=FAQ_FALLBACK_LEAD, notified=notified)
 
 
 def render_owner_push_uncategorized(

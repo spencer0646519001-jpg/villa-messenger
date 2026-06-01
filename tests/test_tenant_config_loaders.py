@@ -15,6 +15,7 @@ from app.services.tenant_config_loaders import (
     _resolve_slug,
     make_tenant_pricing_loader,
     make_tenant_special_dates_loader,
+    make_tenant_stay_policy_loader,
 )
 
 
@@ -45,7 +46,7 @@ def _create_tenant(database_path: Path, slug: str) -> int:
     )
 
 
-def _write_config(base_dir: Path, slug: str, *, pricing=..., special_dates=...) -> None:
+def _write_config(base_dir: Path, slug: str, *, pricing=..., special_dates=..., stay_policy=...) -> None:
     config = {
         "slug": slug,
         "name": slug.title(),
@@ -57,6 +58,8 @@ def _write_config(base_dir: Path, slug: str, *, pricing=..., special_dates=...) 
         config["pricing"] = pricing
     if special_dates is not ...:
         config["special_dates"] = special_dates
+    if stay_policy is not ...:
+        config["stay_policy"] = stay_policy
     tenant_dir = base_dir / slug
     tenant_dir.mkdir(parents=True)
     (tenant_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -99,6 +102,14 @@ def test_special_dates_loader_returns_special_dates_block(database_path: Path, t
     assert load(tenant_id) == {"national_holidays": ["2026-01-01"]}
 
 
+def test_stay_policy_loader_returns_stay_policy_block(database_path: Path, tmp_path: Path) -> None:
+    tenant_id = _create_tenant(database_path, "stay-villa")
+    _write_config(tmp_path, "stay-villa", stay_policy={"breakfast_provided": False, "checkout_before": "11:00"})
+    load = make_tenant_stay_policy_loader(database_path, base_dir=tmp_path)
+
+    assert load(tenant_id) == {"breakfast_provided": False, "checkout_before": "11:00"}
+
+
 def test_missing_block_returns_empty_dict(database_path: Path, tmp_path: Path) -> None:
     tenant_id = _create_tenant(database_path, "bare-villa")
     _write_config(tmp_path, "bare-villa")  # no pricing, no special_dates
@@ -137,6 +148,16 @@ def test_loads_real_zhen123_special_dates(database_path: Path) -> None:
     assert "2026-01-01" in special["national_holidays"]
 
 
+def test_loads_real_zhen123_stay_policy(database_path: Path) -> None:
+    """Guards the FAQ tier-1 answer sources against the owner's actual config."""
+    tenant_id = _create_tenant(database_path, "zhen123-house")
+    stay_policy = make_tenant_stay_policy_loader(database_path)(tenant_id)
+
+    assert stay_policy["breakfast_provided"] is False
+    assert stay_policy["checkout_before"] == "11:00"
+    assert stay_policy["check_in_after"] == "15:00"
+
+
 # ============================================================
 # METHOD-LENGTH DISCIPLINE
 # ============================================================
@@ -155,6 +176,7 @@ def _body_line_count(func) -> int:
         _load_block,
         make_tenant_pricing_loader,
         make_tenant_special_dates_loader,
+        make_tenant_stay_policy_loader,
     ],
 )
 def test_methods_under_15_body_lines(func) -> None:

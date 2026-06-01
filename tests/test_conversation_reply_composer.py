@@ -16,10 +16,17 @@ import pytest
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_faq_breakfast,
+    render_faq_checkout,
+    render_faq_pets,
     render_over_capacity_message,
     render_quote_message,
 )
-from app.domain.reply_text import SINGLE_MISSING_GUEST_COUNT_MESSAGE
+from app.domain.reply_text import (
+    FAQ_PARKING_LEAD,
+    FAQ_WIFI_LEAD,
+    SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+)
 from app.schemas import InboundMessage
 from app.services.conversation_reply_composer import (
     ComposedReply,
@@ -31,6 +38,17 @@ _PRICING = {
         "8_people": {"weekday": 9000, "saturday": 15000, "summer_weekday": 12000,
                      "summer_saturday_or_holiday": 15000, "spring_festival": 25000},
     },
+    "pets": {
+        "allowed_with_notice": True,
+        "small_dogs_only_for_now": True,
+        "fee_twd_per_pet_per_stay": 500,
+    },
+}
+
+_STAY_POLICY = {
+    "breakfast_provided": False,
+    "check_in_after": "15:00",
+    "checkout_before": "11:00",
 }
 
 
@@ -38,13 +56,23 @@ def _composer() -> ConversationReplyComposer:
     return ConversationReplyComposer(
         tenant_pricing_loader=lambda tid: _PRICING,
         tenant_special_dates_loader=lambda tid: {},
+        tenant_stay_policy_loader=lambda tid: _STAY_POLICY,
     )
 
 
-def _message() -> InboundMessage:
+def _message(text: str = "x") -> InboundMessage:
     return InboundMessage(
         tenant_id=1, tenant_slug="t", tenant_timezone="Asia/Taipei",
-        platform="line", platform_user_id="Uguest", text="x",
+        platform="line", platform_user_id="Uguest", text=text,
+    )
+
+
+def _faq_decision() -> InquiryDecision:
+    """A faq-intent message reaches the composer as the non-inquiry push-owner
+    decision (no customer reply), carrying inquiry_intent='faq' in the log."""
+    return InquiryDecision(
+        action_type="push_to_owner_only", owner_push_text="(owner)",
+        log_payload={"inquiry_intent": "faq"}, parsed_as_inquiry=True,
     )
 
 
@@ -126,3 +154,95 @@ def test_complete_but_over_capacity_returns_capacity_reply() -> None:
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
     assert result.text == render_over_capacity_message()
     assert result.completed_state_id == 9
+
+
+# ============================================================
+# STAGE D: whitelist FAQ answering
+# ============================================================
+
+
+def test_faq_breakfast_tier1_answers_from_config_no_push() -> None:
+    result = _composer().compose(
+        message=_message("有早餐嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_breakfast(breakfast_provided=False)
+    assert result.owner_push_text is None  # tier-1 self-contained
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_faq_checkout_tier1_answers_from_config() -> None:
+    result = _composer().compose(
+        message=_message("幾點退房"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_checkout(check_in_after="15:00", checkout_before="11:00")
+    assert result.owner_push_text is None
+
+
+def test_faq_pets_tier1_answers_from_pricing_config() -> None:
+    result = _composer().compose(
+        message=_message("可以帶寵物嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_pets(
+        allowed_with_notice=True, small_dogs_only=True, fee_twd_per_pet=500
+    )
+    assert result.owner_push_text is None
+
+
+def test_faq_wifi_tier2_confirm_and_defer_sets_push_and_both_variants() -> None:
+    result = _composer().compose(
+        message=_message("有wifi嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text.startswith(FAQ_WIFI_LEAD)
+    assert "已通知服務人員" in result.text  # the notified (push-success) wording
+    assert result.push_failed_text.startswith(FAQ_WIFI_LEAD)
+    assert "已通知服務人員" not in result.push_failed_text  # softer wording
+    assert result.owner_push_text is not None  # a REAL push is requested
+    assert result.completed_state_id is None  # FAQ never completes a state
+
+
+def test_faq_parking_tier2_confirm_and_defer() -> None:
+    result = _composer().compose(
+        message=_message("有停車位嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text.startswith(FAQ_PARKING_LEAD)
+    assert result.owner_push_text is not None
+
+
+def test_non_whitelist_faq_falls_back_with_push() -> None:
+    result = _composer().compose(
+        message=_message("附近有什麼好玩的嗎"), decision=_faq_decision(), state=None
+    )
+    # non-whitelist faq -> generic fallback lead + a real owner push.
+    assert "已收到您的訊息" in result.text
+    assert result.owner_push_text is not None
+    assert result.push_failed_text is not None
+
+
+def test_faq_during_active_quote_does_not_requote_or_complete_state() -> None:
+    # A COMPLETE active state would normally quote+complete; a mid-quote FAQ
+    # question must instead get the FAQ answer and leave the state untouched.
+    state = _state(
+        id=99, checkin_date="2026-05-12", checkout_date="2026-05-13", adult_count=4
+    )
+    result = _composer().compose(
+        message=_message("有早餐嗎"), decision=_faq_decision(), state=state
+    )
+    assert result.text == render_faq_breakfast(breakfast_provided=False)
+    assert result.completed_state_id is None  # the open quote state survives
+
+
+def test_faq_silent_in_off_mode() -> None:
+    result = _composer().compose(
+        message=_message("有早餐嗎"), decision=_decision(off=True), state=None
+    )
+    assert result.text is None  # off mode stays receive-only, even for FAQ
+    assert result.owner_push_text is None
+
+
+def test_faq_does_not_override_urgent() -> None:
+    result = _composer().compose(
+        message=_message("有wifi嗎"), decision=_decision(urgent=True), state=None
+    )
+    assert result.text is None
+    assert result.owner_push_text is None

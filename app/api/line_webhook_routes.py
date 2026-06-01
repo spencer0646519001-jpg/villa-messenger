@@ -34,7 +34,7 @@ from app.adapters.line_adapter import (
 )
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
-from app.clients.line_send_client import reply_message
+from app.clients.line_send_client import push_message, reply_message
 from app.domain.inquiry_decision import InquiryDecision
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.operation_state_repository import OperationStateRepository
@@ -52,6 +52,7 @@ from app.services.operation_mode_service import OperationModeService
 from app.services.tenant_config_loaders import (
     make_tenant_pricing_loader,
     make_tenant_special_dates_loader,
+    make_tenant_stay_policy_loader,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,10 @@ _GENERIC_400_DETAIL = "Bad Request"
 # already carries. It is None in off mode / do_nothing / push-only decisions, in
 # which case we send NOTHING (receive-only behavior is preserved).
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
+# STAGE D: the owner's LINE userId, the target of confirm-and-defer FAQ pushes.
+# Env-based for now (sandbox idiom); a TenantOwnerRepository + seeded
+# tenant_owners row is the V2 follow-up.
+_OWNER_USER_ID_ENV = "LINE_TEST_OWNER_USER_ID"
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -129,6 +134,7 @@ def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
     return ConversationReplyComposer(
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
+        tenant_stay_policy_loader=make_tenant_stay_policy_loader(database_path),
     )
 
 
@@ -160,6 +166,37 @@ def _send_reply(event: dict, text: str | None) -> None:
         reply_message(reply_token=reply_token, text=text, access_token=access_token)
     except Exception:  # noqa: BLE001 -- send must NEVER break receiving
         logger.warning("LINE reply send failed", exc_info=True)
+
+
+def _send_owner_push(text: str) -> bool:
+    """Best-effort owner push (STAGE D). Returns True ONLY if LINE accepted the
+    push -- the route uses that to keep "已通知" truthful. Same isolation as
+    _send_reply: any failure (no owner id / no token / API / network) is logged
+    and swallowed, never breaking the customer reply or the 200."""
+    owner_user_id = os.environ.get(_OWNER_USER_ID_ENV)
+    access_token = os.environ.get(_ACCESS_TOKEN_ENV)
+    if not owner_user_id or not access_token:
+        logger.warning("LINE owner push skipped: owner id or access token not set")
+        return False
+    try:
+        push_message(to_user_id=owner_user_id, text=text, access_token=access_token)
+        return True
+    except Exception:  # noqa: BLE001 -- owner push must NEVER break the customer reply
+        logger.warning("LINE owner push send failed", exc_info=True)
+        return False
+
+
+def _resolve_customer_text(composed: ComposedReply) -> str | None:
+    """Push-first truthfulness seam: when the composer asked for an owner push,
+    deliver it FIRST and only keep the "已通知" wording if it actually went
+    out; on push failure fall back to the softer non-asserting wording. The
+    composer stays I/O-free -- it DESCRIBES both variants, the route DELIVERS."""
+    if composed.owner_push_text is None:
+        return composed.text
+    pushed = _send_owner_push(composed.owner_push_text)
+    if not pushed and composed.push_failed_text is not None:
+        return composed.push_failed_text
+    return composed.text
 
 
 def _record_state(
@@ -221,7 +258,8 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
         persistence.persist(decision=decision)
         state = _record_state(state_service, message, decision)
         composed = _compose_reply(composer, message, decision, state)
-        _send_reply(event, composed.text)
+        customer_text = _resolve_customer_text(composed)
+        _send_reply(event, customer_text)
         _mark_if_complete(state_service, composed)
 
 

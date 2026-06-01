@@ -72,6 +72,25 @@ OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = (
     "系統無法驗證日期可用性,已照常報價,請人工確認空房:"
 )
 
+# ---- STAGE D: FAQ answers ------------------------------------------------
+# Tier-1 (config-driven, self-contained -- NO "已通知" line; nothing is pushed).
+FAQ_BREAKFAST_PROVIDED: Final = "您好,我們有提供早餐喔。"
+FAQ_BREAKFAST_NOT_PROVIDED: Final = (
+    "您好,我們沒有提供早餐喔,需請您自行準備或外出用餐。"
+)
+FAQ_PETS_NOT_ALLOWED: Final = "您好,不好意思,我們目前暫不接受寵物入住喔。"
+
+# Tier-2 (wifi/parking) + non-whitelist faq fallback = confirm-and-defer.
+# The lead is topic-specific; the closer depends on whether the owner push
+# ACTUALLY succeeded. NOTIFIED claims "已通知服務人員" (truthful only after a
+# successful push); DEFER is the softer non-asserting line used on push failure.
+FAQ_NOTIFIED_CLOSE: Final = "細節已通知服務人員,稍後會有專人與您對接。"
+FAQ_DEFER_CLOSE: Final = "這部分我們會再請服務人員與您聯繫。"
+
+FAQ_WIFI_LEAD: Final = "您好,我們有提供 WiFi,"
+FAQ_PARKING_LEAD: Final = "您好,我們有提供停車空間,"
+FAQ_FALLBACK_LEAD: Final = "您好,已收到您的訊息,"
+
 WEEKDAY_ZH: Final = ["一", "二", "三", "四", "五", "六", "日"]
 
 PRICE_TYPE_LABEL: Final = {

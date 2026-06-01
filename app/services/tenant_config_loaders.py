@@ -42,3 +42,9 @@ def make_tenant_special_dates_loader(database_path: str | Path, base_dir: str | 
     def load(tenant_id: int) -> dict:
         return _load_block(database_path, tenant_id, "special_dates", base_dir)
     return load
+
+
+def make_tenant_stay_policy_loader(database_path: str | Path, base_dir: str | Path = "data/tenants") -> Callable[[int], dict]:
+    def load(tenant_id: int) -> dict:
+        return _load_block(database_path, tenant_id, "stay_policy", base_dir)
+    return load
