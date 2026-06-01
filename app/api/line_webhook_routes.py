@@ -52,10 +52,9 @@ router = APIRouter()
 
 _GENERIC_400_DETAIL = "Bad Request"
 
-# Stage 1 (proof-of-send): every inbound text event gets ONE hardcoded reply,
-# unconditionally (no operation-mode gate -- intentional for the proof). Stage 2
-# will replace this with the field-composed reply text from the decision.
-_STAGE1_REPLY_TEXT = "收到您的訊息,測試回覆 ✅"
+# Stage 2: the reply text is the field-composed customer_reply_text the decision
+# already carries. It is None in off mode / do_nothing / push-only decisions, in
+# which case we send NOTHING (receive-only behavior is preserved).
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 
 
@@ -118,11 +117,13 @@ def _build_inquiry_service(database_path: str) -> InquiryService:
     )
 
 
-def _send_stage1_reply(event: dict) -> None:
-    """Best-effort Stage 1 proof-of-send. Fully isolated from receiving: any
-    failure (missing replyToken, missing token, LINE API error, network error,
-    timeout) is logged at WARNING and swallowed so persistence is untouched and
-    the webhook still returns 200."""
+def _send_reply(event: dict, text: str | None) -> None:
+    """Best-effort outbound reply. Fully isolated from receiving: any failure
+    (no reply text, missing replyToken, missing token, LINE API error, network
+    error, timeout) is logged at WARNING and swallowed so persistence is
+    untouched and the webhook still returns 200."""
+    if not text:
+        return  # off mode / do_nothing / push-only -> send NOTHING
     reply_token = event.get("replyToken")
     if not reply_token:
         logger.warning("LINE reply skipped: event has no replyToken")
@@ -132,7 +133,7 @@ def _send_stage1_reply(event: dict) -> None:
         logger.warning("LINE reply skipped: %s not set", _ACCESS_TOKEN_ENV)
         return
     try:
-        reply_message(reply_token=reply_token, text=_STAGE1_REPLY_TEXT, access_token=access_token)
+        reply_message(reply_token=reply_token, text=text, access_token=access_token)
     except Exception:  # noqa: BLE001 -- send must NEVER break receiving
         logger.warning("LINE reply send failed", exc_info=True)
 
@@ -147,8 +148,9 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
             tenant_slug=tenant["slug"],
             tenant_timezone=tenant["timezone"],
         )
-        persistence.persist(decision=service.handle_message(message=message))
-        _send_stage1_reply(event)
+        decision = service.handle_message(message=message)
+        persistence.persist(decision=decision)
+        _send_reply(event, decision.customer_reply_text)
 
 
 @router.post("/webhooks/line")

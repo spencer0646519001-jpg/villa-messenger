@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
+from app.domain.reply_text import SINGLE_MISSING_GUEST_COUNT_MESSAGE
 from app.main import app
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.sqlite import get_connection, init_db
@@ -228,15 +229,22 @@ def test_all_400_bodies_are_byte_identical(client: TestClient, database_path: Pa
 
 
 # ============================================================
-# STAGE 1: outbound proof-of-send (hardcoded reply)
+# STAGE 2: outbound reply = decision.customer_reply_text
+#
+# The reply is the field-composed text the decision already carries. It is sent
+# ONLY when present (on-mode inquiries that produce a customer reply); off mode /
+# do_nothing / push-only decisions carry None and send NOTHING.
 #
 # The send is best-effort and MUST NOT affect receiving: a failed/skipped send
 # still returns 200 and still persists. reply_message is patched so no test
-# touches the network.
+# touches the network. _MISSING_INFO_TEXT is the message used to elicit a
+# deterministic, config-independent customer reply.
 # ============================================================
 
 
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
+# Full dates + price intent, guest count missing -> single missing-info template.
+_MISSING_INFO_TEXT = "5/12 入住 5/14 退房 多少錢?"
 
 
 def _text_event_with_reply_token(text: str, reply_token: str = "rtok-123") -> dict:
@@ -245,14 +253,15 @@ def _text_event_with_reply_token(text: str, reply_token: str = "rtok-123") -> di
     return event
 
 
-def test_send_invoked_with_token_and_hardcoded_text(
+def test_send_invoked_with_token_and_composed_reply_text(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_channel(database_path)
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
     monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
     calls: list[dict] = []
     monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
-    body = _payload_bytes([_text_event_with_reply_token("hi")])
+    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
 
     response = _post(client, body, _sign(body))
 
@@ -260,21 +269,45 @@ def test_send_invoked_with_token_and_hardcoded_text(
     assert len(calls) == 1
     assert calls[0]["reply_token"] == "rtok-123"
     assert calls[0]["access_token"] == "tok-abc"
-    assert calls[0]["text"] == line_webhook_routes._STAGE1_REPLY_TEXT
+    # Exact composed reply, not a hardcoded string.
+    assert calls[0]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
     assert len(_rows(database_path, "messages")) == 1  # receiving unaffected
+
+
+def test_off_mode_sends_nothing_still_200_and_persisted(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Explicitly force OFF (clock-independent) so customer_reply_text is None.
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    calls: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
+    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
+
+    response = _post(client, body, _sign(body))
+
+    # Off mode -> no outbound, but receiving + persistence + ack are unchanged.
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert calls == []
+    assert len(_rows(database_path, "messages")) == 1
 
 
 def test_send_failure_swallowed_still_200_and_persisted(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_channel(database_path)
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
     monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
 
     def _boom(**_kw: object) -> None:
         raise httpx.ConnectError("network down")
 
     monkeypatch.setattr(line_webhook_routes, "reply_message", _boom)
-    body = _payload_bytes([_text_event_with_reply_token("hi")])
+    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
 
     response = _post(client, body, _sign(body))
 
@@ -287,11 +320,12 @@ def test_send_failure_swallowed_still_200_and_persisted(
 def test_missing_reply_token_skips_send_still_200(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_channel(database_path)
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
     monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
     calls: list[dict] = []
     monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
-    body = _payload_bytes([_text_event("hi")])  # no replyToken
+    body = _payload_bytes([_text_event(_MISSING_INFO_TEXT)])  # no replyToken
 
     response = _post(client, body, _sign(body))
 
@@ -303,11 +337,12 @@ def test_missing_reply_token_skips_send_still_200(
 def test_missing_access_token_env_skips_send_still_200(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _seed_channel(database_path)
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
     monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)
     calls: list[dict] = []
     monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
-    body = _payload_bytes([_text_event_with_reply_token("hi")])
+    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
 
     response = _post(client, body, _sign(body))
 
