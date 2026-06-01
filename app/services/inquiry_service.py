@@ -160,7 +160,7 @@ class InquiryService:
         push_text = render_owner_push_urgent(
             original_text=message.text,
             matched_keywords=urgency.matched_keywords,
-            contact_display=(message.customer_display_name or message.platform_user_id),
+            display_name=message.customer_display_name,
         )
         # "unknown" is intentional: test invariant forbids calling is_system_active
         # on the urgent path (it has side effects). Future option: add a side-
@@ -202,10 +202,10 @@ class InquiryService:
         message: InboundMessage,
         inquiry: InquiryParseResult,
     ) -> InquiryDecision:
-        contact = message.customer_display_name or message.platform_user_id
         push_text = render_owner_push_uncategorized(
             original_text=message.text,
-            contact_display=contact,
+            display_name=message.customer_display_name,
+            customer_was_replied=False,  # non-inquiry sends NO customer reply
         )
         log = self._build_base_log_payload(
             message,

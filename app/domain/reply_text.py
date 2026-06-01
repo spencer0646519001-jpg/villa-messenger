@@ -66,8 +66,21 @@ SINGLE_MISSING_PET_COUNT_MESSAGE: Final = (
 )
 
 OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "系統判定為客滿,請確認:"
-OWNER_PUSH_URGENT_PREFIX: Final = "【緊急】客人訊息:"
-OWNER_PUSH_UNCATEGORIZED_PREFIX: Final = "非詢價訊息,待處理:"
+# Friendly owner-notification format (no-name baseline, PR: owner-push rewrite).
+# The header opens the push; the customer's name is OPTIONAL (rendered only when
+# a display name is available -- we deliberately NEVER print the raw U... userId).
+OWNER_PUSH_UNCATEGORIZED_PREFIX: Final = "📩 有客人訊息待回覆"
+OWNER_PUSH_URGENT_PREFIX: Final = "📩【緊急】有客人訊息待回覆"
+OWNER_PUSH_CUSTOMER_PREFIX: Final = "客人:"
+OWNER_PUSH_QUESTION_PREFIX: Final = "客人問:"
+OWNER_PUSH_URGENT_KEYWORDS_PREFIX: Final = "觸發關鍵字:"
+# Closes must reflect what actually happened (project "claims must be true"
+# standard). DEFER_CLOSE is ONLY truthful when the system replied to the customer
+# (the FAQ confirm-and-defer path). When no auto-reply went out -- plain
+# non-inquiry and urgent -- use a non-asserting close that calls the owner to act.
+OWNER_PUSH_DEFER_CLOSE: Final = "(系統已回覆客人會請專人對接)"
+OWNER_PUSH_UNREPLIED_CLOSE: Final = "(尚未回覆客人,請您接手)"
+OWNER_PUSH_URGENT_CLOSE: Final = "(請盡快人工回覆)"
 OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = (
     "系統無法驗證日期可用性,已照常報價,請人工確認空房:"
 )

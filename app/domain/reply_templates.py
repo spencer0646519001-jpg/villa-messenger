@@ -22,8 +22,14 @@ from app.domain.reply_text import (
     MISSING_PET_COUNT_LINE,
     OVER_CAPACITY_MESSAGE,
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
+    OWNER_PUSH_CUSTOMER_PREFIX,
+    OWNER_PUSH_DEFER_CLOSE,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
+    OWNER_PUSH_QUESTION_PREFIX,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
+    OWNER_PUSH_UNREPLIED_CLOSE,
+    OWNER_PUSH_URGENT_CLOSE,
+    OWNER_PUSH_URGENT_KEYWORDS_PREFIX,
     OWNER_PUSH_URGENT_PREFIX,
     PETS_CONFIRMATION,
     PRICE_TYPE_LABEL,
@@ -192,17 +198,22 @@ def render_owner_push_urgent(
     *,
     original_text: str,
     matched_keywords: list[str],
-    contact_display: str,
+    display_name: str | None = None,
 ) -> str:
-    return "\n".join(
-        [
-            OWNER_PUSH_URGENT_PREFIX,
-            f"來自:{contact_display}",
-            f"觸發關鍵字:{', '.join(matched_keywords)}",
-            "原文:",
-            original_text,
-        ]
-    )
+    """Friendly, id-free urgent owner push. `display_name` is OPTIONAL and
+    forward-compat: when provided, a 客人:{name} line is shown; when None
+    (today's only case -- the adapter does not fetch profiles) it is omitted
+    and the raw userId is NEVER printed. Keeps the 【緊急】 marker + trigger
+    keywords so the owner can tell urgency apart, and an act-now close (the
+    urgent path sends no auto-reply, so it must not claim one)."""
+    lines = [OWNER_PUSH_URGENT_PREFIX]
+    if display_name:
+        lines.append(f"{OWNER_PUSH_CUSTOMER_PREFIX}{display_name}")
+    lines.append(f"{OWNER_PUSH_QUESTION_PREFIX}{original_text}")
+    if matched_keywords:
+        lines.append(f"{OWNER_PUSH_URGENT_KEYWORDS_PREFIX}{', '.join(matched_keywords)}")
+    lines.append(OWNER_PUSH_URGENT_CLOSE)
+    return "\n".join(lines)
 
 
 # ---- STAGE D: FAQ answers -------------------------------------------------
@@ -257,13 +268,22 @@ def render_faq_fallback(*, notified: bool) -> str:
 def render_owner_push_uncategorized(
     *,
     original_text: str,
-    contact_display: str,
+    display_name: str | None = None,
+    customer_was_replied: bool = False,
 ) -> str:
-    return "\n".join(
-        [
-            OWNER_PUSH_UNCATEGORIZED_PREFIX,
-            f"來自:{contact_display}",
-            "原文:",
-            original_text,
-        ]
-    )
+    """Friendly, id-free owner push for non-inquiry / faq-defer / fallback.
+    `display_name` is OPTIONAL and forward-compat: when provided, a 客人:{name}
+    line is shown; when None (today's only case -- the adapter does not fetch
+    profiles) it is omitted and the raw userId is NEVER printed.
+
+    `customer_was_replied` picks the close so it stays TRUE: the faq
+    confirm-and-defer path DID reply to the customer (-> "系統已回覆…"); the
+    plain non-inquiry path did NOT (-> non-asserting "尚未回覆…請您接手").
+    Defaults to False -- the safe, non-asserting close -- so a caller that
+    forgets can never falsely claim a reply."""
+    lines = [OWNER_PUSH_UNCATEGORIZED_PREFIX]
+    if display_name:
+        lines.append(f"{OWNER_PUSH_CUSTOMER_PREFIX}{display_name}")
+    lines.append(f"{OWNER_PUSH_QUESTION_PREFIX}{original_text}")
+    lines.append(OWNER_PUSH_DEFER_CLOSE if customer_was_replied else OWNER_PUSH_UNREPLIED_CLOSE)
+    return "\n".join(lines)

@@ -203,6 +203,43 @@ def test_non_inquiry_on_mode_pushes_owner() -> None:
     assert OWNER_PUSH_UNCATEGORIZED_PREFIX in decision.owner_push_text
 
 
+def test_non_inquiry_owner_push_never_leaks_raw_userid() -> None:
+    # KEY regression guard: with no display name (production reality -- the
+    # adapter does not fetch profiles), the owner push must use the friendly
+    # no-name format and NEVER print the raw U... userId.
+    service, _ = _build_service(system_on=True)
+    user_id = "Udd1dffaa94e003982bcb9e011655d4de"
+
+    decision = service.handle_message(
+        message=_build_message(
+            "今天天氣不錯", platform_user_id=user_id, customer_display_name=None
+        )
+    )
+
+    assert user_id not in decision.owner_push_text
+    assert "客人:" not in decision.owner_push_text  # no name -> no customer line
+    assert "客人問:今天天氣不錯" in decision.owner_push_text
+    # Truthfulness: non-inquiry sends NO customer reply, so the push must not
+    # claim one -- it uses the non-asserting hand-off close.
+    assert "系統已回覆" not in decision.owner_push_text
+    assert "尚未回覆客人,請您接手" in decision.owner_push_text
+
+
+def test_urgent_owner_push_never_leaks_raw_userid() -> None:
+    # Same regression guard for the urgent path.
+    service, _ = _build_service(system_on=True)
+    user_id = "Udd1dffaa94e003982bcb9e011655d4de"
+
+    decision = service.handle_message(
+        message=_build_message(
+            "火災!", platform_user_id=user_id, customer_display_name=None
+        )
+    )
+
+    assert user_id not in decision.owner_push_text
+    assert "【緊急】" in decision.owner_push_text  # urgency marker preserved
+
+
 def test_non_inquiry_log_payload_records_intent() -> None:
     text = "今天天氣不錯"
     expected_intent = parse_inquiry(text).intent.inquiry_type

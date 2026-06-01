@@ -219,6 +219,24 @@ def test_non_whitelist_faq_falls_back_with_push() -> None:
     assert result.push_failed_text is not None
 
 
+def test_faq_owner_push_is_friendly_and_never_leaks_raw_userid() -> None:
+    # KEY regression guard: _message uses platform_user_id="Uguest" with no
+    # display name; the faq owner push must use the friendly no-name format and
+    # NEVER print the raw userId.
+    result = _composer().compose(
+        message=_message("附近有什麼好玩的嗎"), decision=_faq_decision(), state=None
+    )
+
+    assert "📩 有客人訊息待回覆" in result.owner_push_text
+    assert "客人問:附近有什麼好玩的嗎" in result.owner_push_text
+    assert "Uguest" not in result.owner_push_text
+    assert "客人:" not in result.owner_push_text  # no name -> no customer line
+    # Truthfulness: the confirm-and-defer reply DID go out to the customer, so
+    # this push truthfully claims "系統已回覆…" (NOT the non-asserting close).
+    assert "系統已回覆客人會請專人對接" in result.owner_push_text
+    assert "尚未回覆客人" not in result.owner_push_text
+
+
 def test_faq_during_active_quote_does_not_requote_or_complete_state() -> None:
     # A COMPLETE active state would normally quote+complete; a mid-quote FAQ
     # question must instead get the FAQ answer and leave the state untouched.

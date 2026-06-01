@@ -438,28 +438,91 @@ def test_render_owner_push_availability_unverified() -> None:
     assert "退房:2026/05/14(四)" in out
 
 
-def test_render_owner_push_urgent() -> None:
+def test_render_owner_push_urgent_no_name_is_friendly_and_id_free() -> None:
+    # No display name (today's only case): friendly 📩 urgent format, the
+    # question text, trigger keywords, and NO contact line / NO raw id.
     out = render_owner_push_urgent(
         original_text="廚房水龍頭沒水了怎麼辦",
         matched_keywords=["沒水", "漏水"],
-        contact_display="王小姐",
     )
 
     assert OWNER_PUSH_URGENT_PREFIX in out
-    assert "來自:王小姐" in out
+    assert "【緊急】" in out  # urgency marker preserved
+    assert "客人問:廚房水龍頭沒水了怎麼辦" in out
     assert "沒水, 漏水" in out
-    assert "廚房水龍頭沒水了怎麼辦" in out
+    assert "來自:" not in out  # old id-printing format is gone
+    assert "客人:" not in out  # no name -> customer line omitted
 
 
-def test_render_owner_push_uncategorized() -> None:
+def test_render_owner_push_urgent_with_name_shows_customer_line() -> None:
+    out = render_owner_push_urgent(
+        original_text="廚房水龍頭沒水了怎麼辦",
+        matched_keywords=["沒水"],
+        display_name="王小姐",
+    )
+
+    assert "客人:王小姐" in out
+    assert "客人問:廚房水龍頭沒水了怎麼辦" in out
+
+
+def test_render_owner_push_urgent_never_prints_userid() -> None:
+    # KEY regression guard: a raw LINE userId must NEVER appear in an owner push.
+    user_id = "Udd1dffaa94e003982bcb9e011655d4de"
+    out = render_owner_push_urgent(
+        original_text="火災", matched_keywords=["火災"], display_name=None
+    )
+
+    assert user_id not in out
+
+
+def test_render_owner_push_uncategorized_no_name_is_friendly_and_id_free() -> None:
     out = render_owner_push_uncategorized(
         original_text="請問早餐幾點開始供應?",
-        contact_display="王小姐",
     )
 
     assert OWNER_PUSH_UNCATEGORIZED_PREFIX in out
-    assert "來自:王小姐" in out
-    assert "請問早餐幾點開始供應?" in out
+    assert "📩 有客人訊息待回覆" in out
+    assert "客人問:請問早餐幾點開始供應?" in out
+    assert "來自:" not in out  # old id-printing format is gone
+    assert "客人:" not in out  # no name -> customer line omitted
+
+
+def test_render_owner_push_uncategorized_unreplied_close_does_not_claim_reply() -> None:
+    # Default / non-inquiry path: NO customer reply was sent, so the close must
+    # NOT claim "系統已回覆" -- it must be the non-asserting hand-off close.
+    out = render_owner_push_uncategorized(original_text="今天天氣不錯")
+
+    assert "尚未回覆客人,請您接手" in out
+    assert "系統已回覆" not in out  # truthfulness: no false reply claim
+
+
+def test_render_owner_push_uncategorized_replied_close_claims_reply() -> None:
+    # FAQ confirm-and-defer path: the system DID reply, so the truthful
+    # "系統已回覆…" close is used.
+    out = render_owner_push_uncategorized(
+        original_text="有wifi嗎", customer_was_replied=True
+    )
+
+    assert "系統已回覆客人會請專人對接" in out
+    assert "尚未回覆客人" not in out
+
+
+def test_render_owner_push_uncategorized_with_name_shows_customer_line() -> None:
+    out = render_owner_push_uncategorized(
+        original_text="請問早餐幾點開始供應?",
+        display_name="王小姐",
+    )
+
+    assert "客人:王小姐" in out
+    assert "客人問:請問早餐幾點開始供應?" in out
+
+
+def test_render_owner_push_uncategorized_never_prints_userid() -> None:
+    # KEY regression guard: a raw LINE userId must NEVER appear in an owner push.
+    user_id = "Udd1dffaa94e003982bcb9e011655d4de"
+    out = render_owner_push_uncategorized(original_text="今天天氣不錯")
+
+    assert user_id not in out
 
 
 # --- Sanity / safety ---

@@ -113,12 +113,13 @@ class ConversationReplyComposer:
         if faq is not None and faq.tier == 1:
             return ComposedReply(text=self._tier1_answer(message.tenant_id, faq.topic))
         lead = _defer_lead(faq)
-        contact = message.customer_display_name or message.platform_user_id
         return ComposedReply(
             text=render_faq_confirm_and_defer(lead=lead, notified=True),
             push_failed_text=render_faq_confirm_and_defer(lead=lead, notified=False),
             owner_push_text=render_owner_push_uncategorized(
-                original_text=message.text, contact_display=contact
+                original_text=message.text,
+                display_name=message.customer_display_name,
+                customer_was_replied=True,  # the confirm-and-defer reply DID go out
             ),
         )
 
