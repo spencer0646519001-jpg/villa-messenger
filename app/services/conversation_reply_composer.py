@@ -36,6 +36,7 @@ from app.domain.reply_templates import (
     render_faq_parking,
     render_faq_pets,
     render_faq_wifi,
+    render_faq_whole_house,
     render_invalid_date_message,
     render_missing_info_message,
     render_over_capacity_message,
@@ -157,6 +158,8 @@ class ConversationReplyComposer:
                 available=bool(sp.get("parking_available")),
                 free=bool(sp.get("parking_free")),
             )
+        if topic == "whole_house":
+            return render_faq_whole_house()
         raise ValueError(f"unhandled tier-1 FAQ topic: {topic!r}")
 
     def _missing_for_state(self, state: dict) -> list[str]:

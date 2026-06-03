@@ -107,6 +107,11 @@ FAQ_PARKING_NOT_AVAILABLE: Final = "您好,不好意思,我們目前沒有提供
 FAQ_NOTIFIED_CLOSE: Final = "細節已通知服務人員,稍後會有專人與您對接。"
 FAQ_DEFER_CLOSE: Final = "這部分我們會再請服務人員與您聯繫。"
 
+FAQ_WHOLE_HOUSE: Final = (
+    "您好,枕123是一次只接待一組客人的包棟民宿,"
+    "整棟為您和親友獨享,適合放鬆、聚會的假期。"
+)
+
 FAQ_FALLBACK_LEAD: Final = "您好,已收到您的訊息,"
 
 WEEKDAY_ZH: Final = ["一", "二", "三", "四", "五", "六", "日"]

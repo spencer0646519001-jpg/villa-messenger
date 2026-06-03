@@ -52,6 +52,14 @@ def test_parking_is_tier1(text: str) -> None:
     assert match.tier == 1
 
 
+@pytest.mark.parametrize("text", ["是包棟嗎", "可以包棟嗎", "整棟租嗎"])
+def test_whole_house_is_tier1(text: str) -> None:
+    match = match_faq(text)
+    assert match is not None
+    assert match.topic == "whole_house"
+    assert match.tier == 1
+
+
 # ---- non-whitelist + collision guard --------------------------------------
 
 

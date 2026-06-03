@@ -11,6 +11,7 @@ from app.domain.reply_text import (
     FAQ_PARKING_AVAILABLE,
     FAQ_PARKING_AVAILABLE_FREE,
     FAQ_PARKING_NOT_AVAILABLE,
+    FAQ_WHOLE_HOUSE,
     FAQ_PETS_NOT_ALLOWED,
     FAQ_WIFI_NOT_PROVIDED,
     FAQ_WIFI_PROVIDED,
@@ -267,6 +268,10 @@ def render_faq_parking(*, available: bool, free: bool) -> str:
     if not available:
         return FAQ_PARKING_NOT_AVAILABLE
     return FAQ_PARKING_AVAILABLE_FREE if free else FAQ_PARKING_AVAILABLE
+
+
+def render_faq_whole_house() -> str:
+    return FAQ_WHOLE_HOUSE
 
 
 def render_faq_fallback(*, notified: bool) -> str:

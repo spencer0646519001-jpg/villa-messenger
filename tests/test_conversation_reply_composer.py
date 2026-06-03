@@ -21,6 +21,7 @@ from app.domain.reply_templates import (
     render_faq_parking,
     render_faq_pets,
     render_faq_wifi,
+    render_faq_whole_house,
     render_over_capacity_message,
     render_quote_message,
 )
@@ -402,3 +403,43 @@ def test_regression_faq_fallback_no_topic_still_works() -> None:
     )
     assert "已收到您的訊息" in result.text
     assert result.owner_push_text is not None
+
+
+# ============================================================
+# M2.2a: whole_house tier-1 FAQ
+# ============================================================
+
+
+def test_faq_whole_house_tier1_answers_with_no_push() -> None:
+    """'是包棟嗎' hits whole_house tier-1 → fixed sentence, no owner push."""
+    result = _composer().compose(
+        message=_message("是包棟嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_whole_house()
+    assert "枕123" in result.text
+    assert "包棟" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_faq_whole_house_keyword_zheng_dong() -> None:
+    """'整棟租嗎' 也命中 whole_house tier-1。"""
+    result = _composer().compose(
+        message=_message("整棟租嗎"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_whole_house()
+    assert result.owner_push_text is None
+
+
+def test_regression_whole_house_price_inquiry_not_hijacked() -> None:
+    """⚠️ 決策F 回歸:「包棟多少錢」是 price intent,whole_house ∉ NON_PRICEABLE
+    → composer 不劫持,沿用 per-message price reply。"""
+    result = _composer().compose(
+        message=_message("包棟多少錢"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text == "PER_MESSAGE_PRICE_REPLY"
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
