@@ -16,10 +16,13 @@ import pytest
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_faq_amenities,
     render_faq_breakfast,
     render_faq_checkout,
+    render_faq_location,
     render_faq_parking,
     render_faq_pets,
+    render_faq_room_type,
     render_faq_wifi,
     render_faq_whole_house,
     render_over_capacity_message,
@@ -33,6 +36,10 @@ from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
 )
+
+_AMENITIES = {"items": ["不限時 KTV", "Switch、電動麻將"]}
+_ROOM_POLICY_FAKE = {"description": "3層樓電梯別墅,共4間房。"}
+_LOCATION_FAKE = {"address": "宜蘭縣員山鄉枕山十二路123號"}
 
 _PRICING = {
     "base_prices_per_night": {
@@ -62,6 +69,9 @@ def _composer() -> ConversationReplyComposer:
         tenant_pricing_loader=lambda tid: _PRICING,
         tenant_special_dates_loader=lambda tid: {},
         tenant_stay_policy_loader=lambda tid: _STAY_POLICY,
+        tenant_amenities_loader=lambda tid: _AMENITIES,
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY_FAKE,
+        tenant_location_loader=lambda tid: _LOCATION_FAKE,
     )
 
 
@@ -443,3 +453,169 @@ def test_regression_whole_house_price_inquiry_not_hijacked() -> None:
     assert result.text == "PER_MESSAGE_PRICE_REPLY"
     assert result.owner_push_text is None
     assert result.completed_state_id is None
+
+
+# ============================================================
+# M2.2b: 設備 / 房型 / 位置 三主題 tier-1
+# ============================================================
+
+
+def test_faq_amenities_tier1_answers_with_bullet_list() -> None:
+    result = _composer().compose(
+        message=_message("有什麼設備"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_amenities(items=_AMENITIES["items"])
+    assert "枕123 提供的設備:" in result.text
+    assert "・不限時 KTV" in result.text
+    assert "・Switch、電動麻將" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_faq_amenities_keyword_she_shi() -> None:
+    result = _composer().compose(
+        message=_message("有哪些設施"), decision=_faq_decision(), state=None
+    )
+    assert "枕123 提供的設備:" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_room_type_tier1_answers_with_description() -> None:
+    result = _composer().compose(
+        message=_message("有什麼房型"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_room_type(description=_ROOM_POLICY_FAKE["description"])
+    assert "3層樓電梯別墅" in result.text
+    assert "4間房" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_faq_room_type_keyword_lou_ceng() -> None:
+    result = _composer().compose(
+        message=_message("有幾個樓層"), decision=_faq_decision(), state=None
+    )
+    assert "3層樓電梯別墅" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_room_type_keyword_ji_jian_fang() -> None:
+    result = _composer().compose(
+        message=_message("有幾間房"), decision=_faq_decision(), state=None
+    )
+    assert "4間房" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_room_type_keyword_ji_ren_fang() -> None:
+    result = _composer().compose(
+        message=_message("幾人房"), decision=_faq_decision(), state=None
+    )
+    assert "3層樓電梯別墅" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_location_tier1_answers_with_full_address() -> None:
+    result = _composer().compose(
+        message=_message("地址是什麼"), decision=_faq_decision(), state=None
+    )
+    assert result.text == render_faq_location(address=_LOCATION_FAKE["address"])
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert "枕123 位於" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_faq_location_keyword_wei_zhi() -> None:
+    result = _composer().compose(
+        message=_message("民宿位置"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_location_keyword_zen_me_qu() -> None:
+    result = _composer().compose(
+        message=_message("怎麼去"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_location_keyword_di_dian() -> None:
+    result = _composer().compose(
+        message=_message("地點在哪"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_amenities_empty_items_returns_safe_fallback() -> None:
+    composer = ConversationReplyComposer(
+        tenant_pricing_loader=lambda tid: _PRICING,
+        tenant_special_dates_loader=lambda tid: {},
+        tenant_stay_policy_loader=lambda tid: _STAY_POLICY,
+        tenant_amenities_loader=lambda tid: {"items": []},
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY_FAKE,
+        tenant_location_loader=lambda tid: _LOCATION_FAKE,
+    )
+    result = composer.compose(
+        message=_message("有什麼設備"), decision=_faq_decision(), state=None
+    )
+    assert result.text is not None
+    assert "None" not in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_room_type_none_description_returns_safe_fallback() -> None:
+    composer = ConversationReplyComposer(
+        tenant_pricing_loader=lambda tid: _PRICING,
+        tenant_special_dates_loader=lambda tid: {},
+        tenant_stay_policy_loader=lambda tid: _STAY_POLICY,
+        tenant_amenities_loader=lambda tid: _AMENITIES,
+        tenant_room_policy_loader=lambda tid: {},
+        tenant_location_loader=lambda tid: _LOCATION_FAKE,
+    )
+    result = composer.compose(
+        message=_message("房型"), decision=_faq_decision(), state=None
+    )
+    assert result.text is not None
+    assert "None" not in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_location_none_address_returns_safe_fallback() -> None:
+    composer = ConversationReplyComposer(
+        tenant_pricing_loader=lambda tid: _PRICING,
+        tenant_special_dates_loader=lambda tid: {},
+        tenant_stay_policy_loader=lambda tid: _STAY_POLICY,
+        tenant_amenities_loader=lambda tid: _AMENITIES,
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY_FAKE,
+        tenant_location_loader=lambda tid: {},
+    )
+    result = composer.compose(
+        message=_message("地址"), decision=_faq_decision(), state=None
+    )
+    assert result.text is not None
+    assert "None" not in result.text
+    assert result.owner_push_text is None
+
+
+def test_regression_raise_guard_still_fires_for_unknown_topic_after_new_branches() -> None:
+    with pytest.raises(ValueError, match="unhandled tier-1 FAQ topic"):
+        _composer()._tier1_answer(1, "totally_unknown_topic")
+
+
+def test_regression_new_topics_not_in_non_priceable_price_intent_not_hijacked() -> None:
+    """設備/房型/位置 ∉ NON_PRICEABLE → price intent 不被劫持。"""
+    for text in ("設備多少錢", "房型多少錢", "地址多少錢"):
+        result = _composer().compose(
+            message=_message(text),
+            decision=_price_intent_decision(),
+            state=None,
+        )
+        assert result.text == "PER_MESSAGE_PRICE_REPLY", f"failed for: {text!r}"
+        assert result.owner_push_text is None

@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-FaqTopic = Literal["breakfast", "checkout", "pets", "wifi", "parking", "whole_house"]
+FaqTopic = Literal["breakfast", "checkout", "pets", "wifi", "parking", "whole_house", "amenities", "room_type", "location"]
 FaqTier = Literal[1, 2]
 
 
@@ -42,6 +42,9 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("wifi", ("wifi", "wi-fi", "網路", "無線網路")),
     ("parking", ("停車", "車位", "停車場")),
     ("whole_house", ("包棟", "整棟")),
+    ("amenities", ("設備", "設施")),
+    ("room_type", ("房型", "樓層", "幾間房", "幾人房")),
+    ("location", ("地址", "位置", "怎麼去", "地點")),
 )
 
 _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()

@@ -30,11 +30,14 @@ from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_faq_amenities,
     render_faq_breakfast,
     render_faq_checkout,
     render_faq_confirm_and_defer,
+    render_faq_location,
     render_faq_parking,
     render_faq_pets,
+    render_faq_room_type,
     render_faq_wifi,
     render_faq_whole_house,
     render_invalid_date_message,
@@ -79,10 +82,16 @@ class ConversationReplyComposer:
         tenant_pricing_loader: Callable[[int], dict],
         tenant_special_dates_loader: Callable[[int], dict],
         tenant_stay_policy_loader: Callable[[int], dict],
+        tenant_amenities_loader: Callable[[int], dict],
+        tenant_room_policy_loader: Callable[[int], dict],
+        tenant_location_loader: Callable[[int], dict],
     ) -> None:
         self._pricing_loader = tenant_pricing_loader
         self._special_dates_loader = tenant_special_dates_loader
         self._stay_policy_loader = tenant_stay_policy_loader
+        self._amenities_loader = tenant_amenities_loader
+        self._room_policy_loader = tenant_room_policy_loader
+        self._location_loader = tenant_location_loader
 
     def compose(
         self,
@@ -160,6 +169,15 @@ class ConversationReplyComposer:
             )
         if topic == "whole_house":
             return render_faq_whole_house()
+        if topic == "amenities":
+            items = self._amenities_loader(tenant_id).get("items") or []
+            return render_faq_amenities(items=items)
+        if topic == "room_type":
+            description = self._room_policy_loader(tenant_id).get("description")
+            return render_faq_room_type(description=description)
+        if topic == "location":
+            address = self._location_loader(tenant_id).get("address")
+            return render_faq_location(address=address)
         raise ValueError(f"unhandled tier-1 FAQ topic: {topic!r}")
 
     def _missing_for_state(self, state: dict) -> list[str]:

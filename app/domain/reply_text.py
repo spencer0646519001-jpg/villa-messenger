@@ -112,6 +112,12 @@ FAQ_WHOLE_HOUSE: Final = (
     "整棟為您和親友獨享,適合放鬆、聚會的假期。"
 )
 
+FAQ_AMENITIES_HEADER: Final = "枕123 提供的設備:"
+FAQ_AMENITIES_EMPTY: Final = "您好,設備資訊目前尚未建立,請聯繫民宿人員確認。"
+FAQ_ROOM_TYPE_EMPTY: Final = "您好,房型資訊目前尚未建立,請聯繫民宿人員確認。"
+FAQ_LOCATION_PREFIX: Final = "枕123 位於"
+FAQ_LOCATION_EMPTY: Final = "您好,地址資訊目前尚未建立,請聯繫民宿人員確認。"
+
 FAQ_FALLBACK_LEAD: Final = "您好,已收到您的訊息,"
 
 WEEKDAY_ZH: Final = ["一", "二", "三", "四", "五", "六", "日"]

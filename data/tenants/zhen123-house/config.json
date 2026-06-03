@@ -35,8 +35,26 @@
     "automatic_towel_replacement_during_continuous_stay": false,
     "cleaning_or_towel_replacement_available_on_request": true
   },
+  "amenities": {
+    "items": [
+      "不限時 KTV",
+      "Switch、電動麻將",
+      "Tokuyo 頂級按摩椅",
+      "嬰兒澡盆、消毒鍋(需提前告知)",
+      "每房獨立衛浴",
+      "五星飯店同款床墊",
+      "微波爐、電鍋、餐具",
+      "氣炸烤箱、帕尼尼機",
+      "寵物友善",
+      "免費 WiFi、停車位"
+    ]
+  },
+  "location": {
+    "address": "宜蘭縣員山鄉枕山十二路123號"
+  },
   "room_policy": {
     "quote_scope": "whole_house_preliminary_pricing",
+    "description": "枕123是3層樓電梯別墅,共4間房。2樓2間4人房,3樓2間雙人房。",
     "total_rooms": 4,
     "double_rooms": 2,
     "quad_rooms": 2,

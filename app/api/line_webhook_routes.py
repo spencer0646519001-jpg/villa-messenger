@@ -50,7 +50,10 @@ from app.services.inquiry_service import InquiryService
 from app.services.message_persistence_service import MessagePersistenceService
 from app.services.operation_mode_service import OperationModeService
 from app.services.tenant_config_loaders import (
+    make_tenant_amenities_loader,
+    make_tenant_location_loader,
     make_tenant_pricing_loader,
+    make_tenant_room_policy_loader,
     make_tenant_special_dates_loader,
     make_tenant_stay_policy_loader,
 )
@@ -135,6 +138,9 @@ def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
         tenant_stay_policy_loader=make_tenant_stay_policy_loader(database_path),
+        tenant_amenities_loader=make_tenant_amenities_loader(database_path),
+        tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
+        tenant_location_loader=make_tenant_location_loader(database_path),
     )
 
 

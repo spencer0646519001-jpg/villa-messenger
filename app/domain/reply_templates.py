@@ -3,14 +3,19 @@ from datetime import date
 from app.domain.pricing_models import PricingResult
 from app.domain.reply_text import (
     CHILDREN_CONFIRMATION,
+    FAQ_AMENITIES_EMPTY,
+    FAQ_AMENITIES_HEADER,
     FAQ_BREAKFAST_NOT_PROVIDED,
     FAQ_BREAKFAST_PROVIDED,
     FAQ_DEFER_CLOSE,
     FAQ_FALLBACK_LEAD,
+    FAQ_LOCATION_EMPTY,
+    FAQ_LOCATION_PREFIX,
     FAQ_NOTIFIED_CLOSE,
     FAQ_PARKING_AVAILABLE,
     FAQ_PARKING_AVAILABLE_FREE,
     FAQ_PARKING_NOT_AVAILABLE,
+    FAQ_ROOM_TYPE_EMPTY,
     FAQ_WHOLE_HOUSE,
     FAQ_PETS_NOT_ALLOWED,
     FAQ_WIFI_NOT_PROVIDED,
@@ -272,6 +277,25 @@ def render_faq_parking(*, available: bool, free: bool) -> str:
 
 def render_faq_whole_house() -> str:
     return FAQ_WHOLE_HOUSE
+
+
+def render_faq_amenities(*, items: list[str]) -> str:
+    if not items:
+        return FAQ_AMENITIES_EMPTY
+    bullet_lines = "\n".join(f"・{item}" for item in items)
+    return f"{FAQ_AMENITIES_HEADER}\n{bullet_lines}"
+
+
+def render_faq_room_type(*, description: str | None) -> str:
+    if not description:
+        return FAQ_ROOM_TYPE_EMPTY
+    return f"您好,{description}"
+
+
+def render_faq_location(*, address: str | None) -> str:
+    if not address:
+        return FAQ_LOCATION_EMPTY
+    return f"您好,{FAQ_LOCATION_PREFIX} {address}。"
 
 
 def render_faq_fallback(*, notified: bool) -> str:
