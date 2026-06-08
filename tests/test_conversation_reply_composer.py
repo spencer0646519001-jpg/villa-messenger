@@ -103,6 +103,19 @@ def _price_intent_decision() -> InquiryDecision:
     )
 
 
+def _non_inquiry_decision() -> InquiryDecision:
+    """Simulates InquiryService result for a message that triggers no FAQ signal
+    term (no 嗎 / no ?) — inquiry_intent='unknown', no customer reply.
+    gate2 (_is_faq) will NOT fire for this decision; gate3 is the only path
+    that can route it to a tier-1 FAQ answer."""
+    return InquiryDecision(
+        action_type="push_to_owner_only",
+        owner_push_text="(owner push)",
+        log_payload={"inquiry_intent": "unknown"},
+        parsed_as_inquiry=False,
+    )
+
+
 def _decision(*, off: bool = False, urgent: bool = False) -> InquiryDecision:
     if urgent:
         return InquiryDecision(
@@ -444,7 +457,7 @@ def test_faq_whole_house_keyword_zheng_dong() -> None:
 
 def test_regression_whole_house_price_inquiry_not_hijacked() -> None:
     """⚠️ 決策F 回歸:「包棟多少錢」是 price intent,whole_house ∉ NON_PRICEABLE
-    → composer 不劫持,沿用 per-message price reply。"""
+    → gate3 加 price 條件後不放行 → 走報價路徑,沿用 per-message price reply。"""
     result = _composer().compose(
         message=_message("包棟多少錢"),
         decision=_price_intent_decision(),
@@ -610,7 +623,8 @@ def test_regression_raise_guard_still_fires_for_unknown_topic_after_new_branches
 
 
 def test_regression_new_topics_not_in_non_priceable_price_intent_not_hijacked() -> None:
-    """設備/房型/位置 ∉ NON_PRICEABLE → price intent 不被劫持。"""
+    """⚠️ 決策F 回歸:設備/房型/位置 ∉ NON_PRICEABLE,且 gate3 排除 price intent
+    → 問價句不被劫持進 FAQ,沿用 per-message price reply。"""
     for text in ("設備多少錢", "房型多少錢", "地址多少錢"):
         result = _composer().compose(
             message=_message(text),
@@ -619,3 +633,86 @@ def test_regression_new_topics_not_in_non_priceable_price_intent_not_hijacked() 
         )
         assert result.text == "PER_MESSAGE_PRICE_REPLY", f"failed for: {text!r}"
         assert result.owner_push_text is None
+
+
+# ============================================================
+# M2.x: 無問號 tier-1 FAQ 直答 (gate3) + checkout regression
+# ============================================================
+
+
+def test_gate3_amenities_no_question_mark() -> None:
+    """「設備有哪些」has no 嗎/? → gate2 (_is_faq) would not fire, but gate3
+    (tier-1, topic≠checkout) fires → amenities answer, owner_push_text is None."""
+    result = _composer().compose(
+        message=_message("設備有哪些"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_amenities(items=_AMENITIES["items"])
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_gate3_room_type_no_question_mark() -> None:
+    """「房型樓層說明」has no 嗎/? → gate3 fires → room_type description."""
+    result = _composer().compose(
+        message=_message("房型樓層說明"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_room_type(description=_ROOM_POLICY_FAKE["description"])
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_gate3_location_no_question_mark() -> None:
+    """「地址」standalone (no 嗎/?) → gate3 fires → location address."""
+    result = _composer().compose(
+        message=_message("地址"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_location(address=_LOCATION_FAKE["address"])
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_gate3_whole_house_no_question_mark() -> None:
+    """「是包棟」(no 嗎/?) → gate3 fires → whole_house fixed sentence."""
+    result = _composer().compose(
+        message=_message("是包棟"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_whole_house()
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_regression_checkout_price_query_not_hijacked_by_gate3() -> None:
+    """⚠️ M1/M2.x regression guard: 「5/14 退房 多少錢」hits checkout tier-1
+    but gate3 EXCLUDES checkout → falls through → price path → per-message reply.
+    If this fails it means checkout was added back to gate3 and a price query
+    would silently become a checkout-time FAQ answer."""
+    result = _composer().compose(
+        message=_message("5/14 退房 多少錢"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text == "PER_MESSAGE_PRICE_REPLY"
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_regression_checkout_no_question_mark_known_limitation() -> None:
+    """「幾點退房」has no 嗎/? AND checkout is excluded from gate3.
+    KNOWN LIMITATION: customer stays silent until 'date-parsing before FAQ
+    matching' is implemented as a separate follow-up item."""
+    result = _composer().compose(
+        message=_message("幾點退房"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text is None  # silent — known limitation, not a regression
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None

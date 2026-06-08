@@ -109,6 +109,23 @@ class ConversationReplyComposer:
         faq_match = match_faq(normalize_for_parsing(message.text))
         if faq_match is not None and faq_match.topic in NON_PRICEABLE:
             return self._compose_faq(message)
+        # gate3: tier-1 FAQ match (non-checkout, non-price-intent) answers directly.
+        # Excluded cases:
+        #   checkout — "退房" collides with checkout-date slots ("5/14 退房 多少錢"
+        #              must quote, not answer checkout time); fix requires date-parsing
+        #              before FAQ matching (separate follow-up item).
+        #   price intent — 決策F: a message that carries a price keyword ("多少錢",
+        #              "費用", …) is asking for a quote; routing it to FAQ ignores the
+        #              user's real request.  inquiry_intent read from log_payload, same
+        #              as _is_faq, so the value is always present after the urgent/off
+        #              early-returns above.
+        if (
+            faq_match is not None
+            and faq_match.tier == 1
+            and faq_match.topic != "checkout"
+            and decision.log_payload.get("inquiry_intent") != "price"
+        ):
+            return self._compose_faq(message)
         if _is_faq(decision):
             return self._compose_faq(message)
         if state is None:
