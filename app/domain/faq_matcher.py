@@ -24,7 +24,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-FaqTopic = Literal["breakfast", "checkout", "pets", "wifi", "parking", "whole_house", "amenities", "room_type", "location"]
+FaqTopic = Literal["breakfast", "checkout", "pets", "wifi", "parking", "whole_house", "amenities", "bbq", "deposit", "room_type", "location"]
 FaqTier = Literal[1, 2]
 
 
@@ -43,6 +43,8 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("parking", ("停車", "車位", "停車場")),
     ("whole_house", ("包棟", "整棟")),
     ("amenities", ("設備", "設施")),
+    ("bbq", ("烤肉", "BBQ", "bbq")),
+    ("deposit", ("訂金", "押金", "保證金", "定金")),
     ("room_type", ("房型", "樓層", "幾間房", "幾人房")),
     ("location", ("地址", "位置", "怎麼去", "地點")),
 )
@@ -58,7 +60,7 @@ _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()
 # answer.  Safe inclusion requires date-parsing to run before FAQ matching;
 # that is a separate follow-up item.
 NON_PRICEABLE: frozenset[FaqTopic] = frozenset({
-    "breakfast", "pets", "wifi", "parking"
+    "breakfast", "pets", "wifi", "parking", "bbq", "deposit"
 })
 
 

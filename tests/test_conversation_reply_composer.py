@@ -17,6 +17,7 @@ from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
     render_faq_amenities,
+    render_faq_bbq,
     render_faq_breakfast,
     render_faq_checkout,
     render_faq_location,
@@ -50,6 +51,13 @@ _PRICING = {
         "allowed_with_notice": True,
         "small_dogs_only_for_now": True,
         "fee_twd_per_pet_per_stay": 500,
+    },
+    "bbq": {
+        "cleaning_fee_twd": 1000,
+    },
+    "deposits": {
+        "booking_deposit_percent_of_total_room_price": 30,
+        "equipment_security_deposit_on_arrival_twd": 3000,
     },
 }
 
@@ -362,6 +370,20 @@ def test_non_priceable_wifi_overrides_price_intent() -> None:
     )
     assert result.text == render_faq_wifi(provided=True, free=True)
     assert "免費" in result.text
+    assert result.owner_push_text is None
+    assert result.push_failed_text is None
+    assert result.completed_state_id is None
+
+
+def test_decision_f_bbq_price_intent_is_policy_faq_not_quote() -> None:
+    """Decision F boundary: BBQ has a fixed policy fee, not a room quote item.
+    'BBQ 多少錢' is price intent but bbq ∈ NON_PRICEABLE → direct policy FAQ."""
+    result = _composer().compose(
+        message=_message("BBQ 多少錢"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
     assert result.owner_push_text is None
     assert result.push_failed_text is None
     assert result.completed_state_id is None

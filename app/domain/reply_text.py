@@ -114,6 +114,12 @@ FAQ_WHOLE_HOUSE: Final = (
 
 FAQ_AMENITIES_HEADER: Final = "枕123 提供的設備:"
 FAQ_AMENITIES_EMPTY: Final = "您好,設備資訊目前尚未建立,請聯繫民宿人員確認。"
+FAQ_BBQ_POLICY_TEMPLATE: Final = "烤肉需事先預約,清潔費 {cleaning_fee_twd} 元。"
+FAQ_DEPOSIT_POLICY_TEMPLATE: Final = (
+    "訂金為房價三成;"
+    "到場另收設備保證金 {equipment_security_deposit_on_arrival_twd} 元。"
+    "帳號於確認房型與日期後由主人提供。"
+)
 FAQ_ROOM_TYPE_EMPTY: Final = "您好,房型資訊目前尚未建立,請聯繫民宿人員確認。"
 FAQ_LOCATION_PREFIX: Final = "枕123 位於"
 FAQ_LOCATION_EMPTY: Final = "您好,地址資訊目前尚未建立,請聯繫民宿人員確認。"

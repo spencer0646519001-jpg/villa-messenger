@@ -31,9 +31,11 @@ from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
     render_faq_amenities,
+    render_faq_bbq,
     render_faq_breakfast,
     render_faq_checkout,
     render_faq_confirm_and_defer,
+    render_faq_deposit,
     render_faq_location,
     render_faq_parking,
     render_faq_pets,
@@ -189,6 +191,16 @@ class ConversationReplyComposer:
         if topic == "amenities":
             items = self._amenities_loader(tenant_id).get("items") or []
             return render_faq_amenities(items=items)
+        if topic == "bbq":
+            bbq = self._pricing_loader(tenant_id).get("bbq") or {}
+            return render_faq_bbq(cleaning_fee_twd=bbq.get("cleaning_fee_twd") or 0)
+        if topic == "deposit":
+            deposits = self._pricing_loader(tenant_id).get("deposits") or {}
+            return render_faq_deposit(
+                equipment_security_deposit_on_arrival_twd=deposits.get(
+                    "equipment_security_deposit_on_arrival_twd"
+                ) or 0,
+            )
         if topic == "room_type":
             description = self._room_policy_loader(tenant_id).get("description")
             return render_faq_room_type(description=description)

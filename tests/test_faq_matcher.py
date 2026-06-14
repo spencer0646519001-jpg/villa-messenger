@@ -60,10 +60,17 @@ def test_whole_house_is_tier1(text: str) -> None:
     assert match.tier == 1
 
 
+def test_bbq_is_tier1() -> None:
+    match = match_faq("可以烤肉嗎")
+    assert match is not None
+    assert match.topic == "bbq"
+    assert match.tier == 1
+
+
 # ---- non-whitelist + collision guard --------------------------------------
 
 
-@pytest.mark.parametrize("text", ["附近有什麼景點", "可以烤肉嗎", "有附近景點嗎", "謝謝"])
+@pytest.mark.parametrize("text", ["附近有什麼景點", "有附近景點嗎", "謝謝"])
 def test_non_whitelist_returns_none(text: str) -> None:
     assert match_faq(text) is None
 

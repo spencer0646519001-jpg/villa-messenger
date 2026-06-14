@@ -5,9 +5,11 @@ from app.domain.reply_text import (
     CHILDREN_CONFIRMATION,
     FAQ_AMENITIES_EMPTY,
     FAQ_AMENITIES_HEADER,
+    FAQ_BBQ_POLICY_TEMPLATE,
     FAQ_BREAKFAST_NOT_PROVIDED,
     FAQ_BREAKFAST_PROVIDED,
     FAQ_DEFER_CLOSE,
+    FAQ_DEPOSIT_POLICY_TEMPLATE,
     FAQ_FALLBACK_LEAD,
     FAQ_LOCATION_EMPTY,
     FAQ_LOCATION_PREFIX,
@@ -284,6 +286,19 @@ def render_faq_amenities(*, items: list[str]) -> str:
         return FAQ_AMENITIES_EMPTY
     bullet_lines = "\n".join(f"・{item}" for item in items)
     return f"{FAQ_AMENITIES_HEADER}\n{bullet_lines}"
+
+
+def render_faq_bbq(*, cleaning_fee_twd: int) -> str:
+    return FAQ_BBQ_POLICY_TEMPLATE.format(cleaning_fee_twd=cleaning_fee_twd)
+
+
+def render_faq_deposit(
+    *,
+    equipment_security_deposit_on_arrival_twd: int,
+) -> str:
+    return FAQ_DEPOSIT_POLICY_TEMPLATE.format(
+        equipment_security_deposit_on_arrival_twd=equipment_security_deposit_on_arrival_twd,
+    )
 
 
 def render_faq_room_type(*, description: str | None) -> str:
