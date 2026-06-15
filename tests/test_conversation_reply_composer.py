@@ -170,6 +170,13 @@ def test_urgent_returns_per_message_reply_even_with_complete_state() -> None:
     assert result.completed_state_id is None
 
 
+def test_urgent_preserves_owner_push_text_for_owner_delivery() -> None:
+    decision = _decision(urgent=True)
+    result = _composer().compose(message=_message(), decision=decision, state=None)
+    assert result.text is None
+    assert result.owner_push_text == decision.owner_push_text
+
+
 def test_incomplete_state_prompts_for_missing_slot() -> None:
     state = _state(checkin_date="2026-05-12", checkout_date="2026-05-13")  # guests missing
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
@@ -311,7 +318,7 @@ def test_faq_does_not_override_urgent() -> None:
         message=_message("有wifi嗎"), decision=_decision(urgent=True), state=None
     )
     assert result.text is None
-    assert result.owner_push_text is None
+    assert result.owner_push_text is not None
 
 
 # ============================================================
@@ -421,7 +428,7 @@ def test_regression_non_priceable_does_not_fire_when_urgent() -> None:
         state=None,
     )
     assert result.text is None
-    assert result.owner_push_text is None
+    assert result.owner_push_text == "!"
 
 
 # ============================================================

@@ -102,11 +102,17 @@ class ConversationReplyComposer:
         decision: InquiryDecision,
         state: dict | None,
     ) -> ComposedReply:
-        """Pick the reply. Order: off/urgent stay silent; NON_PRICEABLE FAQ
-        topics override price/availability intent (so '早餐多少錢嗎' answers
-        breakfast, not quotes); remaining faq-intent fallback; then the
-        state-driven quote/missing path."""
-        if decision.was_system_off or decision.was_urgent:
+        """Pick the reply. Order: urgent preserves owner push while sending no
+        customer reply; off non-urgent stays silent; NON_PRICEABLE FAQ topics
+        override price/availability intent (so '早餐多少錢嗎' answers breakfast,
+        not quotes); remaining faq-intent fallback; then the state-driven
+        quote/missing path."""
+        if decision.was_urgent:
+            return ComposedReply(
+                text=decision.customer_reply_text,
+                owner_push_text=decision.owner_push_text,
+            )
+        if decision.was_system_off:
             return ComposedReply(text=decision.customer_reply_text)
         faq_match = match_faq(normalize_for_parsing(message.text))
         if faq_match is not None and faq_match.topic in NON_PRICEABLE:

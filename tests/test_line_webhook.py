@@ -680,6 +680,58 @@ def _capture_sends(
     return replies, pushes
 
 
+def test_urgent_owner_push_is_sent_to_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes([_text_event_with_reply_token("火災!!")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert len(pushes) == 1
+    assert pushes[0]["to_user_id"] == "Uowner"
+    assert "火災" in pushes[0]["text"]
+
+
+def test_off_mode_urgent_still_pushes_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes([_text_event_with_reply_token("火災!!")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert len(pushes) == 1
+    assert pushes[0]["to_user_id"] == "Uowner"
+
+
+def test_off_mode_non_urgent_does_not_push_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes([_text_event_with_reply_token("你好")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert pushes == []
+
+
 def test_faq_tier1_breakfast_answers_with_no_push(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
