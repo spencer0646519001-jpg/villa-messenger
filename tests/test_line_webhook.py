@@ -40,6 +40,7 @@ _SECRET_REF = "LINE_TEST_CHANNEL_SECRET"
 _SECRET = "test-channel-secret-value"
 _DESTINATION = "Udest123"
 _TZ = "Asia/Taipei"
+_OWNER_ROW_TIME = "2026-05-03T00:00:00+08:00"
 
 
 # ============================================================
@@ -125,6 +126,21 @@ def _post(client: TestClient, body: bytes, signature: str | None) -> object:
 def _rows(database_path: Path, table: str) -> list[dict]:
     with closing(get_connection(database_path)) as conn:
         return [dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()]
+
+
+def _seed_tenant_owner(database_path: Path, tenant_id: int, user_id: str) -> None:
+    with closing(get_connection(database_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO tenant_owners (
+                tenant_id, platform, platform_user_id, role, is_active,
+                created_at, updated_at
+            )
+            VALUES (?, 'line', ?, 'owner', 1, ?, ?)
+            """,
+            (tenant_id, user_id, _OWNER_ROW_TIME, _OWNER_ROW_TIME),
+        )
+        conn.commit()
 
 
 # ============================================================
@@ -658,7 +674,11 @@ _NOTIFIED = "已通知服務人員"
 
 
 def _capture_sends(
-    monkeypatch: pytest.MonkeyPatch, *, push_raises: bool = False, owner_id: str | None = "Uowner"
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    push_raises: bool = False,
+    owner_id: str | None = "Uowner",
+    push_raises_for: set[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Patch reply_message + push_message; set the tokens/owner-id env. Returns
     (reply_calls, push_calls)."""
@@ -673,7 +693,8 @@ def _capture_sends(
 
     def _push(**kw: object) -> None:
         pushes.append(kw)
-        if push_raises:
+        should_raise_for_owner = kw.get("to_user_id") in (push_raises_for or set())
+        if push_raises or should_raise_for_owner:
             raise httpx.ConnectError("push network down")
 
     monkeypatch.setattr(line_webhook_routes, "push_message", _push)
@@ -713,6 +734,87 @@ def test_off_mode_urgent_still_pushes_owner(
     assert replies == []
     assert len(pushes) == 1
     assert pushes[0]["to_user_id"] == "Uowner"
+
+
+def test_owner_push_falls_back_to_env_when_tenant_owner_table_empty(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _, pushes = _capture_sends(monkeypatch, owner_id="Uenv-owner")
+
+    sent = line_webhook_routes._send_owner_push(
+        database_path=database_path,
+        tenant_id=tenant_id,
+        text="owner notice",
+    )
+
+    assert sent is True
+    assert [push["to_user_id"] for push in pushes] == ["Uenv-owner"]
+
+
+def test_urgent_owner_push_is_sent_to_every_active_tenant_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-b")
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Ufallback-owner")
+    body = _payload_bytes([_text_event_with_reply_token("火災!!")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert [push["to_user_id"] for push in pushes] == ["Uowner-a", "Uowner-b"]
+
+
+def test_send_owner_push_partial_success_returns_true_for_truthful_notified(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-first")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-second")
+    _, pushes = _capture_sends(
+        monkeypatch,
+        push_raises_for={"Uowner-first"},
+    )
+
+    sent = line_webhook_routes._send_owner_push(
+        database_path=database_path,
+        tenant_id=tenant_id,
+        text="owner notice",
+    )
+
+    assert sent is True
+    assert [push["to_user_id"] for push in pushes] == [
+        "Uowner-first",
+        "Uowner-second",
+    ]
+
+
+def test_owner_push_partial_failure_does_not_interrupt_webhook_or_later_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-first")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-second")
+    replies, pushes = _capture_sends(
+        monkeypatch,
+        push_raises_for={"Uowner-first"},
+    )
+    body = _payload_bytes([_text_event_with_reply_token("火災!!")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert [push["to_user_id"] for push in pushes] == [
+        "Uowner-first",
+        "Uowner-second",
+    ]
+    assert len(_rows(database_path, "messages")) == 1
 
 
 def test_off_mode_non_urgent_does_not_push_owner(
