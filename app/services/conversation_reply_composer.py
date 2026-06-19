@@ -117,11 +117,11 @@ class ConversationReplyComposer:
         faq_match = match_faq(normalize_for_parsing(message.text))
         if faq_match is not None and faq_match.topic in NON_PRICEABLE:
             return self._compose_faq(message)
-        # gate3: tier-1 FAQ match (non-checkout, non-price-intent) answers directly.
+        # gate3: tier-1 FAQ match answers directly when it is clearly FAQ-only.
         # Excluded cases:
         #   checkout — "退房" collides with checkout-date slots ("5/14 退房 多少錢"
-        #              must quote, not answer checkout time); fix requires date-parsing
-        #              before FAQ matching (separate follow-up item).
+        #              must quote, not answer checkout time); only bare checkout FAQ
+        #              with no parsed dates and no active quote state is safe.
         #   price intent — 決策F: a message that carries a price keyword ("多少錢",
         #              "費用", …) is asking for a quote; routing it to FAQ ignores the
         #              user's real request.  inquiry_intent read from log_payload, same
@@ -130,13 +130,18 @@ class ConversationReplyComposer:
         if (
             faq_match is not None
             and faq_match.tier == 1
-            and faq_match.topic != "checkout"
-            and decision.log_payload.get("inquiry_intent") != "price"
+            and _should_answer_gate3_faq(faq_match, decision, state)
         ):
             return self._compose_faq(message)
         if _is_faq(decision):
             return self._compose_faq(message)
         if state is None:
+            if (
+                decision.customer_reply_text is None
+                and decision.owner_push_text is not None
+                and faq_match is None
+            ):
+                return ComposedReply(owner_push_text=decision.owner_push_text)
             return ComposedReply(text=decision.customer_reply_text)
         missing = self._missing_for_state(state)
         if missing:
@@ -242,6 +247,24 @@ def _is_faq(decision: InquiryDecision) -> bool:
     contains a price keyword) is handled at the call site in compose() —
     before this check — so this function only fires for non-NON_PRICEABLE faq."""
     return decision.log_payload.get("inquiry_intent") == "faq"
+
+
+def _should_answer_gate3_faq(
+    faq_match: FaqMatch, decision: InquiryDecision, state: dict | None
+) -> bool:
+    if faq_match.topic != "checkout":
+        return decision.log_payload.get("inquiry_intent") != "price"
+    return _is_bare_checkout_faq(decision, state)
+
+
+def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
+    return (
+        decision.log_payload.get("inquiry_intent")
+        not in ("price", "availability", "booking_question")
+        and not decision.log_payload.get("parsed_checkin")
+        and not decision.log_payload.get("parsed_checkout")
+        and state is None
+    )
 
 
 def _defer_lead(faq: FaqMatch | None) -> str:

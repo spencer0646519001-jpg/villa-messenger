@@ -30,6 +30,7 @@ from app.domain.reply_templates import (
     render_quote_message,
 )
 from app.domain.reply_text import (
+    SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
@@ -111,7 +112,7 @@ def _price_intent_decision() -> InquiryDecision:
     )
 
 
-def _non_inquiry_decision() -> InquiryDecision:
+def _non_inquiry_decision(log_payload: dict | None = None) -> InquiryDecision:
     """Simulates InquiryService result for a message that triggers no FAQ signal
     term (no 嗎 / no ?) — inquiry_intent='unknown', no customer reply.
     gate2 (_is_faq) will NOT fire for this decision; gate3 is the only path
@@ -119,7 +120,7 @@ def _non_inquiry_decision() -> InquiryDecision:
     return InquiryDecision(
         action_type="push_to_owner_only",
         owner_push_text="(owner push)",
-        log_payload={"inquiry_intent": "unknown"},
+        log_payload=log_payload or {"inquiry_intent": "unknown"},
         parsed_as_inquiry=False,
     )
 
@@ -175,6 +176,26 @@ def test_urgent_preserves_owner_push_text_for_owner_delivery() -> None:
     result = _composer().compose(message=_message(), decision=decision, state=None)
     assert result.text is None
     assert result.owner_push_text == decision.owner_push_text
+
+
+def test_no_active_state_true_non_inquiry_preserves_owner_push_for_delivery() -> None:
+    decision = _non_inquiry_decision()
+    result = _composer().compose(message=_message(), decision=decision, state=None)
+    assert result.text is None
+    assert result.owner_push_text == decision.owner_push_text
+
+
+def test_no_active_state_customer_reply_path_does_not_forward_owner_push() -> None:
+    decision = InquiryDecision(
+        action_type="reply_and_push",
+        customer_reply_text="CUSTOMER_REPLY",
+        owner_push_text="OWNER_PUSH",
+        log_payload={"inquiry_intent": "price"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(message=_message(), decision=decision, state=None)
+    assert result.text == "CUSTOMER_REPLY"
+    assert result.owner_push_text is None
 
 
 def test_incomplete_state_prompts_for_missing_slot() -> None:
@@ -718,11 +739,21 @@ def test_gate3_whole_house_no_question_mark() -> None:
     assert result.completed_state_id is None
 
 
+def test_gate3_checkout_no_question_mark_answers_from_config() -> None:
+    """「幾點退房」has no 嗎/? but is bare checkout FAQ, so gate3 answers."""
+    result = _composer().compose(
+        message=_message("幾點退房"),
+        decision=_non_inquiry_decision(),
+        state=None,
+    )
+    assert result.text == render_faq_checkout(check_in_after="15:00", checkout_before="11:00")
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
 def test_regression_checkout_price_query_not_hijacked_by_gate3() -> None:
     """⚠️ M1/M2.x regression guard: 「5/14 退房 多少錢」hits checkout tier-1
-    but gate3 EXCLUDES checkout → falls through → price path → per-message reply.
-    If this fails it means checkout was added back to gate3 and a price query
-    would silently become a checkout-time FAQ answer."""
+    but checkout gate3 excludes price intent → falls through → price path."""
     result = _composer().compose(
         message=_message("5/14 退房 多少錢"),
         decision=_price_intent_decision(),
@@ -733,15 +764,46 @@ def test_regression_checkout_price_query_not_hijacked_by_gate3() -> None:
     assert result.completed_state_id is None
 
 
-def test_regression_checkout_no_question_mark_known_limitation() -> None:
-    """「幾點退房」has no 嗎/? AND checkout is excluded from gate3.
-    KNOWN LIMITATION: customer stays silent until 'date-parsing before FAQ
-    matching' is implemented as a separate follow-up item."""
+def test_regression_checkout_date_without_price_not_hijacked_by_gate3() -> None:
+    """「3/17退房」has unknown intent like bare checkout, but parsed dates keep
+    checkout gate3 excluded so it falls through to the existing non-inquiry path."""
+    decision = _non_inquiry_decision(
+        {
+            "inquiry_intent": "unknown",
+            "parsed_checkin": "2026-03-17",
+            "parsed_checkout": "2026-03-17",
+        }
+    )
+    result = _composer().compose(
+        message=_message("3/17退房"),
+        decision=decision,
+        state=None,
+    )
+    assert result.text is None
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_regression_checkout_no_question_mark_with_active_state_not_hijacked_by_gate3() -> None:
+    """A bare checkout FAQ during an active quote state stays in the quote flow."""
+    state = _state(checkin_date="2026-05-12", checkout_date=None, adult_count=4)
+    result = _composer().compose(
+        message=_message("幾點退房"),
+        decision=_non_inquiry_decision(),
+        state=state,
+    )
+    assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+
+
+def test_regression_checkout_no_question_mark_answers_from_gate3() -> None:
+    """「幾點退房」has no 嗎/? and no quote context, so checkout gate3 now answers."""
     result = _composer().compose(
         message=_message("幾點退房"),
         decision=_non_inquiry_decision(),
         state=None,
     )
-    assert result.text is None  # silent — known limitation, not a regression
+    assert result.text == render_faq_checkout(check_in_after="15:00", checkout_before="11:00")
     assert result.owner_push_text is None
     assert result.completed_state_id is None
