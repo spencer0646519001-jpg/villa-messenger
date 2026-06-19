@@ -36,6 +36,13 @@ from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.line_send_client import push_message, reply_message
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.reply_text import (
+    OWNER_COMMAND_STATUS_OFF_MESSAGE,
+    OWNER_COMMAND_STATUS_ON_MESSAGE,
+    OWNER_COMMAND_TURN_OFF_MESSAGE,
+    OWNER_COMMAND_TURN_ON_MESSAGE,
+)
+from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.tenant_channel_repository import TenantChannelRepository
@@ -71,6 +78,14 @@ _GENERIC_400_DETAIL = "Bad Request"
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 # STAGE D fallback: used only while a tenant has no active owner rows yet.
 _OWNER_USER_ID_ENV = "LINE_TEST_OWNER_USER_ID"
+_OWNER_COMMAND_TURN_ON = "/開機"
+_OWNER_COMMAND_TURN_OFF = "/關機"
+_OWNER_COMMAND_STATUS = "/狀態"
+_OWNER_COMMANDS = {
+    _OWNER_COMMAND_TURN_ON,
+    _OWNER_COMMAND_TURN_OFF,
+    _OWNER_COMMAND_STATUS,
+}
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -203,6 +218,55 @@ def _send_owner_push(*, database_path: str, tenant_id: int, text: str) -> bool:
     return sent_any
 
 
+def _parse_owner_command(text: str) -> str | None:
+    command = normalize_for_parsing(text).strip()
+    return command if command in _OWNER_COMMANDS else None
+
+
+def _is_active_owner_sender(database_path: str, message: InboundMessage) -> bool:
+    owner_ids = TenantOwnerRepository(database_path).list_active_owner_user_ids(
+        tenant_id=message.tenant_id,
+        platform="line",
+    )
+    return message.platform_user_id in owner_ids
+
+
+def _push_owner_mode_change(
+    *, command: str, message: InboundMessage, database_path: str, service: OperationModeService
+) -> None:
+    tenant_id = message.tenant_id
+    timezone = message.tenant_timezone
+    if command == _OWNER_COMMAND_TURN_ON:
+        service.turn_on(tenant_id=tenant_id, tenant_timezone=timezone, by_owner_id=None)
+        text = OWNER_COMMAND_TURN_ON_MESSAGE
+    else:
+        service.turn_off(tenant_id=tenant_id, tenant_timezone=timezone, by_owner_id=None)
+        text = OWNER_COMMAND_TURN_OFF_MESSAGE
+    _send_owner_push(database_path=database_path, tenant_id=tenant_id, text=text)
+
+
+def _reply_owner_status(event: dict, message: InboundMessage, service: OperationModeService) -> None:
+    tenant_id = message.tenant_id
+    timezone = message.tenant_timezone
+    active = service.is_system_active(tenant_id=tenant_id, tenant_timezone=timezone)
+    text = OWNER_COMMAND_STATUS_ON_MESSAGE if active else OWNER_COMMAND_STATUS_OFF_MESSAGE
+    _send_reply(event, text)
+
+
+def _handle_owner_command(*, event: dict, message: InboundMessage, database_path: str) -> bool:
+    command = _parse_owner_command(message.text)
+    if command is None or not _is_active_owner_sender(database_path, message):
+        return False
+    service = OperationModeService(repo=OperationStateRepository(database_path))
+    if command == _OWNER_COMMAND_STATUS:
+        _reply_owner_status(event, message, service)
+    else:
+        _push_owner_mode_change(
+            command=command, message=message, database_path=database_path, service=service
+        )
+    return True
+
+
 def _resolve_customer_text(composed: ComposedReply, database_path: str, tenant_id: int) -> str | None:
     """Push first; use notified wording only when an owner push succeeded."""
     if composed.owner_push_text is None:
@@ -272,6 +336,8 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
     composer = _build_reply_composer(database_path)
     for event in events:
         message = _event_to_message(event, tenant)
+        if _handle_owner_command(event=event, message=message, database_path=database_path):
+            continue
         decision = service.handle_message(message=message)
         persistence.persist(decision=decision)
         state = _record_state(state_service, message, decision)

@@ -85,6 +85,11 @@ OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = (
     "系統無法驗證日期可用性,已照常報價,請人工確認空房:"
 )
 
+OWNER_COMMAND_TURN_ON_MESSAGE: Final = "系統已開啟，將由系統自動回覆訪客訊息。"
+OWNER_COMMAND_TURN_OFF_MESSAGE: Final = "系統已關閉，訪客訊息將不自動回覆。"
+OWNER_COMMAND_STATUS_ON_MESSAGE: Final = "目前狀態：開啟中"
+OWNER_COMMAND_STATUS_OFF_MESSAGE: Final = "目前狀態：關閉中"
+
 # ---- STAGE D: FAQ answers ------------------------------------------------
 # Tier-1 (config-driven, self-contained -- NO "已通知" line; nothing is pushed).
 FAQ_BREAKFAST_PROVIDED: Final = "您好,我們有提供早餐喔。"

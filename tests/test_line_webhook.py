@@ -19,6 +19,9 @@ from app.api.dependencies import get_database_path
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
 from app.domain.reply_text import (
+    OWNER_COMMAND_STATUS_OFF_MESSAGE,
+    OWNER_COMMAND_TURN_OFF_MESSAGE,
+    OWNER_COMMAND_TURN_ON_MESSAGE,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
@@ -97,11 +100,11 @@ def _set_system_on(database_path: Path, tenant_id: int) -> None:
     service.turn_on(tenant_id=tenant_id, tenant_timezone=_TZ)
 
 
-def _text_event(text: str) -> dict:
+def _text_event(text: str, *, user_id: str = "Uguest") -> dict:
     return {
         "type": "message",
         "timestamp": 1700000000000,
-        "source": {"type": "user", "userId": "Uguest"},
+        "source": {"type": "user", "userId": user_id},
         "message": {"type": "text", "id": "1", "text": text},
     }
 
@@ -275,8 +278,10 @@ _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 _MISSING_INFO_TEXT = "5/12 入住 5/14 退房 多少錢?"
 
 
-def _text_event_with_reply_token(text: str, reply_token: str = "rtok-123") -> dict:
-    event = _text_event(text)
+def _text_event_with_reply_token(
+    text: str, reply_token: str = "rtok-123", *, user_id: str = "Uguest"
+) -> dict:
+    event = _text_event(text, user_id=user_id)
     event["replyToken"] = reply_token
     return event
 
@@ -699,6 +704,147 @@ def _capture_sends(
 
     monkeypatch.setattr(line_webhook_routes, "push_message", _push)
     return replies, pushes
+
+
+def test_non_owner_command_is_invisible_and_flows_normally(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch, owner_id=None)
+
+    def _unexpected_turn_on(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("non-owner command must not call turn_on")
+
+    monkeypatch.setattr(OperationModeService, "turn_on", _unexpected_turn_on)
+    body = _payload_bytes([_text_event_with_reply_token("/開機", user_id="Uguest")])
+
+    response = _post(client, body, _sign(body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert row["manual_mode"] == "off"
+    assert replies == []
+    assert pushes == []
+    assert len(_rows(database_path, "messages")) == 1
+
+
+def test_owner_turn_on_command_pushes_all_owners_and_skips_pipeline(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-b")
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Ufallback-owner")
+    body = _payload_bytes([_text_event_with_reply_token("/開機", user_id="Uowner-a")])
+
+    response = _post(client, body, _sign(body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert row["manual_mode"] == "on"
+    assert row["last_changed_by_owner_id"] is None
+    assert replies == []
+    assert [push["to_user_id"] for push in pushes] == ["Uowner-a", "Uowner-b"]
+    assert [push["text"] for push in pushes] == [
+        OWNER_COMMAND_TURN_ON_MESSAGE,
+        OWNER_COMMAND_TURN_ON_MESSAGE,
+    ]
+    assert _rows(database_path, "messages") == []
+
+
+def test_owner_turn_off_command_pushes_all_owners_and_skips_pipeline(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-b")
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Ufallback-owner")
+    body = _payload_bytes([_text_event_with_reply_token("/關機", user_id="Uowner-b")])
+
+    response = _post(client, body, _sign(body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert row["manual_mode"] == "off"
+    assert row["last_changed_by_owner_id"] is None
+    assert replies == []
+    assert [push["to_user_id"] for push in pushes] == ["Uowner-a", "Uowner-b"]
+    assert [push["text"] for push in pushes] == [
+        OWNER_COMMAND_TURN_OFF_MESSAGE,
+        OWNER_COMMAND_TURN_OFF_MESSAGE,
+    ]
+    assert _rows(database_path, "messages") == []
+
+
+def test_owner_status_command_replies_only_to_sender_and_does_not_change_state(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-b")
+    before = OperationStateRepository(database_path).get_or_create(tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/狀態", "rt-status", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    after = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert after == before
+    assert len(replies) == 1
+    assert replies[0]["reply_token"] == "rt-status"
+    assert replies[0]["text"] == OWNER_COMMAND_STATUS_OFF_MESSAGE
+    assert pushes == []
+    assert _rows(database_path, "messages") == []
+
+
+def test_owner_full_width_turn_on_command_matches(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes([_text_event_with_reply_token("／開機", user_id="Uowner-a")])
+
+    response = _post(client, body, _sign(body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert row["manual_mode"] == "on"
+    assert replies == []
+    assert [push["to_user_id"] for push in pushes] == ["Uowner-a"]
+    assert pushes[0]["text"] == OWNER_COMMAND_TURN_ON_MESSAGE
+    assert _rows(database_path, "messages") == []
+
+
+def test_slash_text_that_is_not_command_flows_normally(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    replies, pushes = _capture_sends(monkeypatch, owner_id=None)
+    body = _payload_bytes([_text_event_with_reply_token("/你好", user_id="Uguest")])
+
+    response = _post(client, body, _sign(body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert response.status_code == 200
+    assert row["manual_mode"] == "off"
+    assert replies == []
+    assert pushes == []
+    assert len(_rows(database_path, "messages")) == 1
 
 
 def test_urgent_owner_push_is_sent_to_owner(
