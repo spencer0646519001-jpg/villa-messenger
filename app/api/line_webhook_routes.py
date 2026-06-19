@@ -23,7 +23,9 @@ break signature verification.
 import json
 import logging
 import os
+from datetime import datetime, time, timezone
 from typing import NoReturn
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
@@ -36,7 +38,15 @@ from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.line_send_client import push_message, reply_message
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.operation_mode_resolver import compute_most_recent_schedule_window
 from app.domain.reply_text import (
+    OWNER_RECORD_EMPTY_HEADER,
+    OWNER_RECORD_EMPTY_MESSAGE,
+    OWNER_RECORD_GUEST_PREFIX,
+    OWNER_RECORD_HEADER_TEMPLATE,
+    OWNER_RECORD_SYSTEM_PREFIX,
+    OWNER_RECORD_TRUNCATED_TEMPLATE,
+    OWNER_RECORD_UNREPLIED_TEXT,
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
     OWNER_COMMAND_STATUS_ON_MESSAGE,
     OWNER_COMMAND_TURN_OFF_MESSAGE,
@@ -44,6 +54,7 @@ from app.domain.reply_text import (
 )
 from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.message_repository import MessageRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_owner_repository import TenantOwnerRepository
@@ -81,11 +92,16 @@ _OWNER_USER_ID_ENV = "LINE_TEST_OWNER_USER_ID"
 _OWNER_COMMAND_TURN_ON = "/開機"
 _OWNER_COMMAND_TURN_OFF = "/關機"
 _OWNER_COMMAND_STATUS = "/狀態"
+_OWNER_COMMAND_RECORD = "/紀錄"
 _OWNER_COMMANDS = {
     _OWNER_COMMAND_TURN_ON,
     _OWNER_COMMAND_TURN_OFF,
     _OWNER_COMMAND_STATUS,
+    _OWNER_COMMAND_RECORD,
 }
+_NIGHT_START_TIME = time(23, 0)
+_NIGHT_END_TIME = time(8, 0)
+_OWNER_RECORD_MAX_TEXT_CHARS = 4500
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -253,10 +269,86 @@ def _reply_owner_status(event: dict, message: InboundMessage, service: Operation
     _send_reply(event, text)
 
 
+def _now_in_tenant_timezone(tenant_timezone: str) -> datetime:
+    return datetime.now(timezone.utc).astimezone(ZoneInfo(tenant_timezone))
+
+
+def _owner_record_window_utc(message: InboundMessage) -> tuple[str, str]:
+    now = _now_in_tenant_timezone(message.tenant_timezone)
+    start, end = compute_most_recent_schedule_window(
+        start_time=_NIGHT_START_TIME,
+        end_time=_NIGHT_END_TIME,
+        now=now,
+    )
+    return start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
+
+
+def _owner_record_rows(*, database_path: str, message: InboundMessage) -> list[dict]:
+    start, end = _owner_record_window_utc(message)
+    rows = MessageRepository(database_path).list_between_created_at(
+        tenant_id=message.tenant_id,
+        start=start,
+        end=end,
+    )
+    owner_ids = set(
+        TenantOwnerRepository(database_path).list_active_owner_user_ids(
+            tenant_id=message.tenant_id,
+            platform="line",
+        )
+    )
+    return [row for row in rows if row["platform_user_id"] not in owner_ids]
+
+
+def _format_owner_record_entry(row: dict, tenant_zone: ZoneInfo) -> str:
+    created_at = datetime.fromisoformat(row["created_at"]).astimezone(tenant_zone)
+    reply_text = row["reply_text"] or OWNER_RECORD_UNREPLIED_TEXT
+    return (
+        f"{created_at:%m/%d %H:%M}\n"
+        f"{OWNER_RECORD_GUEST_PREFIX}{row['message_text']}\n"
+        f"{OWNER_RECORD_SYSTEM_PREFIX}{reply_text}"
+    )
+
+
+def _assemble_owner_record_text(header: str, entries: list[str], total: int) -> str:
+    parts = [header, *entries]
+    if len(entries) < total:
+        parts.append(
+            OWNER_RECORD_TRUNCATED_TEMPLATE.format(shown=len(entries), total=total)
+        )
+    return "\n\n".join(parts)
+
+
+def _format_owner_record_reply(rows: list[dict], tenant_timezone: str) -> str:
+    if not rows:
+        return f"{OWNER_RECORD_EMPTY_HEADER}\n\n{OWNER_RECORD_EMPTY_MESSAGE}"
+    tenant_zone = ZoneInfo(tenant_timezone)
+    entries = [_format_owner_record_entry(row, tenant_zone) for row in rows]
+    header = OWNER_RECORD_HEADER_TEMPLATE.format(count=len(entries))
+    selected: list[str] = []
+    for entry in reversed(entries):
+        candidate = [entry, *selected]
+        text = _assemble_owner_record_text(header, candidate, len(entries))
+        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS and selected:
+            break
+        selected = candidate
+        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS:
+            break
+    return _assemble_owner_record_text(header, selected, len(entries))
+
+
+def _reply_owner_record(*, event: dict, message: InboundMessage, database_path: str) -> None:
+    rows = _owner_record_rows(database_path=database_path, message=message)
+    text = _format_owner_record_reply(rows, message.tenant_timezone)
+    _send_reply(event, text)
+
+
 def _handle_owner_command(*, event: dict, message: InboundMessage, database_path: str) -> bool:
     command = _parse_owner_command(message.text)
     if command is None or not _is_active_owner_sender(database_path, message):
         return False
+    if command == _OWNER_COMMAND_RECORD:
+        _reply_owner_record(event=event, message=message, database_path=database_path)
+        return True
     service = OperationModeService(repo=OperationStateRepository(database_path))
     if command == _OWNER_COMMAND_STATUS:
         _reply_owner_status(event, message, service)

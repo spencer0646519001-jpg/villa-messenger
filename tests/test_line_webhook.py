@@ -6,9 +6,10 @@ import json
 import shutil
 import uuid
 from collections.abc import Iterator
-from datetime import date
+from datetime import date, datetime, timezone
 from contextlib import closing
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -19,6 +20,8 @@ from app.api.dependencies import get_database_path
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
 from app.domain.reply_text import (
+    OWNER_RECORD_EMPTY_MESSAGE,
+    OWNER_RECORD_UNREPLIED_TEXT,
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
     OWNER_COMMAND_TURN_OFF_MESSAGE,
     OWNER_COMMAND_TURN_ON_MESSAGE,
@@ -142,6 +145,54 @@ def _seed_tenant_owner(database_path: Path, tenant_id: int, user_id: str) -> Non
             VALUES (?, 'line', ?, 'owner', 1, ?, ?)
             """,
             (tenant_id, user_id, _OWNER_ROW_TIME, _OWNER_ROW_TIME),
+        )
+        conn.commit()
+
+
+def _created_at_from_taipei(year: int, month: int, day: int, hour: int, minute: int) -> str:
+    taipei = ZoneInfo(_TZ)
+    local = datetime(year, month, day, hour, minute, tzinfo=taipei)
+    return local.astimezone(timezone.utc).isoformat()
+
+
+def _freeze_owner_record_now(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    year: int = 2026,
+    month: int = 3,
+    day: int = 16,
+    hour: int = 2,
+    minute: int = 30,
+) -> None:
+    taipei = ZoneInfo(_TZ)
+    fixed_now = datetime(year, month, day, hour, minute, tzinfo=taipei)
+
+    def _fixed_now(tenant_timezone: str) -> datetime:
+        assert tenant_timezone == _TZ
+        return fixed_now
+
+    monkeypatch.setattr(line_webhook_routes, "_now_in_tenant_timezone", _fixed_now)
+
+
+def _seed_message_at(
+    database_path: Path,
+    *,
+    tenant_id: int,
+    user_id: str,
+    message_text: str,
+    created_at: str,
+    reply_text: str | None = None,
+) -> None:
+    with closing(get_connection(database_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO messages (
+                tenant_id, platform, platform_user_id, message_text,
+                category, reply_text, is_night, created_at
+            )
+            VALUES (?, 'line', ?, ?, 'question', ?, 1, ?)
+            """,
+            (tenant_id, user_id, message_text, reply_text, created_at),
         )
         conn.commit()
 
@@ -806,6 +857,169 @@ def test_owner_status_command_replies_only_to_sender_and_does_not_change_state(
     assert replies[0]["text"] == OWNER_COMMAND_STATUS_OFF_MESSAGE
     assert pushes == []
     assert _rows(database_path, "messages") == []
+
+
+def test_owner_record_command_replies_with_cross_midnight_non_owner_messages(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _freeze_owner_record_now(monkeypatch, hour=2, minute=30)
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uguest-day",
+        message_text="白天訊息不應出現",
+        created_at=_created_at_from_taipei(2026, 3, 15, 10, 0),
+        reply_text="day reply",
+    )
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uguest-a",
+        message_text="請問還有空房嗎",
+        created_at=_created_at_from_taipei(2026, 3, 15, 23, 41),
+        reply_text="目前仍有空房",
+    )
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uowner-a",
+        message_text="owner 自己的訊息不應出現",
+        created_at=_created_at_from_taipei(2026, 3, 16, 1, 0),
+        reply_text="owner reply",
+    )
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uguest-b",
+        message_text="可以加床嗎",
+        created_at=_created_at_from_taipei(2026, 3, 16, 1, 2),
+        reply_text=None,
+    )
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/紀錄", "rt-record", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    expected_text = (
+        "🌙 今晚紀錄（共 2 則）"
+        "\n\n03/15 23:41\n客：請問還有空房嗎\n系統：目前仍有空房"
+        f"\n\n03/16 01:02\n客：可以加床嗎\n系統：{OWNER_RECORD_UNREPLIED_TEXT}"
+    )
+    assert response.status_code == 200
+    assert len(replies) == 1
+    assert replies[0]["reply_token"] == "rt-record"
+    assert replies[0]["text"] == expected_text
+    assert pushes == []
+    assert "白天訊息不應出現" not in replies[0]["text"]
+    assert "owner 自己的訊息不應出現" not in replies[0]["text"]
+    assert len(_rows(database_path, "messages")) == 4
+
+
+def test_owner_record_command_replies_empty_message_when_no_guest_messages(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _freeze_owner_record_now(monkeypatch, hour=10, minute=0)
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/紀錄", "rt-record", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(replies) == 1
+    assert replies[0]["text"] == f"🌙 今晚紀錄\n\n{OWNER_RECORD_EMPTY_MESSAGE}"
+    assert pushes == []
+    assert _rows(database_path, "messages") == []
+
+
+def test_owner_record_command_daytime_excludes_messages_after_window_end(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _freeze_owner_record_now(monkeypatch, hour=10, minute=0)
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uguest-before-end",
+        message_text="退房前訊息",
+        created_at=_created_at_from_taipei(2026, 3, 16, 7, 59),
+        reply_text="退房前回覆",
+    )
+    _seed_message_at(
+        database_path,
+        tenant_id=tenant_id,
+        user_id="Uguest-after-end",
+        message_text="出窗後白天訊息不應出現",
+        created_at=_created_at_from_taipei(2026, 3, 16, 8, 30),
+        reply_text="白天回覆",
+    )
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/紀錄", "rt-record", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(replies) == 1
+    assert "退房前訊息" in replies[0]["text"]
+    assert "出窗後白天訊息不應出現" not in replies[0]["text"]
+    assert "🌙 今晚紀錄（共 1 則）" in replies[0]["text"]
+    assert pushes == []
+
+
+def test_owner_full_width_record_command_matches(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _freeze_owner_record_now(monkeypatch, hour=10, minute=0)
+    replies, pushes = _capture_sends(monkeypatch)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("／紀錄", "rt-record", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(replies) == 1
+    assert OWNER_RECORD_EMPTY_MESSAGE in replies[0]["text"]
+    assert pushes == []
+    assert _rows(database_path, "messages") == []
+
+
+def test_non_owner_record_command_is_invisible_and_flows_normally(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    OperationModeService(repo=OperationStateRepository(database_path)).turn_off(
+        tenant_id=tenant_id, tenant_timezone=_TZ
+    )
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch, owner_id=None)
+
+    def _unexpected_record_reply(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("non-owner /紀錄 must not call owner-record reply")
+
+    monkeypatch.setattr(line_webhook_routes, "_reply_owner_record", _unexpected_record_reply)
+    body = _payload_bytes([_text_event_with_reply_token("/紀錄", user_id="Uguest")])
+
+    response = _post(client, body, _sign(body))
+
+    messages = _rows(database_path, "messages")
+    assert response.status_code == 200
+    assert replies == []
+    assert pushes == []
+    assert len(messages) == 1
+    assert messages[0]["message_text"] == "/紀錄"
 
 
 def test_owner_full_width_turn_on_command_matches(

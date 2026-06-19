@@ -179,6 +179,59 @@ def test_list_unhandled_only_returns_messages_for_given_tenant(
     assert [message["id"] for message in messages] == [tenant_a_unhandled_id]
 
 
+def test_list_between_created_at_uses_tenant_and_half_open_utc_range(
+    database_path: Path,
+) -> None:
+    tenant_a_id = _create_tenant(database_path, "tenant-a")
+    tenant_b_id = _create_tenant(database_path, "tenant-b")
+    _insert_message_at(
+        database_path,
+        tenant_id=tenant_a_id,
+        platform_user_id="before",
+        created_at="2026-03-15T14:59:59+00:00",
+    )
+    _insert_message_at(
+        database_path,
+        tenant_id=tenant_a_id,
+        platform_user_id="at-start",
+        created_at="2026-03-15T15:00:00+00:00",
+    )
+    _insert_message_at(
+        database_path,
+        tenant_id=tenant_a_id,
+        platform_user_id="inside",
+        created_at="2026-03-15T16:00:00+00:00",
+        reply_text="auto reply",
+    )
+    _insert_message_at(
+        database_path,
+        tenant_id=tenant_a_id,
+        platform_user_id="at-end",
+        created_at="2026-03-15T18:30:00+00:00",
+    )
+    _insert_message_at(
+        database_path,
+        tenant_id=tenant_b_id,
+        platform_user_id="other-tenant",
+        created_at="2026-03-15T16:00:00+00:00",
+    )
+
+    messages = MessageRepository(database_path).list_between_created_at(
+        tenant_id=tenant_a_id,
+        start="2026-03-15T15:00:00+00:00",
+        end="2026-03-15T18:30:00+00:00",
+    )
+
+    assert [message["platform_user_id"] for message in messages] == ["at-start", "inside"]
+    assert messages[1]["reply_text"] == "auto reply"
+    assert set(messages[0]) == {
+        "created_at",
+        "message_text",
+        "reply_text",
+        "platform_user_id",
+    }
+
+
 def test_inquiry_get_by_id_is_tenant_safe(database_path: Path) -> None:
     tenant_a_id = _create_tenant(database_path, "tenant-a")
     tenant_b_id = _create_tenant(database_path, "tenant-b")
@@ -253,6 +306,29 @@ def _create_tenant(database_path: Path, slug: str) -> int:
         timezone="Asia/Taipei",
         default_language="zh-TW",
     )
+
+
+def _insert_message_at(
+    database_path: Path,
+    *,
+    tenant_id: int,
+    platform_user_id: str,
+    created_at: str,
+    message_text: str = "hello",
+    reply_text: str | None = None,
+) -> None:
+    with closing(get_connection(database_path)) as conn:
+        conn.execute(
+            """
+            INSERT INTO messages (
+                tenant_id, platform, platform_user_id, message_text,
+                category, reply_text, is_night, created_at
+            )
+            VALUES (?, 'line', ?, ?, 'question', ?, 1, ?)
+            """,
+            (tenant_id, platform_user_id, message_text, reply_text, created_at),
+        )
+        conn.commit()
 
 
 # ============================================================

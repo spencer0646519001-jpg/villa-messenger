@@ -104,6 +104,27 @@ class MessageRepository:
 
         return [dict(row) for row in rows]
 
+    def list_between_created_at(
+        self,
+        tenant_id: int,
+        start: str,
+        end: str,
+    ) -> list[dict]:
+        with closing(get_connection(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT created_at, message_text, reply_text, platform_user_id
+                FROM messages
+                WHERE tenant_id = ?
+                  AND created_at >= ?
+                  AND created_at < ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (tenant_id, start, end),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def get_by_id(self, tenant_id: int, message_id: int) -> dict | None:
         with closing(get_connection(self.database_path)) as connection:
             row = connection.execute(

@@ -56,6 +56,45 @@ def compute_next_schedule_boundary(
     return tomorrow_start
 
 
+def compute_most_recent_schedule_window_start(
+    *,
+    start_time: time,
+    end_time: time,
+    now: datetime,
+) -> datetime:
+    start, _ = compute_most_recent_schedule_window(
+        start_time=start_time,
+        end_time=end_time,
+        now=now,
+    )
+    return start
+
+
+def compute_most_recent_schedule_window(
+    *,
+    start_time: time,
+    end_time: time,
+    now: datetime,
+) -> tuple[datetime, datetime]:
+    today_start = _combine(now, start_time)
+    today_end = _combine(now, end_time)
+    now_time = now.time()
+
+    if start_time == end_time:
+        return today_start, today_start
+    if start_time < end_time:
+        if now_time < start_time:
+            return today_start - timedelta(days=1), today_end - timedelta(days=1)
+        if now_time < end_time:
+            return today_start, now
+        return today_start, today_end
+    if now_time >= start_time:
+        return today_start, now
+    if now_time < end_time:
+        return today_start - timedelta(days=1), now
+    return today_start - timedelta(days=1), today_end
+
+
 def _schedule_mode_at(*, start: time, end: time, now_time: time) -> Mode:
     if start == end:
         return "off"

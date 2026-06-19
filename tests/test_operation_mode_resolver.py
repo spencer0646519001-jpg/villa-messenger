@@ -1,15 +1,19 @@
 from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.domain.operation_mode_resolver import (
     OperationStateSnapshot,
+    compute_most_recent_schedule_window,
+    compute_most_recent_schedule_window_start,
     compute_next_schedule_boundary,
     resolve_effective_mode,
 )
 
 
 TPE = timezone(timedelta(hours=8))
+TPE_ZONE = ZoneInfo("Asia/Taipei")
 
 
 def _snapshot(
@@ -172,3 +176,74 @@ def test_compute_next_schedule_boundary_non_wrap(
     )
 
     assert boundary == expected
+
+
+def test_most_recent_schedule_window_start_daytime_returns_previous_night_start() -> None:
+    start = compute_most_recent_schedule_window_start(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 10, 0, tzinfo=TPE_ZONE),
+    )
+
+    assert start == datetime(2026, 3, 15, 23, 0, tzinfo=TPE_ZONE)
+
+
+def test_most_recent_schedule_window_start_early_morning_returns_prior_date_start() -> None:
+    start = compute_most_recent_schedule_window_start(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 2, 0, tzinfo=TPE_ZONE),
+    )
+
+    assert start == datetime(2026, 3, 15, 23, 0, tzinfo=TPE_ZONE)
+
+
+def test_most_recent_schedule_window_start_exact_boundaries() -> None:
+    at_start = compute_most_recent_schedule_window_start(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 23, 0, tzinfo=TPE_ZONE),
+    )
+    at_end = compute_most_recent_schedule_window_start(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 8, 0, tzinfo=TPE_ZONE),
+    )
+
+    assert at_start == datetime(2026, 3, 16, 23, 0, tzinfo=TPE_ZONE)
+    assert at_end == datetime(2026, 3, 15, 23, 0, tzinfo=TPE_ZONE)
+
+
+def test_most_recent_schedule_window_start_preserves_asia_taipei_timezone() -> None:
+    start = compute_most_recent_schedule_window_start(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 10, 0, tzinfo=TPE_ZONE),
+    )
+
+    assert getattr(start.tzinfo, "key", None) == "Asia/Taipei"
+    assert start.utcoffset() == timedelta(hours=8)
+
+
+def test_most_recent_schedule_window_daytime_ends_at_window_end() -> None:
+    start, end = compute_most_recent_schedule_window(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=datetime(2026, 3, 16, 10, 0, tzinfo=TPE_ZONE),
+    )
+
+    assert start == datetime(2026, 3, 15, 23, 0, tzinfo=TPE_ZONE)
+    assert end == datetime(2026, 3, 16, 8, 0, tzinfo=TPE_ZONE)
+
+
+def test_most_recent_schedule_window_inside_window_ends_at_now() -> None:
+    now = datetime(2026, 3, 16, 2, 0, tzinfo=TPE_ZONE)
+
+    start, end = compute_most_recent_schedule_window(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=now,
+    )
+
+    assert start == datetime(2026, 3, 15, 23, 0, tzinfo=TPE_ZONE)
+    assert end == now

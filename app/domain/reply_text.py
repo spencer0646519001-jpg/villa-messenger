@@ -89,6 +89,15 @@ OWNER_COMMAND_TURN_ON_MESSAGE: Final = "系統已開啟，將由系統自動回�
 OWNER_COMMAND_TURN_OFF_MESSAGE: Final = "系統已關閉，訪客訊息將不自動回覆。"
 OWNER_COMMAND_STATUS_ON_MESSAGE: Final = "目前狀態：開啟中"
 OWNER_COMMAND_STATUS_OFF_MESSAGE: Final = "目前狀態：關閉中"
+OWNER_RECORD_HEADER_TEMPLATE: Final = "🌙 今晚紀錄（共 {count} 則）"
+OWNER_RECORD_EMPTY_HEADER: Final = "🌙 今晚紀錄"
+OWNER_RECORD_EMPTY_MESSAGE: Final = "今晚沒有訪客訊息。"
+OWNER_RECORD_GUEST_PREFIX: Final = "客："
+OWNER_RECORD_SYSTEM_PREFIX: Final = "系統："
+OWNER_RECORD_UNREPLIED_TEXT: Final = "（未自動回覆）"
+OWNER_RECORD_TRUNCATED_TEMPLATE: Final = (
+    "（訊息較多，僅顯示最近 {shown} 則，今晚共 {total} 則）"
+)
 
 # ---- STAGE D: FAQ answers ------------------------------------------------
 # Tier-1 (config-driven, self-contained -- NO "已通知" line; nothing is pushed).
