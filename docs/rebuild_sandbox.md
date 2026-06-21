@@ -1,4 +1,4 @@
-# Sandbox DB 重建 Checklist
+﻿# Sandbox DB 重建 Checklist
 
 > 用途：當 `data/homestay.db` 需要砍掉重建時（例如漏洞 2 改 tenant_channels
 > 唯一約束，因 `CREATE TABLE IF NOT EXISTS` 不會改既有 DB 的約束），照這張
@@ -32,7 +32,7 @@ Move-Item data\homestay.db data\homestay.db.bak -Force
 ### 2. 重建乾淨 DB（套用最新 schema.sql，含新約束）
 villa
 $env:PYTHONPATH="."
-python scripts\seed_sandbox.py
+python scripts\seed_sandbox.py U97332262ce01fe3d348f8416370515d9
 
 ### 3. 把媽媽妹妹塞回 tenant_owners
 python scripts\add_owner.py add U412b0a3bac08db6b247fc618c03e6b99 媽媽
