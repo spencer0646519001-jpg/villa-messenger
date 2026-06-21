@@ -102,6 +102,21 @@ def test_reservations_are_unique_per_tenant(temp_db_dir: Path) -> None:
             _insert_reservation(connection, tenant_a_id, "BOOK-123")
 
 
+def test_tenant_channels_are_unique_per_platform_and_channel_id(
+    temp_db_dir: Path,
+) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    with get_connection(database_path) as connection:
+        tenant_a_id = _insert_tenant(connection, "tenant-a")
+        tenant_b_id = _insert_tenant(connection, "tenant-b")
+        _insert_tenant_channel(connection, tenant_a_id, "line", "channel-1")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_tenant_channel(connection, tenant_b_id, "line", "channel-1")
+
+
 def test_messages_table_includes_tenant_id(temp_db_dir: Path) -> None:
     database_path = temp_db_dir / "homestay.db"
     init_db(database_path)
@@ -262,6 +277,27 @@ def _insert_reservation(
         VALUES (?, ?, ?, ?)
         """,
         (tenant_id, booking_code, NOW, NOW),
+    )
+
+
+def _insert_tenant_channel(
+    connection: sqlite3.Connection,
+    tenant_id: int,
+    platform: str,
+    channel_id: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO tenant_channels (
+            tenant_id,
+            platform,
+            channel_id,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (tenant_id, platform, channel_id, NOW, NOW),
     )
 
 

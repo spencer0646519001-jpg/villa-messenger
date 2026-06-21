@@ -120,7 +120,7 @@ def test_update_slots_merges_without_clobbering(database_path: Path) -> None:
     )
 
     # Supplying ONLY adult_count must not wipe the stored checkin_date.
-    repository.update_slots(state_id=state_id, adult_count=2)
+    repository.update_slots(tenant_id=tenant_id, state_id=state_id, adult_count=2)
 
     row = _row_by_id(database_path, state_id)
     assert row["adult_count"] == 2
@@ -138,11 +138,36 @@ def test_update_slots_none_leaves_slot_unchanged(database_path: Path) -> None:
     )
 
     # adult_count defaults to None here -> must be left as the stored 3.
-    repository.update_slots(state_id=state_id, checkout_date="2026-07-05")
+    repository.update_slots(
+        tenant_id=tenant_id,
+        state_id=state_id,
+        checkout_date="2026-07-05",
+    )
 
     row = _row_by_id(database_path, state_id)
     assert row["adult_count"] == 3
     assert row["checkout_date"] == "2026-07-05"
+
+
+def test_update_slots_wrong_tenant_does_not_modify_state(database_path: Path) -> None:
+    tenant_a_id = _create_tenant(database_path, slug="tenant-a")
+    tenant_b_id = _create_tenant(database_path, slug="tenant-b")
+    repository = ConversationStateRepository(database_path)
+    state_id = repository.create(
+        tenant_id=tenant_a_id,
+        platform="line",
+        platform_user_id="Uguest0001",
+        checkin_date="2026-07-01",
+    )
+
+    repository.update_slots(tenant_id=tenant_b_id, state_id=state_id, adult_count=2)
+    row = _row_by_id(database_path, state_id)
+    assert row["adult_count"] is None
+    assert row["checkin_date"] == "2026-07-01"
+
+    repository.update_slots(tenant_id=tenant_a_id, state_id=state_id, adult_count=2)
+    row = _row_by_id(database_path, state_id)
+    assert row["adult_count"] == 2
 
 
 # ============================================================
@@ -159,7 +184,7 @@ def test_update_slots_slides_expiry_forward(database_path: Path) -> None:
     # Drive expiry into the past, then a fresh turn should push it forward.
     _force_expires_at(database_path, state_id, _PAST_ISO)
 
-    repository.update_slots(state_id=state_id, adult_count=2)
+    repository.update_slots(tenant_id=tenant_id, state_id=state_id, adult_count=2)
 
     row = _row_by_id(database_path, state_id)
     assert row["expires_at"] > datetime.now(timezone.utc).isoformat()
@@ -173,7 +198,12 @@ def test_update_slots_no_refresh_leaves_expiry(database_path: Path) -> None:
     )
     _force_expires_at(database_path, state_id, _PAST_ISO)
 
-    repository.update_slots(state_id=state_id, adult_count=2, refresh_expiry=False)
+    repository.update_slots(
+        tenant_id=tenant_id,
+        state_id=state_id,
+        adult_count=2,
+        refresh_expiry=False,
+    )
 
     row = _row_by_id(database_path, state_id)
     assert row["expires_at"] == _PAST_ISO
@@ -220,7 +250,7 @@ def test_completed_row_does_not_block_new_active(database_path: Path) -> None:
     first_id = repository.create(
         tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001"
     )
-    repository.mark_completed(state_id=first_id)
+    repository.mark_completed(tenant_id=tenant_id, state_id=first_id)
 
     # The partial index only covers in_progress rows, so a fresh one is allowed.
     second_id = repository.create(
@@ -261,11 +291,28 @@ def test_mark_completed_and_mark_expired_flip_status(database_path: Path) -> Non
         tenant_id=tenant_id, platform="line", platform_user_id="Uguest0002"
     )
 
-    repository.mark_completed(state_id=completed_id)
-    repository.mark_expired(state_id=expired_id)
+    repository.mark_completed(tenant_id=tenant_id, state_id=completed_id)
+    repository.mark_expired(tenant_id=tenant_id, state_id=expired_id)
 
     assert _row_by_id(database_path, completed_id)["status"] == "completed"
     assert _row_by_id(database_path, expired_id)["status"] == "expired"
+
+
+def test_mark_completed_wrong_tenant_does_not_modify_state(database_path: Path) -> None:
+    tenant_a_id = _create_tenant(database_path, slug="tenant-a")
+    tenant_b_id = _create_tenant(database_path, slug="tenant-b")
+    repository = ConversationStateRepository(database_path)
+    state_id = repository.create(
+        tenant_id=tenant_a_id,
+        platform="line",
+        platform_user_id="Uguest0001",
+    )
+
+    repository.mark_completed(tenant_id=tenant_b_id, state_id=state_id)
+    assert _row_by_id(database_path, state_id)["status"] == "in_progress"
+
+    repository.mark_completed(tenant_id=tenant_a_id, state_id=state_id)
+    assert _row_by_id(database_path, state_id)["status"] == "completed"
 
 
 def test_expire_stale_bulk_expires_and_returns_count(database_path: Path) -> None:
@@ -283,7 +330,7 @@ def test_expire_stale_bulk_expires_and_returns_count(database_path: Path) -> Non
     _force_expires_at(database_path, stale_one, _PAST_ISO)
     _force_expires_at(database_path, stale_two, _PAST_ISO)
 
-    changed = repository.expire_stale()
+    changed = repository.expire_stale(tenant_id=tenant_id)
 
     assert changed == 2
     assert _row_by_id(database_path, stale_one)["status"] == "expired"
@@ -291,8 +338,32 @@ def test_expire_stale_bulk_expires_and_returns_count(database_path: Path) -> Non
     assert _row_by_id(database_path, fresh)["status"] == "in_progress"
 
 
+def test_expire_stale_only_expires_requested_tenant(database_path: Path) -> None:
+    tenant_a_id = _create_tenant(database_path, slug="tenant-a")
+    tenant_b_id = _create_tenant(database_path, slug="tenant-b")
+    repository = ConversationStateRepository(database_path)
+    tenant_a_state = repository.create(
+        tenant_id=tenant_a_id,
+        platform="line",
+        platform_user_id="Ustale",
+    )
+    tenant_b_state = repository.create(
+        tenant_id=tenant_b_id,
+        platform="line",
+        platform_user_id="Ustale",
+    )
+    _force_expires_at(database_path, tenant_a_state, _PAST_ISO)
+    _force_expires_at(database_path, tenant_b_state, _PAST_ISO)
+
+    changed = repository.expire_stale(tenant_id=tenant_a_id)
+
+    assert changed == 1
+    assert _row_by_id(database_path, tenant_a_state)["status"] == "expired"
+    assert _row_by_id(database_path, tenant_b_state)["status"] == "in_progress"
+
+
 # ============================================================
-# has_pet VS pet_count — "no pets" DISTINCT FROM "unasked"
+# has_pet VS pet_count: "no pets" DISTINCT FROM "unasked"
 # ============================================================
 
 
@@ -335,7 +406,7 @@ def test_set_status_rejects_invalid_status(database_path: Path) -> None:
     )
 
     with pytest.raises(ValueError):
-        repository._set_status(state_id, "bogus")
+        repository._set_status(tenant_id, state_id, "bogus")
 
 
 # ============================================================

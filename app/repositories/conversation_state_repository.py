@@ -59,12 +59,14 @@ SET intent = COALESCE(?, intent),
     expires_at = CASE WHEN ? THEN ? ELSE expires_at END,
     updated_at = ?
 WHERE id = ?
+  AND tenant_id = ?
 """
 
 _SET_STATUS_SQL = """
 UPDATE conversation_states
 SET status = ?, updated_at = ?
 WHERE id = ?
+  AND tenant_id = ?
 """
 
 _EXPIRE_STALE_SQL = """
@@ -143,6 +145,7 @@ class ConversationStateRepository:
     def update_slots(
         self,
         *,
+        tenant_id: int,
         state_id: int,
         intent: str | None = None,
         checkin_date: str | None = None,
@@ -165,36 +168,34 @@ class ConversationStateRepository:
         params = (
             intent, checkin_date, checkout_date, adult_count, child_count,
             infant_count, pet_count, has_pet_param, last_message_text,
-            int(refresh_expiry), new_expires_at, now, state_id,
+            int(refresh_expiry), new_expires_at, now, state_id, tenant_id,
         )
         with closing(get_connection(self.database_path)) as connection:
             connection.execute(_UPDATE_SLOTS_SQL, params)
             connection.commit()
 
-    def mark_completed(self, *, state_id: int) -> None:
-        self._set_status(state_id, "completed")
+    def mark_completed(self, *, tenant_id: int, state_id: int) -> None:
+        self._set_status(tenant_id, state_id, "completed")
 
-    def mark_expired(self, *, state_id: int) -> None:
-        self._set_status(state_id, "expired")
+    def mark_expired(self, *, tenant_id: int, state_id: int) -> None:
+        self._set_status(tenant_id, state_id, "expired")
 
-    def _set_status(self, state_id: int, status: str) -> None:
+    def _set_status(self, tenant_id: int, state_id: int, status: str) -> None:
         if status not in _VALID_STATUSES:
             raise ValueError(f"invalid status: {status!r}")
         now = _utc_now_iso()
         with closing(get_connection(self.database_path)) as connection:
-            connection.execute(_SET_STATUS_SQL, (status, now, state_id))
+            connection.execute(_SET_STATUS_SQL, (status, now, state_id, tenant_id))
             connection.commit()
 
-    def expire_stale(self, *, tenant_id: int | None = None) -> int:
+    def expire_stale(self, *, tenant_id: int) -> int:
         """Bulk-flip every timed-out in_progress row to expired. Returns the
-        number of rows changed. Scoped to one tenant when tenant_id is given."""
+        number of rows changed. Always scoped to one tenant."""
         now = _utc_now_iso()
-        sql = _EXPIRE_STALE_SQL
-        params: list = [now, now]
-        if tenant_id is not None:
-            sql += "  AND tenant_id = ?\n"
-            params.append(tenant_id)
         with closing(get_connection(self.database_path)) as connection:
-            cursor = connection.execute(sql, params)
+            cursor = connection.execute(
+                _EXPIRE_STALE_SQL + "  AND tenant_id = ?\n",
+                (now, now, tenant_id),
+            )
             connection.commit()
             return cursor.rowcount

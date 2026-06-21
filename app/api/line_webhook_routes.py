@@ -451,7 +451,7 @@ def _compose_reply(
 
 
 def _mark_if_complete(
-    state_service: ConversationStateService, composed: ComposedReply
+    state_service: ConversationStateService, tenant_id: int, composed: ComposedReply
 ) -> None:
     """Best-effort completion AFTER the reply is sent (send-first). A failure is
     logged and swallowed: the quote already went out, so at worst the still-open
@@ -459,7 +459,10 @@ def _mark_if_complete(
     if composed.completed_state_id is None:
         return
     try:
-        state_service.mark_completed(state_id=composed.completed_state_id)
+        state_service.mark_completed(
+            tenant_id=tenant_id,
+            state_id=composed.completed_state_id,
+        )
     except Exception:  # noqa: BLE001 -- completion must NEVER break the sent reply
         logger.warning("LINE conversation-state mark_completed failed", exc_info=True)
 
@@ -480,7 +483,7 @@ def _process_pipeline_event(
     composed = _compose_reply(context.composer, message, decision, state)
     customer_text = _resolve_customer_text(composed, database_path, message.tenant_id)
     _send_reply(event, customer_text)
-    _mark_if_complete(context.state_service, composed)
+    _mark_if_complete(context.state_service, message.tenant_id, composed)
 
 
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:

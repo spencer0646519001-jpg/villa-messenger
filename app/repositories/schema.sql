@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS tenant_channels (
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(tenant_id, platform, channel_id),
+    UNIQUE(platform, channel_id),
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 

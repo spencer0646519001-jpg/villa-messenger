@@ -78,13 +78,13 @@ class ConversationStateService:
         if active is None:
             return self._open_if_inquiry(message, decision, slots)
         if self._has_slot(slots):
-            self._repo.update_slots(state_id=active["id"], **slots)
+            self._repo.update_slots(tenant_id=message.tenant_id, state_id=active["id"], **slots)
             return _merge_row(active, slots)
         return active
 
-    def mark_completed(self, *, state_id: int) -> None:
+    def mark_completed(self, *, tenant_id: int, state_id: int) -> None:
         """Flip a state to completed (STAGE C, after a quote is sent)."""
-        self._repo.mark_completed(state_id=state_id)
+        self._repo.mark_completed(tenant_id=tenant_id, state_id=state_id)
 
     def _open_if_inquiry(
         self, message: InboundMessage, decision: InquiryDecision, slots: dict
