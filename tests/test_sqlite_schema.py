@@ -13,6 +13,7 @@ EXPECTED_TABLES = {
     "tenants",
     "tenant_channels",
     "tenant_owners",
+    "processed_webhook_events",
     "contacts",
     "reservations",
     "conversation_links",

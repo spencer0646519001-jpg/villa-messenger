@@ -39,6 +39,16 @@ CREATE TABLE IF NOT EXISTS tenant_owners (
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 
+CREATE TABLE IF NOT EXISTS processed_webhook_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    webhook_event_id TEXT NOT NULL,
+    -- Reserved for future cleanup of old dedupe records; do not remove.
+    created_at TEXT NOT NULL,
+    UNIQUE(tenant_id, webhook_event_id),
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+
 CREATE TABLE IF NOT EXISTS contacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id INTEGER NOT NULL,

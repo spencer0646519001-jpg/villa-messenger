@@ -23,6 +23,7 @@ break signature verification.
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import NoReturn
 from zoneinfo import ZoneInfo
@@ -56,6 +57,9 @@ from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.operation_state_repository import OperationStateRepository
+from app.repositories.processed_webhook_event_repository import (
+    ProcessedWebhookEventRepository,
+)
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_owner_repository import TenantOwnerRepository
 from app.repositories.tenant_repository import TenantRepository
@@ -102,6 +106,14 @@ _OWNER_COMMANDS = {
 _NIGHT_START_TIME = time(23, 0)
 _NIGHT_END_TIME = time(8, 0)
 _OWNER_RECORD_MAX_TEXT_CHARS = 4500
+
+
+@dataclass(frozen=True)
+class _PipelineContext:
+    service: InquiryService
+    persistence: MessagePersistenceService
+    state_service: ConversationStateService
+    composer: ConversationReplyComposer
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -174,6 +186,15 @@ def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
     )
 
 
+def _build_pipeline_context(database_path: str) -> _PipelineContext:
+    return _PipelineContext(
+        service=_build_inquiry_service(database_path),
+        persistence=MessagePersistenceService(database_path=database_path),
+        state_service=ConversationStateService(ConversationStateRepository(database_path)),
+        composer=_build_reply_composer(database_path),
+    )
+
+
 def _event_to_message(event: dict, tenant: dict) -> InboundMessage:
     return line_event_to_inbound_message(
         event=event,
@@ -181,6 +202,28 @@ def _event_to_message(event: dict, tenant: dict) -> InboundMessage:
         tenant_slug=tenant["slug"],
         tenant_timezone=tenant["timezone"],
     )
+
+
+def _should_process_event(*, event: dict, tenant_id: int, database_path: str) -> bool:
+    webhook_event_id = event.get("webhookEventId")
+    if not webhook_event_id:
+        logger.warning(
+            "LINE webhook event missing webhookEventId; processing without dedupe "
+            "(tenant_id=%s)",
+            tenant_id,
+        )
+        return True
+    is_new = ProcessedWebhookEventRepository(database_path).mark_if_new(
+        tenant_id=tenant_id,
+        webhook_event_id=str(webhook_event_id),
+    )
+    if not is_new:
+        logger.info(
+            "LINE webhook duplicate skipped: tenant_id=%s webhook_event_id=%s",
+            tenant_id,
+            webhook_event_id,
+        )
+    return is_new
 
 
 def _send_reply(event: dict, text: str | None) -> None:
@@ -421,22 +464,37 @@ def _mark_if_complete(
         logger.warning("LINE conversation-state mark_completed failed", exc_info=True)
 
 
+def _process_pipeline_event(
+    *,
+    event: dict,
+    tenant: dict,
+    database_path: str,
+    context: _PipelineContext,
+) -> None:
+    message = _event_to_message(event, tenant)
+    if _handle_owner_command(event=event, message=message, database_path=database_path):
+        return
+    decision = context.service.handle_message(message=message)
+    context.persistence.persist(decision=decision)
+    state = _record_state(context.state_service, message, decision)
+    composed = _compose_reply(context.composer, message, decision, state)
+    customer_text = _resolve_customer_text(composed, database_path, message.tenant_id)
+    _send_reply(event, customer_text)
+    _mark_if_complete(context.state_service, composed)
+
+
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
-    service = _build_inquiry_service(database_path)
-    persistence = MessagePersistenceService(database_path=database_path)
-    state_service = ConversationStateService(ConversationStateRepository(database_path))
-    composer = _build_reply_composer(database_path)
+    context = _build_pipeline_context(database_path)
+    tenant_id = tenant["id"]
     for event in events:
-        message = _event_to_message(event, tenant)
-        if _handle_owner_command(event=event, message=message, database_path=database_path):
+        if not _should_process_event(event=event, tenant_id=tenant_id, database_path=database_path):
             continue
-        decision = service.handle_message(message=message)
-        persistence.persist(decision=decision)
-        state = _record_state(state_service, message, decision)
-        composed = _compose_reply(composer, message, decision, state)
-        customer_text = _resolve_customer_text(composed, database_path, message.tenant_id)
-        _send_reply(event, customer_text)
-        _mark_if_complete(state_service, composed)
+        _process_pipeline_event(
+            event=event,
+            tenant=tenant,
+            database_path=database_path,
+            context=context,
+        )
 
 
 @router.post("/webhooks/line")

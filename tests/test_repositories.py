@@ -10,6 +10,9 @@ import pytest
 from app.repositories.contact_repository import ContactRepository
 from app.repositories.inquiry_repository import InquiryRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.processed_webhook_event_repository import (
+    ProcessedWebhookEventRepository,
+)
 from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_repository import TenantRepository
 
@@ -299,6 +302,47 @@ def test_repositories_use_provided_database_path(database_path: Path) -> None:
     assert repository.get_by_id(tenant_id)["slug"] == "temp-db-tenant"
 
 
+def test_processed_webhook_event_mark_if_new_is_idempotent(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = ProcessedWebhookEventRepository(database_path)
+
+    first = repository.mark_if_new(
+        tenant_id=tenant_id,
+        webhook_event_id="evt-1",
+    )
+    second = repository.mark_if_new(
+        tenant_id=tenant_id,
+        webhook_event_id="evt-1",
+    )
+
+    assert first is True
+    assert second is False
+    assert _processed_webhook_event_count(database_path) == 1
+
+
+def test_processed_webhook_event_mark_if_new_is_tenant_scoped(
+    database_path: Path,
+) -> None:
+    tenant_a_id = _create_tenant(database_path, "tenant-a")
+    tenant_b_id = _create_tenant(database_path, "tenant-b")
+    repository = ProcessedWebhookEventRepository(database_path)
+
+    first = repository.mark_if_new(
+        tenant_id=tenant_a_id,
+        webhook_event_id="evt-shared",
+    )
+    second_tenant = repository.mark_if_new(
+        tenant_id=tenant_b_id,
+        webhook_event_id="evt-shared",
+    )
+
+    assert first is True
+    assert second_tenant is True
+    assert _processed_webhook_event_count(database_path) == 2
+
+
 def _create_tenant(database_path: Path, slug: str) -> int:
     return TenantRepository(database_path).create_tenant(
         slug=slug,
@@ -306,6 +350,14 @@ def _create_tenant(database_path: Path, slug: str) -> int:
         timezone="Asia/Taipei",
         default_language="zh-TW",
     )
+
+
+def _processed_webhook_event_count(database_path: Path) -> int:
+    with closing(get_connection(database_path)) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count FROM processed_webhook_events"
+        ).fetchone()
+    return int(row["count"])
 
 
 def _insert_message_at(

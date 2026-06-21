@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import inspect
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import Iterator
@@ -103,9 +104,15 @@ def _set_system_on(database_path: Path, tenant_id: int) -> None:
     service.turn_on(tenant_id=tenant_id, tenant_timezone=_TZ)
 
 
-def _text_event(text: str, *, user_id: str = "Uguest") -> dict:
+def _text_event(
+    text: str,
+    *,
+    user_id: str = "Uguest",
+    webhook_event_id: str | None = None,
+) -> dict:
     return {
         "type": "message",
+        "webhookEventId": webhook_event_id or f"evt-{uuid.uuid4()}",
         "timestamp": 1700000000000,
         "source": {"type": "user", "userId": user_id},
         "message": {"type": "text", "id": "1", "text": text},
@@ -330,9 +337,17 @@ _MISSING_INFO_TEXT = "5/12 入住 5/14 退房 多少錢?"
 
 
 def _text_event_with_reply_token(
-    text: str, reply_token: str = "rtok-123", *, user_id: str = "Uguest"
+    text: str,
+    reply_token: str = "rtok-123",
+    *,
+    user_id: str = "Uguest",
+    webhook_event_id: str | None = None,
 ) -> dict:
-    event = _text_event(text, user_id=user_id)
+    event = _text_event(
+        text,
+        user_id=user_id,
+        webhook_event_id=webhook_event_id,
+    )
     event["replyToken"] = reply_token
     return event
 
@@ -755,6 +770,142 @@ def _capture_sends(
 
     monkeypatch.setattr(line_webhook_routes, "push_message", _push)
     return replies, pushes
+
+
+def test_duplicate_webhook_event_id_is_processed_once_for_guest_message(
+    client: TestClient,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    webhook_event_id = "evt-guest-duplicate"
+    first_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-first",
+                webhook_event_id=webhook_event_id,
+            )
+        ]
+    )
+    second_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-second",
+                webhook_event_id=webhook_event_id,
+            )
+        ]
+    )
+
+    with caplog.at_level(logging.INFO, logger=line_webhook_routes.__name__):
+        first_response = _post(client, first_body, _sign(first_body))
+        second_response = _post(client, second_body, _sign(second_body))
+
+    messages = _rows(database_path, "messages")
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert len(replies) == 1
+    assert replies[0]["reply_token"] == "rtok-first"
+    assert replies[0]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    assert pushes == []
+    assert len(messages) == 1
+    assert messages[0]["message_text"] == _MISSING_INFO_TEXT
+    assert len(_rows(database_path, "processed_webhook_events")) == 1
+    assert webhook_event_id in caplog.text
+
+
+def test_duplicate_webhook_event_id_skips_owner_command_replay(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch)
+    webhook_event_id = "evt-owner-on-duplicate"
+    first_body = _payload_bytes(
+        [_text_event_with_reply_token("/開機", user_id="Uowner-a", webhook_event_id=webhook_event_id)]
+    )
+    second_body = _payload_bytes(
+        [_text_event_with_reply_token("/開機", user_id="Uowner-a", webhook_event_id=webhook_event_id)]
+    )
+
+    first_response = _post(client, first_body, _sign(first_body))
+    second_response = _post(client, second_body, _sign(second_body))
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert row["manual_mode"] == "on"
+    assert replies == []
+    assert len(pushes) == 1
+    assert pushes[0]["to_user_id"] == "Uowner-a"
+    assert pushes[0]["text"] == OWNER_COMMAND_TURN_ON_MESSAGE
+    assert _rows(database_path, "messages") == []
+    assert len(_rows(database_path, "processed_webhook_events")) == 1
+
+
+def test_different_webhook_event_ids_are_both_processed(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    first_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-first",
+                webhook_event_id="evt-guest-first",
+            )
+        ]
+    )
+    second_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-second",
+                webhook_event_id="evt-guest-second",
+            )
+        ]
+    )
+
+    first_response = _post(client, first_body, _sign(first_body))
+    second_response = _post(client, second_body, _sign(second_body))
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert [reply["reply_token"] for reply in replies] == ["rtok-first", "rtok-second"]
+    assert pushes == []
+    assert len(_rows(database_path, "messages")) == 2
+    assert len(_rows(database_path, "processed_webhook_events")) == 2
+
+
+def test_missing_webhook_event_id_fails_open_and_logs_warning(
+    client: TestClient,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    event = _text_event_with_reply_token(_MISSING_INFO_TEXT)
+    del event["webhookEventId"]
+    body = _payload_bytes([event])
+
+    with caplog.at_level(logging.WARNING, logger=line_webhook_routes.__name__):
+        response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(replies) == 1
+    assert replies[0]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    assert pushes == []
+    assert len(_rows(database_path, "messages")) == 1
+    assert _rows(database_path, "processed_webhook_events") == []
+    assert "missing webhookEventId" in caplog.text
 
 
 def test_non_owner_command_is_invisible_and_flows_normally(
