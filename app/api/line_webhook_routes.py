@@ -23,12 +23,13 @@ break signature verification.
 import json
 import logging
 import os
+from time import sleep
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from typing import NoReturn
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 
 from app.adapters.line_adapter import (
     LineParseError,
@@ -93,6 +94,10 @@ _GENERIC_400_DETAIL = "Bad Request"
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 # STAGE D fallback: used only while a tenant has no active owner rows yet.
 _OWNER_USER_ID_ENV = "LINE_TEST_OWNER_USER_ID"
+_REPLY_RETRY_DELAYS_SECONDS = (0.5, 1.0)
+_PIPELINE_FAILURE_OWNER_NOTICE = (
+    "⚠️ 有一則客人訊息系統暫時無法處理，可能需要您手動查看 LINE 並回覆。"
+)
 _OWNER_COMMAND_TURN_ON = "/開機"
 _OWNER_COMMAND_TURN_OFF = "/關機"
 _OWNER_COMMAND_STATUS = "/狀態"
@@ -226,25 +231,48 @@ def _should_process_event(*, event: dict, tenant_id: int, database_path: str) ->
     return is_new
 
 
-def _send_reply(event: dict, text: str | None) -> None:
-    """Best-effort outbound reply. Fully isolated from receiving: any failure
-    (no reply text, missing replyToken, missing token, LINE API error, network
-    error, timeout) is logged at WARNING and swallowed so persistence is
-    untouched and the webhook still returns 200."""
-    if not text:
-        return  # off mode / do_nothing / push-only -> send NOTHING
+def _reply_request(event: dict, text: str) -> tuple[str, str, str] | None:
     reply_token = event.get("replyToken")
     if not reply_token:
         logger.warning("LINE reply skipped: event has no replyToken")
-        return
+        return None
     access_token = os.environ.get(_ACCESS_TOKEN_ENV)
     if not access_token:
         logger.warning("LINE reply skipped: %s not set", _ACCESS_TOKEN_ENV)
-        return
+        return None
+    return str(reply_token), text, access_token
+
+
+def _send_reply_request(reply_token: str, text: str, access_token: str) -> bool:
     try:
         reply_message(reply_token=reply_token, text=text, access_token=access_token)
+        return True
     except Exception:  # noqa: BLE001 -- send must NEVER break receiving
         logger.warning("LINE reply send failed", exc_info=True)
+        return False
+
+
+def _send_reply(event: dict, text: str | None) -> bool:
+    """Best-effort single reply attempt; False means the expected reply was not sent."""
+    if not text:
+        return True  # off mode / do_nothing / push-only -> send NOTHING
+    request = _reply_request(event, text)
+    return request is not None and _send_reply_request(*request)
+
+
+def _send_reply_with_retry(event: dict, text: str | None) -> bool:
+    if not text:
+        return True
+    request = _reply_request(event, text)
+    if request is None:
+        return False
+    if _send_reply_request(*request):
+        return True
+    for delay_seconds in _REPLY_RETRY_DELAYS_SECONDS:
+        sleep(delay_seconds)
+        if _send_reply_request(*request):
+            return True
+    return False
 
 
 def _owner_user_ids(database_path: str, tenant_id: int) -> list[str]:
@@ -467,6 +495,43 @@ def _mark_if_complete(
         logger.warning("LINE conversation-state mark_completed failed", exc_info=True)
 
 
+def _rollback_processed_event(*, event: dict, tenant_id: int, database_path: str) -> None:
+    webhook_event_id = event.get("webhookEventId")
+    if not webhook_event_id:
+        logger.warning("LINE webhook event cannot roll back dedupe: missing webhookEventId")
+        return
+    ProcessedWebhookEventRepository(database_path).delete(
+        tenant_id=tenant_id,
+        webhook_event_id=str(webhook_event_id),
+    )
+    logger.warning(
+        "LINE webhook dedupe rolled back for redelivery: tenant_id=%s webhook_event_id=%s",
+        tenant_id,
+        webhook_event_id,
+    )
+
+
+def _notify_owner_pipeline_failure(*, database_path: str, tenant_id: int) -> None:
+    try:
+        _send_owner_push(
+            database_path=database_path,
+            tenant_id=tenant_id,
+            text=_PIPELINE_FAILURE_OWNER_NOTICE,
+        )
+    except Exception:  # noqa: BLE001 -- exception handling must never raise again
+        logger.warning("LINE owner push for pipeline failure failed", exc_info=True)
+
+
+def _handle_pipeline_failure(*, event: dict, tenant_id: int, database_path: str) -> None:
+    logger.error(
+        "LINE webhook pipeline failed: tenant_id=%s webhook_event_id=%s",
+        tenant_id,
+        event.get("webhookEventId"),
+        exc_info=True,
+    )
+    _notify_owner_pipeline_failure(database_path=database_path, tenant_id=tenant_id)
+
+
 def _process_pipeline_event(
     *,
     event: dict,
@@ -482,7 +547,13 @@ def _process_pipeline_event(
     state = _record_state(context.state_service, message, decision)
     composed = _compose_reply(context.composer, message, decision, state)
     customer_text = _resolve_customer_text(composed, database_path, message.tenant_id)
-    _send_reply(event, customer_text)
+    if not _send_reply_with_retry(event, customer_text):
+        _rollback_processed_event(
+            event=event,
+            tenant_id=message.tenant_id,
+            database_path=database_path,
+        )
+        return
     _mark_if_complete(context.state_service, message.tenant_id, composed)
 
 
@@ -492,16 +563,23 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
     for event in events:
         if not _should_process_event(event=event, tenant_id=tenant_id, database_path=database_path):
             continue
-        _process_pipeline_event(
-            event=event,
-            tenant=tenant,
-            database_path=database_path,
-            context=context,
-        )
+        try:
+            _process_pipeline_event(
+                event=event,
+                tenant=tenant,
+                database_path=database_path,
+                context=context,
+            )
+        except Exception:  # noqa: BLE001 -- keep the background task alive for later events
+            _handle_pipeline_failure(event=event, tenant_id=tenant_id, database_path=database_path)
 
 
 @router.post("/webhooks/line")
-async def line_webhook(request: Request, database_path: str = Depends(get_database_path)) -> dict[str, str]:
+async def line_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    database_path: str = Depends(get_database_path),
+) -> dict[str, str]:
     raw = await request.body()
     signature = request.headers.get("X-Line-Signature")
     payload = _parse_payload(raw)
@@ -509,5 +587,7 @@ async def line_webhook(request: Request, database_path: str = Depends(get_databa
     _verify(raw, signature, channel)
     tenant = _resolve_tenant(database_path, channel)
     events = _extract_events(payload, channel)
-    _run_pipeline(events, tenant, database_path)
+    # Starlette runs sync background callables in a threadpool after sending
+    # the response. This is a same-process task, not a durable queue.
+    background_tasks.add_task(_run_pipeline, events, tenant, database_path)
     return {"status": "ok"}

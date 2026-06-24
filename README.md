@@ -74,3 +74,11 @@ Run the app:
 ```powershell
 uvicorn app.main:app --reload
 ```
+
+## Deployment Checklist
+
+- LINE webhook work after signature verification runs through FastAPI
+  `BackgroundTasks`. These tasks execute in the same worker process after the
+  200 response is sent; they are not a durable queue.
+- Configure the server/process manager with enough graceful shutdown time for
+  webhook background tasks to finish before a worker is killed.

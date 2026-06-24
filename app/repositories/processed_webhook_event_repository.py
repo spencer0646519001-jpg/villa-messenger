@@ -28,3 +28,14 @@ class ProcessedWebhookEventRepository:
             )
             connection.commit()
         return cursor.rowcount == 1
+
+    def delete(self, *, tenant_id: int, webhook_event_id: str) -> None:
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(
+                """
+                DELETE FROM processed_webhook_events
+                WHERE tenant_id = ? AND webhook_event_id = ?
+                """,
+                (tenant_id, str(webhook_event_id)),
+            )
+            connection.commit()

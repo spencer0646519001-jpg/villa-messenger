@@ -226,6 +226,36 @@ def test_valid_quote_persists_message_and_inquiry(client: TestClient, database_p
     assert inquiries[0]["estimated_total_price"] is not None
 
 
+def test_webhook_schedules_pipeline_as_background_task(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    scheduled: list[tuple[object, tuple[object, ...], dict[str, object]]] = []
+
+    def _capture_add_task(self: object, func: object, *args: object, **kwargs: object) -> None:
+        scheduled.append((func, args, kwargs))
+
+    def _pipeline_should_not_run_inline(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("_run_pipeline should only be scheduled")
+
+    monkeypatch.setattr(line_webhook_routes.BackgroundTasks, "add_task", _capture_add_task)
+    monkeypatch.setattr(line_webhook_routes, "_run_pipeline", _pipeline_should_not_run_inline)
+    body = _payload_bytes([_text_event("hi", webhook_event_id="evt-background")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert len(scheduled) == 1
+    func, args, kwargs = scheduled[0]
+    assert func is _pipeline_should_not_run_inline
+    assert args[0] == json.loads(body)["events"]
+    assert args[1]["id"] == tenant_id
+    assert args[2] == database_path
+    assert kwargs == {}
+    assert _rows(database_path, "messages") == []
+
+
 # ============================================================
 # CASE 2: bad signature -> 400, nothing persisted
 # ============================================================
@@ -395,25 +425,33 @@ def test_off_mode_sends_nothing_still_200_and_persisted(
     assert len(_rows(database_path, "messages")) == 1
 
 
-def test_send_failure_swallowed_still_200_and_persisted(
+def test_send_failure_rolls_back_dedupe_still_200_and_persisted(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant_id = _seed_channel(database_path)
     _set_system_on(database_path, tenant_id)
     monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    monkeypatch.setattr(line_webhook_routes, "_REPLY_RETRY_DELAYS_SECONDS", (0, 0))
+    attempts: list[dict] = []
 
-    def _boom(**_kw: object) -> None:
+    def _boom(**kw: object) -> None:
+        attempts.append(kw)
         raise httpx.ConnectError("network down")
 
     monkeypatch.setattr(line_webhook_routes, "reply_message", _boom)
-    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
+    body = _payload_bytes(
+        [_text_event_with_reply_token(_MISSING_INFO_TEXT, webhook_event_id="evt-send-fails")]
+    )
 
     response = _post(client, body, _sign(body))
 
-    # Send blew up, but receiving + persistence are untouched and we still ack.
+    # Send blew up after retries, but receiving + persistence are untouched and
+    # the dedupe stamp is removed so a redelivery can try again.
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert len(attempts) == 3
     assert len(_rows(database_path, "messages")) == 1
+    assert _rows(database_path, "processed_webhook_events") == []
 
 
 def test_missing_reply_token_skips_send_still_200(
@@ -816,6 +854,118 @@ def test_duplicate_webhook_event_id_is_processed_once_for_guest_message(
     assert messages[0]["message_text"] == _MISSING_INFO_TEXT
     assert len(_rows(database_path, "processed_webhook_events")) == 1
     assert webhook_event_id in caplog.text
+
+
+def test_reply_failure_rollback_allows_redelivery_of_same_webhook_event_id(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    monkeypatch.setattr(line_webhook_routes, "_REPLY_RETRY_DELAYS_SECONDS", (0, 0))
+    attempts: list[dict] = []
+    webhook_event_id = "evt-redelivery-after-reply-failure"
+
+    def _fail_first_delivery(**kw: object) -> None:
+        attempts.append(kw)
+        if len(attempts) <= 3:
+            raise httpx.ConnectError("reply network down")
+
+    monkeypatch.setattr(line_webhook_routes, "reply_message", _fail_first_delivery)
+    first_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-first",
+                webhook_event_id=webhook_event_id,
+            )
+        ]
+    )
+    second_body = _payload_bytes(
+        [
+            _text_event_with_reply_token(
+                _MISSING_INFO_TEXT,
+                "rtok-redelivery",
+                webhook_event_id=webhook_event_id,
+            )
+        ]
+    )
+
+    first_response = _post(client, first_body, _sign(first_body))
+    assert first_response.status_code == 200
+    assert [attempt["reply_token"] for attempt in attempts] == ["rtok-first"] * 3
+    assert _rows(database_path, "processed_webhook_events") == []
+
+    second_response = _post(client, second_body, _sign(second_body))
+
+    assert second_response.status_code == 200
+    assert attempts[-1]["reply_token"] == "rtok-redelivery"
+    assert attempts[-1]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    assert len(_rows(database_path, "messages")) == 2
+    assert len(_rows(database_path, "processed_webhook_events")) == 1
+
+
+def test_pipeline_exception_keeps_dedupe_and_notifies_owner(
+    client: TestClient,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    replies, pushes = _capture_sends(monkeypatch)
+    webhook_event_id = "evt-pipeline-explodes"
+
+    def _boom(**_kw: object) -> None:
+        raise RuntimeError("pipeline exploded")
+
+    monkeypatch.setattr(line_webhook_routes, "_process_pipeline_event", _boom)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("hello", webhook_event_id=webhook_event_id)]
+    )
+
+    with caplog.at_level(logging.ERROR, logger=line_webhook_routes.__name__):
+        response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies == []
+    assert len(pushes) == 1
+    assert pushes[0]["to_user_id"] == "Uowner"
+    assert pushes[0]["text"] == line_webhook_routes._PIPELINE_FAILURE_OWNER_NOTICE
+    assert "hello" not in pushes[0]["text"]
+    assert _rows(database_path, "messages") == []
+    assert len(_rows(database_path, "processed_webhook_events")) == 1
+    assert webhook_event_id in caplog.text
+    assert "RuntimeError: pipeline exploded" in caplog.text
+
+
+def test_pipeline_exception_owner_notification_failure_is_swallowed(
+    client: TestClient,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _seed_channel(database_path)
+
+    def _pipeline_boom(**_kw: object) -> None:
+        raise RuntimeError("pipeline exploded")
+
+    def _owner_push_boom(**_kw: object) -> bool:
+        raise RuntimeError("owner push exploded")
+
+    monkeypatch.setattr(line_webhook_routes, "_process_pipeline_event", _pipeline_boom)
+    monkeypatch.setattr(line_webhook_routes, "_send_owner_push", _owner_push_boom)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("hello", webhook_event_id="evt-owner-notify-fails")]
+    )
+
+    with caplog.at_level(logging.WARNING, logger=line_webhook_routes.__name__):
+        response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert len(_rows(database_path, "processed_webhook_events")) == 1
+    assert "RuntimeError: pipeline exploded" in caplog.text
+    assert "LINE owner push for pipeline failure failed" in caplog.text
+    assert "RuntimeError: owner push exploded" in caplog.text
 
 
 def test_duplicate_webhook_event_id_skips_owner_command_replay(

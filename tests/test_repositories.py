@@ -343,6 +343,19 @@ def test_processed_webhook_event_mark_if_new_is_tenant_scoped(
     assert _processed_webhook_event_count(database_path) == 2
 
 
+def test_processed_webhook_event_delete_allows_same_event_to_be_marked_again(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path, "tenant-a")
+    repository = ProcessedWebhookEventRepository(database_path)
+
+    assert repository.mark_if_new(tenant_id=tenant_id, webhook_event_id="evt-1") is True
+    repository.delete(tenant_id=tenant_id, webhook_event_id="evt-1")
+    assert repository.mark_if_new(tenant_id=tenant_id, webhook_event_id="evt-1") is True
+
+    assert _processed_webhook_event_count(database_path) == 1
+
+
 def _create_tenant(database_path: Path, slug: str) -> int:
     return TenantRepository(database_path).create_tenant(
         slug=slug,
