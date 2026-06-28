@@ -43,13 +43,21 @@ from app.domain.reply_templates import (
     render_faq_wifi,
     render_faq_whole_house,
     render_invalid_date_message,
+    render_manual_review_message,
     render_missing_info_message,
+    render_missing_room_count_message,
     render_over_capacity_message,
     render_owner_push_uncategorized,
     render_quote_message,
+    render_room_capacity_suggestion_message,
 )
 from app.domain.reply_text import (
     FAQ_FALLBACK_LEAD,
+)
+from app.domain.room_policy import (
+    max_guest_capacity,
+    minimum_rooms_for_guest_count,
+    resolve_room_pricing_rule,
 )
 from app.domain.text_normalizer import normalize_for_parsing
 from app.schemas import InboundMessage
@@ -146,6 +154,9 @@ class ConversationReplyComposer:
         missing = self._missing_for_state(state)
         if missing:
             return ComposedReply(text=_render_missing(missing))
+        room_gate = self._room_gate(message, state)
+        if room_gate is not None:
+            return room_gate
         return ComposedReply(
             text=self._quote_for_state(message, state),
             completed_state_id=state["id"],
@@ -231,14 +242,34 @@ class ConversationReplyComposer:
 
     def _quote_for_state(self, message: InboundMessage, state: dict) -> str:
         kwargs = _state_stay_kwargs(state)
+        room_policy = self._room_policy_loader(message.tenant_id)
         pricing = calculate_price(
             **kwargs,
             tenant_pricing=self._pricing_loader(message.tenant_id),
+            room_policy=room_policy,
             tenant_special_dates=self._special_dates_loader(message.tenant_id),
         )
         if not pricing.can_quote:
             return _unquotable_reply(pricing)
         return render_quote_message(pricing=pricing, **kwargs)
+
+    def _room_gate(self, message: InboundMessage, state: dict) -> ComposedReply | None:
+        room_policy = self._room_policy_loader(message.tenant_id)
+        guest_count = _state_guest_count(state) or 0
+        room_count = state.get("room_count")
+        if room_count is None:
+            return ComposedReply(text=render_missing_room_count_message())
+        if _needs_manual_room_review(room_count, guest_count, room_policy):
+            return ComposedReply(
+                text=render_manual_review_message(),
+                owner_push_text=_manual_review_push(message),
+            )
+        room_rule = resolve_room_pricing_rule(room_count=room_count, room_policy=room_policy)
+        if guest_count <= room_rule.standard_capacity:
+            return None
+        if room_count == 4 and guest_count <= room_rule.max_capacity:
+            return None
+        return _room_capacity_suggestion(message, room_count, guest_count, room_policy)
 
 
 def _is_faq(decision: InquiryDecision) -> bool:
@@ -290,7 +321,46 @@ def _state_stay_kwargs(state: dict) -> dict:
         "child_count": state["child_count"] or 0,
         "infant_count": state["infant_count"] or 0,
         "pet_count": state["pet_count"] or 0,
+        "room_count": state.get("room_count"),
     }
+
+
+def _needs_manual_room_review(
+    room_count: int, guest_count: int, room_policy: dict
+) -> bool:
+    capacity = max_guest_capacity(room_policy)
+    if capacity is not None and guest_count > capacity:
+        return True
+    return resolve_room_pricing_rule(room_count=room_count, room_policy=room_policy) is None
+
+
+def _room_capacity_suggestion(
+    message: InboundMessage, room_count: int, guest_count: int, room_policy: dict
+) -> ComposedReply:
+    suggested = minimum_rooms_for_guest_count(
+        guest_count=guest_count,
+        room_policy=room_policy,
+    )
+    if suggested is None:
+        return ComposedReply(
+            text=render_manual_review_message(),
+            owner_push_text=_manual_review_push(message),
+        )
+    return ComposedReply(
+        text=render_room_capacity_suggestion_message(
+            guest_count=guest_count,
+            room_count=room_count,
+            suggested_room_count=suggested,
+        )
+    )
+
+
+def _manual_review_push(message: InboundMessage) -> str:
+    return render_owner_push_uncategorized(
+        original_text=message.text,
+        display_name=message.customer_display_name,
+        customer_was_replied=True,
+    )
 
 
 def _render_missing(missing: list[str]) -> str:

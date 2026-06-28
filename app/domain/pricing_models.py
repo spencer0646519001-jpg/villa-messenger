@@ -22,6 +22,7 @@ class PricingResult(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     tier: str | None = None
     guest_count_used: int | None = None
+    room_count_used: int | None = None
     nightly_prices: list[NightlyPrice] = Field(default_factory=list)
     room_subtotal: int = 0
     long_stay_discount: int = 0

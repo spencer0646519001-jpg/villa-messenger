@@ -9,11 +9,13 @@ from app.domain.inquiry_decision import InquiryDecision
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.reply_text import (
     INVALID_DATE_MESSAGE,
+    MANUAL_REVIEW_MESSAGE,
+    MISSING_ROOM_COUNT_MESSAGE,
     MISSING_INFO_HEADER,
-    OVER_CAPACITY_MESSAGE,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
     OWNER_PUSH_URGENT_PREFIX,
     QUOTE_GREETING,
+    ROOM_CAPACITY_SUGGESTION_TEMPLATE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
@@ -44,6 +46,17 @@ _DEFAULT_PRICING = {
             "spring_festival": 31000,
         },
     },
+}
+
+_DEFAULT_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
 }
 
 
@@ -85,15 +98,18 @@ def _build_service(
     system_on: bool = True,
     tenant_pricing: dict | None = None,
     tenant_special_dates: dict | None = None,
+    tenant_room_policy: dict | None = None,
     availability_service=None,
 ) -> tuple[InquiryService, FakeOperationModeService]:
     fake = FakeOperationModeService(return_value=system_on)
     pricing = tenant_pricing if tenant_pricing is not None else _DEFAULT_PRICING
     special = tenant_special_dates if tenant_special_dates is not None else {}
+    room_policy = tenant_room_policy if tenant_room_policy is not None else _DEFAULT_ROOM_POLICY
     service = InquiryService(
         operation_mode_service=fake,
         tenant_pricing_loader=lambda tid: pricing,
         tenant_special_dates_loader=lambda tid: special,
+        tenant_room_policy_loader=lambda tid: room_policy,
         availability_service=availability_service,
     )
     return service, fake
@@ -346,7 +362,7 @@ def test_pricing_complete_weekday_inquiry_returns_quote() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -359,7 +375,7 @@ def test_pricing_log_payload_quoted_total_matches_pricing() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     # 4 adults, 1 weekday night, 8_people tier weekday=9000, no discount
@@ -370,7 +386,7 @@ def test_pricing_action_taken_is_quoted() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["action_taken"] == "quoted"
@@ -380,13 +396,56 @@ def test_pricing_log_payload_includes_parsed_fields() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["parsed_checkin"] == "2026-05-12"
     assert decision.log_payload["parsed_checkout"] == "2026-05-13"
     assert decision.log_payload["parsed_adult_count"] == 4
+    assert decision.log_payload["parsed_room_count"] == 2
     assert decision.log_payload["inquiry_intent"] == "price"
+
+
+def test_complete_inquiry_without_room_count_asks_room_count() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("7/28 入住 7/29 退房 13 大人 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.customer_reply_text == MISSING_ROOM_COUNT_MESSAGE
+    assert decision.log_payload["action_taken"] == "missing_room_count"
+    assert decision.log_payload["parsed_room_count"] is None
+
+
+def test_room_count_too_small_suggests_minimum_room_count() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 10 大人 開2房 多少錢?")
+    )
+
+    assert decision.action_type == "reply_to_customer_only"
+    assert decision.customer_reply_text == ROOM_CAPACITY_SUGGESTION_TEMPLATE.format(
+        guest_count=10,
+        room_count=2,
+        suggested_room_count=3,
+    )
+    assert decision.log_payload["action_taken"] == "room_capacity_suggestion"
+
+
+def test_one_room_routes_to_manual_review() -> None:
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message("5/12 入住 5/13 退房 2 大人 開1房 多少錢?")
+    )
+
+    assert decision.action_type == "reply_and_push"
+    assert decision.customer_reply_text == MANUAL_REVIEW_MESSAGE
+    assert decision.owner_push_text is not None
+    assert decision.log_payload["action_taken"] == "room_manual_review"
 
 
 # ============================================================
@@ -394,23 +453,24 @@ def test_pricing_log_payload_includes_parsed_fields() -> None:
 # ============================================================
 
 
-def test_over_capacity_reply_uses_over_capacity_template() -> None:
+def test_over_capacity_routes_to_manual_review() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 17 大人 開4房 多少錢?")
     )
 
-    assert decision.action_type == "reply_to_customer_only"
-    assert decision.customer_reply_text == OVER_CAPACITY_MESSAGE
-    assert decision.log_payload["action_taken"] == "over_capacity"
+    assert decision.action_type == "reply_and_push"
+    assert decision.customer_reply_text == MANUAL_REVIEW_MESSAGE
+    assert decision.owner_push_text is not None
+    assert decision.log_payload["action_taken"] == "room_manual_review"
 
 
 def test_over_capacity_could_quote_false_and_no_quoted_total() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 17 大人 開4房 多少錢?")
     )
 
     assert decision.could_quote is False
@@ -427,7 +487,7 @@ def test_invalid_date_reply_uses_invalid_date_template() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+        message=_build_message("5/14 入住 5/12 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -438,7 +498,7 @@ def test_invalid_date_action_taken() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+        message=_build_message("5/14 入住 5/12 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["action_taken"] == "invalid_date"
@@ -461,11 +521,12 @@ def test_tenant_pricing_loader_called_with_correct_tenant_id() -> None:
         operation_mode_service=fake,
         tenant_pricing_loader=pricing_loader,
         tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _DEFAULT_ROOM_POLICY,
     )
 
     service.handle_message(
         message=_build_message(
-            "5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=42
+            "5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=42
         )
     )
 
@@ -484,11 +545,12 @@ def test_special_dates_loader_called_and_fakes_work_end_to_end() -> None:
         operation_mode_service=fake,
         tenant_pricing_loader=lambda tid: _DEFAULT_PRICING,
         tenant_special_dates_loader=special_loader,
+        tenant_room_policy_loader=lambda tid: _DEFAULT_ROOM_POLICY,
     )
 
     decision = service.handle_message(
         message=_build_message(
-            "5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=7
+            "5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=7
         )
     )
 
@@ -516,10 +578,11 @@ def test_integration_spring_festival_quote_uses_real_fixture() -> None:
         operation_mode_service=fake,
         tenant_pricing_loader=lambda tid: config["pricing"],
         tenant_special_dates_loader=lambda tid: config["special_dates"],
+        tenant_room_policy_loader=lambda tid: config["room_policy"],
     )
 
     decision = service.handle_message(
-        message=_build_message("2/15 入住 2/17 退房 4 大人 多少錢?")
+        message=_build_message("2/15 入住 2/17 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -688,7 +751,7 @@ def test_pricing_without_availability_service_quotes_as_before() -> None:
     service, _ = _build_service(system_on=True)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -706,7 +769,7 @@ def test_blocked_returns_reply_and_push_full_house_decision() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_and_push"
@@ -724,7 +787,7 @@ def test_blocked_log_payload_action_taken_and_blocked_count() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/14 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/14 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["action_taken"] == "full_house"
@@ -743,7 +806,7 @@ def test_blocked_owner_push_text_omits_inquiry_id_at_service_layer() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert "詢價編號" not in decision.owner_push_text
@@ -755,7 +818,7 @@ def test_blocked_availability_service_called_with_parsed_dates() -> None:
     )
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
-    service.handle_message(message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?"))
+    service.handle_message(message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?"))
 
     assert fake_avail.calls == [(_date(2026, 5, 12), _date(2026, 5, 13))]
 
@@ -768,7 +831,7 @@ def test_available_outcome_proceeds_to_normal_quote() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -787,7 +850,7 @@ def test_error_outcome_falls_back_to_quote_plus_owner_notice() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "reply_and_push"
@@ -807,7 +870,7 @@ def test_error_outcome_log_payload_carries_action_and_reason() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["action_taken"] == "quoted_unverified"
@@ -825,7 +888,7 @@ def test_invalid_date_short_circuits_before_availability_check() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/14 入住 5/12 退房 4 大人 多少錢?")
+        message=_build_message("5/14 入住 5/12 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.log_payload["action_taken"] == "invalid_date"
@@ -837,10 +900,10 @@ def test_over_capacity_short_circuits_before_availability_check() -> None:
     service, _ = _build_service(system_on=True, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 17 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 17 大人 開4房 多少錢?")
     )
 
-    assert decision.log_payload["action_taken"] == "over_capacity"
+    assert decision.log_payload["action_taken"] == "room_manual_review"
     assert fake_avail.calls == []
 
 
@@ -886,7 +949,7 @@ def test_off_mode_does_not_call_availability_service() -> None:
     service, _ = _build_service(system_on=False, availability_service=fake_avail)
 
     decision = service.handle_message(
-        message=_build_message("5/12 入住 5/13 退房 4 大人 多少錢?")
+        message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     )
 
     assert decision.action_type == "do_nothing"

@@ -4,6 +4,7 @@ from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_intent import parse_inquiry_intent
 from app.domain.parser_models import InquiryParseResult
 from app.domain.pet_parser import parse_pets
+from app.domain.room_count_parser import parse_room_count
 from app.domain.text_normalizer import normalize_for_parsing
 
 
@@ -20,6 +21,7 @@ def parse_inquiry(text: str, reference_year: int | None = None) -> InquiryParseR
     dates = parse_stay_dates(normalized, reference_year=reference_year)
     guests = parse_guest_counts(normalized)
     pets = parse_pets(normalized)
+    room_count = parse_room_count(normalized)
 
     # Only quote-relevant intents ask for these slots; the shared rule then says
     # which are missing (same function STAGE C runs over the accumulated state).
@@ -49,6 +51,7 @@ def parse_inquiry(text: str, reference_year: int | None = None) -> InquiryParseR
         dates=dates,
         guests=guests,
         pets=pets,
+        room_count=room_count,
         missing_fields=missing_fields,
         can_preliminarily_quote=can_preliminarily_quote,
     )

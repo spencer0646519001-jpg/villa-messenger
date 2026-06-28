@@ -13,6 +13,7 @@ def _payload(**overrides: object) -> dict:
         "parsed_adult_count": None,
         "parsed_child_count": None,
         "parsed_infant_count": None,
+        "parsed_room_count": None,
         "parsed_pet_count": None,
     }
     base.update(overrides)
@@ -28,6 +29,7 @@ def test_parsed_fields_map_to_slot_names() -> None:
             parsed_adult_count=4,
             parsed_child_count=1,
             parsed_infant_count=2,
+            parsed_room_count=3,
         )
     )
 
@@ -37,6 +39,7 @@ def test_parsed_fields_map_to_slot_names() -> None:
     assert slots["adult_count"] == 4
     assert slots["child_count"] == 1
     assert slots["infant_count"] == 2
+    assert slots["room_count"] == 3
 
 
 def test_last_message_text_is_raw_text() -> None:
@@ -49,7 +52,7 @@ def test_none_slots_stay_none() -> None:
     slots = log_payload_to_state_slots(_payload())
 
     for key in ("checkin_date", "checkout_date", "adult_count",
-                "child_count", "infant_count", "pet_count", "intent"):
+                "child_count", "infant_count", "room_count", "pet_count", "intent"):
         assert slots[key] is None
 
 

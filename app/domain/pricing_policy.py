@@ -2,6 +2,7 @@ from collections.abc import Iterator
 from datetime import date, datetime, timedelta
 
 from app.domain.pricing_models import NightlyPrice, PricingResult
+from app.domain.room_policy import resolve_room_pricing_rule
 
 
 _SUMMER_MONTHS = {7, 8}
@@ -15,7 +16,9 @@ def calculate_price(
     child_count: int = 0,
     infant_count: int = 0,
     pet_count: int = 0,
+    room_count: int,
     tenant_pricing: dict,
+    room_policy: dict,
     tenant_special_dates: dict | None = None,
 ) -> PricingResult:
     reasons: list[str] = []
@@ -28,10 +31,25 @@ def calculate_price(
     guest_count_used = adult_count + child_count
     if guest_count_used <= 0:
         reasons.append("no_guest_count")
-    elif guest_count_used >= 17:
+    max_capacity = _room_policy_max_capacity(room_policy)
+    exceeds_max_capacity = max_capacity is not None and guest_count_used > max_capacity
+    if exceeds_max_capacity:
         reasons.append("exceeds_max_capacity")
 
-    tier_key, extra_person_fee = _resolve_tier(guest_count_used)
+    room_rule = resolve_room_pricing_rule(
+        room_count=room_count,
+        room_policy=room_policy,
+        tenant_pricing=tenant_pricing,
+    )
+    if room_count <= 0:
+        reasons.append("invalid_room_count")
+    elif room_rule is None:
+        reasons.append("invalid_room_policy")
+    elif not exceeds_max_capacity and guest_count_used > room_rule.max_capacity:
+        reasons.append("room_capacity_exceeded")
+
+    tier_key = room_rule.tier_key if room_rule is not None else None
+    extra_person_fee = _extra_person_fee(room_count, guest_count_used, room_rule)
 
     if reasons:
         return PricingResult(
@@ -39,6 +57,7 @@ def calculate_price(
             reasons=reasons,
             tier=tier_key,
             guest_count_used=guest_count_used if guest_count_used > 0 else None,
+            room_count_used=room_count if room_count > 0 else None,
         )
 
     national_holidays, spring_festival = _load_special_dates(tenant_special_dates)
@@ -77,6 +96,7 @@ def calculate_price(
         can_quote=True,
         tier=tier_key,
         guest_count_used=guest_count_used,
+        room_count_used=room_count,
         nightly_prices=nightly_prices,
         room_subtotal=room_subtotal,
         long_stay_discount=long_stay_discount,
@@ -87,18 +107,21 @@ def calculate_price(
     )
 
 
-def _resolve_tier(guest_count: int) -> tuple[str | None, int]:
-    if guest_count <= 0:
-        return None, 0
-    if guest_count <= 8:
-        return "8_people", 0
-    if guest_count <= 10:
-        return "10_people", 0
-    if guest_count <= 12:
-        return "12_people", 0
-    if guest_count <= 16:
-        return "12_people", 1000 * (guest_count - 12)
-    return None, 0
+def _extra_person_fee(room_count: int, guest_count: int, room_rule) -> int:
+    if room_rule is None or room_count != 4:
+        return 0
+    if guest_count <= room_rule.standard_capacity:
+        return 0
+    if guest_count > room_rule.max_capacity:
+        return 0
+    return 1000 * (guest_count - room_rule.standard_capacity)
+
+
+def _room_policy_max_capacity(room_policy: dict) -> int | None:
+    value = room_policy.get("max_capacity")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 def _iter_nights(checkin: date, checkout: date) -> Iterator[date]:

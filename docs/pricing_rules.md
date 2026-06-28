@@ -14,18 +14,24 @@ The system must never say that a room is available, reserved, or booked.
 
 Prices are in TWD per night.
 
-| People tier | Weekday Sunday-Friday | Saturday | Summer weekday | Summer Saturday or national holiday | Spring festival |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 8 people | 9,000 | 15,000 | 12,000 | 15,000 | 25,000 |
-| 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 28,000 |
-| 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 31,000 |
+The price tier is chosen by the guest's requested room count, not by guest count.
+The legacy price keys remain the same so config values do not need to move.
 
-## People Pricing
+| Room count | Price key | Standard capacity | Weekday Sunday-Friday | Saturday | Summer weekday | Summer Saturday or national holiday | Spring festival |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 rooms | `8_people` | 8 people | 9,000 | 15,000 | 12,000 | 15,000 | 25,000 |
+| 3 rooms | `10_people` | 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 28,000 |
+| 4 rooms | `12_people` | 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 31,000 |
 
-- 1 to 8 people: use the 8-person whole-house price.
-- 9 to 10 people: use the 10-person whole-house price.
-- 11 to 12 people: use the 12-person whole-house price.
-- 13 to 16 people: use the 12-person price plus NT$1,000 per person over 12.
+## Room Count Pricing
+
+- If date, guest count, and pet slots are complete but room count is missing, ask which room count the guest wants before quoting.
+- 1 room: do not quote automatically; require staff confirmation.
+- 2 rooms: use the `8_people` whole-house price, standard capacity 8.
+- 3 rooms: use the `10_people` whole-house price, standard capacity 10.
+- 4 rooms: use the `12_people` whole-house price, standard capacity 12.
+- 13 to 16 people with 4 rooms: use the 4-room price plus NT$1,000 per person over 12.
+- If the chosen room count cannot fit the guest count, ask whether to change to the minimum room count that can fit the party.
 - More than 16 people: do not quote automatically; require staff confirmation.
 
 ## Children And Infants

@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS conversation_states (
     adult_count INTEGER,
     child_count INTEGER,
     infant_count INTEGER,
+    room_count INTEGER,
     pet_count INTEGER,
     has_pet INTEGER NOT NULL DEFAULT 0,
     last_message_text TEXT,

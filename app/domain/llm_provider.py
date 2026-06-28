@@ -16,6 +16,7 @@ class LLMOutput:
     is_booking_intent: bool | None
     needs_clarification: bool
     clarification_reason: str | None
+    room_count: int | None = None
 
 
 class LLMProvider(Protocol):

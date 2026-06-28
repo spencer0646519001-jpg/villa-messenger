@@ -25,6 +25,7 @@ def log_payload_to_state_slots(payload: dict) -> dict:
         "adult_count": payload.get("parsed_adult_count"),
         "child_count": payload.get("parsed_child_count"),
         "infant_count": payload.get("parsed_infant_count"),
+        "room_count": payload.get("parsed_room_count"),
         "pet_count": pet_count,
         "last_message_text": payload.get("raw_text"),
     }

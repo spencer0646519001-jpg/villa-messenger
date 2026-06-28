@@ -17,4 +17,19 @@ def init_db(database_path: str | Path) -> None:
 
     with closing(get_connection(path)) as connection:
         connection.executescript(schema_sql)
+        _ensure_column(connection, "conversation_states", "room_count", "INTEGER")
         connection.commit()
+
+
+def _ensure_column(
+    connection: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    column_type: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")

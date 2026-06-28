@@ -26,10 +26,12 @@ from app.domain.reply_templates import (
     render_faq_room_type,
     render_faq_wifi,
     render_faq_whole_house,
-    render_over_capacity_message,
+    render_manual_review_message,
     render_quote_message,
 )
 from app.domain.reply_text import (
+    MISSING_ROOM_COUNT_MESSAGE,
+    ROOM_CAPACITY_SUGGESTION_TEMPLATE,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
@@ -40,13 +42,27 @@ from app.services.conversation_reply_composer import (
 )
 
 _AMENITIES = {"items": ["不限時 KTV", "Switch、電動麻將"]}
-_ROOM_POLICY_FAKE = {"description": "3層樓電梯別墅,共4間房。"}
+_ROOM_POLICY_FAKE = {
+    "description": "3層樓電梯別墅,共4間房。",
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
 _LOCATION_FAKE = {"address": "宜蘭縣員山鄉枕山十二路123號"}
 
 _PRICING = {
     "base_prices_per_night": {
         "8_people": {"weekday": 9000, "saturday": 15000, "summer_weekday": 12000,
                      "summer_saturday_or_holiday": 15000, "spring_festival": 25000},
+        "10_people": {"weekday": 12000, "saturday": 18000, "summer_weekday": 15000,
+                      "summer_saturday_or_holiday": 18000, "spring_festival": 28000},
+        "12_people": {"weekday": 15000, "saturday": 21000, "summer_weekday": 18000,
+                      "summer_saturday_or_holiday": 21000, "spring_festival": 31000},
     },
     "pets": {
         "allowed_with_notice": True,
@@ -146,6 +162,7 @@ def _state(**overrides) -> dict:
         "id": 7, "status": "in_progress",
         "checkin_date": None, "checkout_date": None,
         "adult_count": None, "child_count": None, "infant_count": None,
+        "room_count": None,
         "pet_count": None, "has_pet": 0,
     }
     base.update(overrides)
@@ -205,31 +222,76 @@ def test_incomplete_state_prompts_for_missing_slot() -> None:
     assert result.completed_state_id is None
 
 
+def test_complete_state_without_room_count_asks_room_count() -> None:
+    state = _state(
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=4,
+    )
+
+    result = _composer().compose(message=_message(), decision=_decision(), state=state)
+
+    assert result.text == MISSING_ROOM_COUNT_MESSAGE
+    assert result.completed_state_id is None
+
+
+def test_complete_state_with_too_few_rooms_suggests_more_rooms() -> None:
+    state = _state(
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=10,
+        room_count=2,
+    )
+
+    result = _composer().compose(message=_message(), decision=_decision(), state=state)
+
+    assert result.text == ROOM_CAPACITY_SUGGESTION_TEMPLATE.format(
+        guest_count=10,
+        room_count=2,
+        suggested_room_count=3,
+    )
+    assert result.completed_state_id is None
+
+
 def test_complete_state_quotes_and_flags_completion() -> None:
     state = _state(
-        id=42, checkin_date="2026-05-12", checkout_date="2026-05-13", adult_count=4
+        id=42,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=4,
+        room_count=2,
     )
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
 
     kwargs = dict(
         checkin_date=date(2026, 5, 12), checkout_date=date(2026, 5, 13),
-        adult_count=4, child_count=0, infant_count=0, pet_count=0,
+        adult_count=4, child_count=0, infant_count=0, pet_count=0, room_count=2,
     )
     expected = render_quote_message(
-        pricing=calculate_price(**kwargs, tenant_pricing=_PRICING, tenant_special_dates={}),
+        pricing=calculate_price(
+            **kwargs,
+            tenant_pricing=_PRICING,
+            tenant_special_dates={},
+            room_policy=_ROOM_POLICY_FAKE,
+        ),
         **kwargs,
     )
     assert result.text == expected
     assert result.completed_state_id == 42
 
 
-def test_complete_but_over_capacity_returns_capacity_reply() -> None:
+def test_complete_but_over_capacity_returns_manual_review() -> None:
     state = _state(
-        id=9, checkin_date="2026-05-12", checkout_date="2026-05-13", adult_count=17
+        id=9,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=17,
+        room_count=4,
     )
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
-    assert result.text == render_over_capacity_message()
-    assert result.completed_state_id == 9
+    assert result.text == render_manual_review_message()
+    assert result.owner_push_text is not None
+    assert result.completed_state_id is None
 
 
 # ============================================================

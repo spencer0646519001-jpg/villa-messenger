@@ -222,6 +222,13 @@ def test_tenant_operation_state_primary_key_is_tenant_id(temp_db_dir: Path) -> N
     assert pk_columns == {"tenant_id"}
 
 
+def test_conversation_states_includes_room_count(temp_db_dir: Path) -> None:
+    database_path = temp_db_dir / "homestay.db"
+    init_db(database_path)
+
+    assert "room_count" in _column_names(database_path, "conversation_states")
+
+
 def _insert_tenant(connection: sqlite3.Connection, slug: str) -> int:
     cursor = connection.execute(
         """

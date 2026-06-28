@@ -4,7 +4,34 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.pricing_policy import calculate_price
+from app.domain.pricing_policy import calculate_price as _calculate_price
+
+
+_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
+
+
+def calculate_price(**kwargs):
+    kwargs.setdefault("room_policy", _ROOM_POLICY)
+    kwargs.setdefault("room_count", _legacy_equivalent_room_count(kwargs))
+    return _calculate_price(**kwargs)
+
+
+def _legacy_equivalent_room_count(kwargs: dict) -> int:
+    guest_count = (kwargs.get("adult_count") or 0) + (kwargs.get("child_count") or 0)
+    if guest_count <= 8:
+        return 2
+    if guest_count <= 10:
+        return 3
+    return 4
 
 
 @pytest.fixture
@@ -715,3 +742,62 @@ def test_pr5a_weekday_price_lookup_key_regression(zhen123_pricing) -> None:
 
     assert result.can_quote is True
     assert result.nightly_prices[0].price_lookup_key == "weekday"
+
+
+def test_room_count_selects_tier_even_when_guest_count_is_low(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        room_count=3,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert result.tier == "10_people"
+    assert result.room_count_used == 3
+    assert result.total == 12000
+
+
+def test_four_rooms_thirteen_guests_adds_extra_person_fee(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 7, 28),
+        checkout_date=date(2026, 7, 29),
+        adult_count=13,
+        room_count=4,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert result.room_subtotal == 18000
+    assert result.extra_person_fee == 1000
+    assert result.total == 19000
+
+
+def test_four_rooms_twelve_guests_summer_weekday_has_no_extra_fee(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 7, 28),
+        checkout_date=date(2026, 7, 29),
+        adult_count=12,
+        room_count=4,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert result.tier == "12_people"
+    assert result.room_subtotal == 18000
+    assert result.extra_person_fee == 0
+    assert result.total == 18000
+
+
+def test_two_rooms_ten_guests_is_defensively_unquotable(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=10,
+        room_count=2,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is False
+    assert "room_capacity_exceeded" in result.reasons

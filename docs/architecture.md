@@ -73,7 +73,7 @@ MessageService
   │    └─ 命中 → 推播主人 + 不自動回 + 記錄 + 結束
   │
   ├─ InquiryParser
-  │    └─ 解析日期、人數、寵物、意圖
+  │    └─ 解析日期、人數、寵物、房數、意圖
   │
   ├─ is_system_active(tenant)? [OperationMode 檢查]
   │    └─ False(Off)→ 只存資料庫 + 結束(不回覆、不推播)

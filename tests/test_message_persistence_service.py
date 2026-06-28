@@ -45,6 +45,17 @@ _DEFAULT_PRICING = {
     },
 }
 
+_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
+
 
 class _FakeOperationModeService:
     def __init__(self, *, return_value: bool) -> None:
@@ -100,6 +111,7 @@ def _decision_for(
         operation_mode_service=_FakeOperationModeService(return_value=system_on),
         tenant_pricing_loader=lambda tid: _DEFAULT_PRICING,
         tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY,
     )
     return service.handle_message(message=_build_message(text, tenant_id=tenant_id))
 
@@ -111,7 +123,7 @@ def _decision_for(
 
 def test_happy_quote_persists_both_rows(database_path: Path) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     result = service.persist(decision=decision)
@@ -128,7 +140,7 @@ def test_happy_quote_persists_both_rows(database_path: Path) -> None:
 
 def test_over_capacity_persists_inquiry_without_total(database_path: Path) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/12 入住 5/13 退房 17 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/12 入住 5/13 退房 17 大人 開4房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     result = service.persist(decision=decision)
@@ -141,7 +153,7 @@ def test_over_capacity_persists_inquiry_without_total(database_path: Path) -> No
 
 def test_invalid_date_persists_both_rows(database_path: Path) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/14 入住 5/12 退房 4 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/14 入住 5/12 退房 4 大人 開2房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     result = service.persist(decision=decision)
@@ -193,7 +205,7 @@ def test_urgent_persists_only_messages_row(database_path: Path) -> None:
 def test_off_mode_inquiry_persists_both_rows(database_path: Path) -> None:
     tenant_id = _create_tenant(database_path)
     decision = _decision_for(
-        "5/12 入住 5/13 退房 4 大人 多少錢?",
+        "5/12 入住 5/13 退房 4 大人 開2房 多少錢?",
         system_on=False,
         tenant_id=tenant_id,
     )
@@ -219,7 +231,7 @@ def test_transaction_commits_on_success_visible_from_fresh_connection(
     database_path: Path,
 ) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     result = service.persist(decision=decision)
@@ -239,7 +251,7 @@ def test_transaction_rolls_back_message_when_inquiry_insert_fails(
     database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     def _boom(self, *args, **kwargs):
@@ -329,7 +341,7 @@ def test_inquiry_row_round_trip_matches_mapper_output(
     database_path: Path,
 ) -> None:
     tenant_id = _create_tenant(database_path)
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?", tenant_id=tenant_id)
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?", tenant_id=tenant_id)
     service = MessagePersistenceService(database_path=database_path)
 
     result = service.persist(decision=decision)

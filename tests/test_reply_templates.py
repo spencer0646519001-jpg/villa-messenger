@@ -4,19 +4,22 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.pricing_policy import calculate_price
+from app.domain.pricing_policy import calculate_price as _calculate_price
 from app.domain.reply_templates import (
     _format_date_with_weekday,
     _format_guest_summary,
     _format_money,
     render_full_house_message,
     render_invalid_date_message,
+    render_manual_review_message,
     render_missing_info_message,
+    render_missing_room_count_message,
     render_over_capacity_message,
     render_owner_push_full_house,
     render_owner_push_uncategorized,
     render_owner_push_urgent,
     render_quote_message,
+    render_room_capacity_suggestion_message,
 )
 from app.domain.reply_text import (
     CHILDREN_CONFIRMATION,
@@ -41,6 +44,33 @@ from app.domain.reply_text import (
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
     SINGLE_MISSING_PET_COUNT_MESSAGE,
 )
+
+
+_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
+
+
+def calculate_price(**kwargs):
+    kwargs.setdefault("room_policy", _ROOM_POLICY)
+    kwargs.setdefault("room_count", _legacy_equivalent_room_count(kwargs))
+    return _calculate_price(**kwargs)
+
+
+def _legacy_equivalent_room_count(kwargs: dict) -> int:
+    guest_count = (kwargs.get("adult_count") or 0) + (kwargs.get("child_count") or 0)
+    if guest_count <= 8:
+        return 2
+    if guest_count <= 10:
+        return 3
+    return 4
 
 
 @pytest.fixture
@@ -114,6 +144,7 @@ def test_quote_single_weekday_night_four_adults(zhen123_pricing) -> None:
     assert QUOTE_GREETING in out
     assert "入住:2026/05/12(二)" in out
     assert "共 1 晚" in out
+    assert "房型:開 2 間房" in out
     assert "小計:NT$9,000" in out
     assert SAFETY_NOTE in out
     assert CHILDREN_CONFIRMATION not in out
@@ -391,6 +422,24 @@ def test_render_invalid_date_message() -> None:
 
 def test_render_full_house_message() -> None:
     assert render_full_house_message() == FULL_HOUSE_MESSAGE
+
+
+def test_render_missing_room_count_message() -> None:
+    assert render_missing_room_count_message() == (
+        "您好,請問您想開幾間房呢?(本館共 4 間房,4人房 2 間,2人房 2 間)"
+    )
+
+
+def test_render_room_capacity_suggestion_message() -> None:
+    assert render_room_capacity_suggestion_message(
+        guest_count=10,
+        room_count=2,
+        suggested_room_count=3,
+    ) == "10 位的話,2 間房可能住不下喔,建議開 3 房,需要為您改成 3 房報價嗎?"
+
+
+def test_render_manual_review_message() -> None:
+    assert render_manual_review_message() == "您的需求我們請民宿人員為您進一步確認,稍後回覆您。"
 
 
 # --- Owner push ---

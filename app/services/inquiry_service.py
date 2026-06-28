@@ -24,13 +24,21 @@ from app.domain.reply_templates import (
     render_date_range_clarification_message,
     render_full_house_message,
     render_invalid_date_message,
+    render_manual_review_message,
     render_missing_info_message,
+    render_missing_room_count_message,
     render_over_capacity_message,
     render_owner_push_availability_unverified,
     render_owner_push_full_house,
     render_owner_push_uncategorized,
     render_owner_push_urgent,
     render_quote_message,
+    render_room_capacity_suggestion_message,
+)
+from app.domain.room_policy import (
+    max_guest_capacity,
+    minimum_rooms_for_guest_count,
+    resolve_room_pricing_rule,
 )
 from app.domain.urgency_detector import UrgencyDetectionResult, detect_urgency
 from app.schemas import InboundMessage
@@ -60,6 +68,7 @@ _OPTIONAL_LOG_FIELDS: tuple[str, ...] = (
     "parsed_adult_count",
     "parsed_child_count",
     "parsed_infant_count",
+    "parsed_room_count",
     "parsed_pet_count",
     "quoted_total",
     "missing_fields",
@@ -73,6 +82,7 @@ class InquiryService:
         operation_mode_service,
         tenant_pricing_loader: Callable[[int], dict],
         tenant_special_dates_loader: Callable[[int], dict],
+        tenant_room_policy_loader: Callable[[int], dict] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         availability_service: AvailabilityService | None = None,
         llm_provider: LLMProvider | None = None,
@@ -80,6 +90,9 @@ class InquiryService:
         self._operation_mode_service = operation_mode_service
         self._tenant_pricing_loader = tenant_pricing_loader
         self._tenant_special_dates_loader = tenant_special_dates_loader
+        self._tenant_room_policy_loader = tenant_room_policy_loader or (
+            lambda tenant_id: {}
+        )
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
         self._availability_service = availability_service
         self._llm_provider = llm_provider
@@ -175,6 +188,7 @@ class InquiryService:
         log["parsed_adult_count"] = inquiry.guests.adult_count
         log["parsed_child_count"] = inquiry.guests.child_count
         log["parsed_infant_count"] = inquiry.guests.infant_count
+        log["parsed_room_count"] = inquiry.room_count
         log["parsed_pet_count"] = inquiry.pets.pet_count
 
     def _handle_urgent(
@@ -283,6 +297,7 @@ class InquiryService:
             "child_count": inquiry.guests.child_count or 0,
             "infant_count": inquiry.guests.infant_count or 0,
             "pet_count": inquiry.pets.pet_count or 0,
+            "room_count": inquiry.room_count,
         }
 
     def _handle_pricing(
@@ -290,9 +305,14 @@ class InquiryService:
         message: InboundMessage,
         inquiry: InquiryParseResult,
     ) -> InquiryDecision:
+        room_policy = self._tenant_room_policy_loader(message.tenant_id)
+        room_gate = self._room_gate(message, inquiry, room_policy)
+        if room_gate is not None:
+            return room_gate
         pricing = calculate_price(
             **self._stay_kwargs(inquiry),
             tenant_pricing=self._tenant_pricing_loader(message.tenant_id),
+            room_policy=room_policy,
             tenant_special_dates=self._tenant_special_dates_loader(message.tenant_id),
         )
         if not pricing.can_quote:
@@ -306,6 +326,91 @@ class InquiryService:
         if outcome.status == "error":
             return self._handle_quoted_unverified(message, inquiry, pricing, outcome)
         return self._handle_quoted(message, inquiry, pricing)
+
+    def _room_gate(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        room_policy: dict,
+    ) -> InquiryDecision | None:
+        guest_count = _guest_count(inquiry)
+        room_count = inquiry.room_count
+        if room_count is None:
+            return self._handle_missing_room_count(message, inquiry)
+        if _needs_manual_room_review(room_count, guest_count, room_policy):
+            return self._handle_room_manual_review(message, inquiry)
+        room_rule = resolve_room_pricing_rule(room_count=room_count, room_policy=room_policy)
+        if guest_count <= room_rule.standard_capacity:
+            return None
+        if room_count == 4 and guest_count <= room_rule.max_capacity:
+            return None
+        return self._handle_room_capacity_suggestion(message, inquiry, room_policy)
+
+    def _handle_missing_room_count(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> InquiryDecision:
+        return self._room_reply(
+            message,
+            inquiry,
+            "missing_room_count",
+            render_missing_room_count_message(),
+        )
+
+    def _handle_room_capacity_suggestion(
+        self, message: InboundMessage, inquiry: InquiryParseResult, room_policy: dict
+    ) -> InquiryDecision:
+        suggested = minimum_rooms_for_guest_count(
+            guest_count=_guest_count(inquiry), room_policy=room_policy
+        )
+        if suggested is None:
+            return self._handle_room_manual_review(message, inquiry)
+        text = render_room_capacity_suggestion_message(
+            guest_count=_guest_count(inquiry),
+            room_count=inquiry.room_count,
+            suggested_room_count=suggested,
+        )
+        return self._room_reply(message, inquiry, "room_capacity_suggestion", text)
+
+    def _handle_room_manual_review(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> InquiryDecision:
+        text = render_manual_review_message()
+        log = self._room_log(message, inquiry, "room_manual_review")
+        return InquiryDecision(
+            action_type="reply_and_push",
+            customer_reply_text=text,
+            owner_push_text=self._manual_review_push(message),
+            log_payload=log,
+            parsed_as_inquiry=True,
+            could_quote=False,
+        )
+
+    def _room_reply(
+        self, message: InboundMessage, inquiry: InquiryParseResult, action: str, text: str
+    ) -> InquiryDecision:
+        return InquiryDecision(
+            action_type="reply_to_customer_only",
+            customer_reply_text=text,
+            log_payload=self._room_log(message, inquiry, action),
+            parsed_as_inquiry=True,
+            could_quote=False,
+        )
+
+    def _room_log(
+        self, message: InboundMessage, inquiry: InquiryParseResult, action: str
+    ) -> dict:
+        log = self._build_base_log_payload(
+            message, system_state="on", action_taken=action
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        return log
+
+    def _manual_review_push(self, message: InboundMessage) -> str:
+        return render_owner_push_uncategorized(
+            original_text=message.text,
+            display_name=message.customer_display_name,
+            customer_was_replied=True,
+        )
 
     def _check_availability(self, inquiry: InquiryParseResult) -> AvailabilityCheckOutcome:
         if self._availability_service is None:
@@ -426,3 +531,19 @@ class InquiryService:
             checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
             checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
         )
+
+
+def _guest_count(inquiry: InquiryParseResult) -> int:
+    return (inquiry.guests.adult_count or 0) + (inquiry.guests.child_count or 0)
+
+
+def _needs_manual_room_review(
+    room_count: int, guest_count: int, room_policy: dict
+) -> bool:
+    capacity = max_guest_capacity(room_policy)
+    if capacity is not None and guest_count > capacity:
+        return True
+    return (
+        resolve_room_pricing_rule(room_count=room_count, room_policy=room_policy)
+        is None
+    )

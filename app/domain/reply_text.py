@@ -32,6 +32,13 @@ OVER_CAPACITY_MESSAGE: Final = (
     "這部分需要請民宿人員直接和您確認方案,稍後會有專人回覆您。"
 )
 
+MISSING_ROOM_COUNT_MESSAGE: Final = "您好,請問您想開幾間房呢?(本館共 4 間房,4人房 2 間,2人房 2 間)"
+ROOM_CAPACITY_SUGGESTION_TEMPLATE: Final = (
+    "{guest_count} 位的話,{room_count} 間房可能住不下喔,"
+    "建議開 {suggested_room_count} 房,需要為您改成 {suggested_room_count} 房報價嗎?"
+)
+MANUAL_REVIEW_MESSAGE: Final = "您的需求我們請民宿人員為您進一步確認,稍後回覆您。"
+
 INVALID_DATE_MESSAGE: Final = (
     "您好,看起來您提供的入住日和退房日順序有些對不上,"
     "方便再確認一下完整的入住日和退房日嗎?"

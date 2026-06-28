@@ -32,6 +32,17 @@ _PRICING = {
     },
 }
 
+_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
+
 
 class _FakeOperationModeService:
     def is_system_active(self, *, tenant_id: int, tenant_timezone: str) -> bool:
@@ -43,6 +54,7 @@ def _inquiry_service() -> InquiryService:
         operation_mode_service=_FakeOperationModeService(),
         tenant_pricing_loader=lambda tid: _PRICING,
         tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY,
     )
 
 
@@ -131,6 +143,19 @@ def test_followup_guest_count_merges_into_active_state(repo: ConversationStateRe
     assert state["checkin_date"] == "2026-05-12"
     assert state["checkout_date"] == "2026-05-14"
     # exactly one row total: the follow-up updated, it did not insert a second
+    assert _row_count(repo) == 1
+
+
+def test_followup_room_count_merges_into_active_state(repo: ConversationStateRepository) -> None:
+    service = ConversationStateService(repo)
+    service.record(message=_message("5/12 入住 5/14 退房 13 大人 多少錢?"),
+                   decision=_decision("5/12 入住 5/14 退房 13 大人 多少錢?"))
+
+    service.record(message=_message("開4房"), decision=_decision("開4房"))
+
+    state = _active(repo)
+    assert state["room_count"] == 4
+    assert state["adult_count"] == 13
     assert _row_count(repo) == 1
 
 

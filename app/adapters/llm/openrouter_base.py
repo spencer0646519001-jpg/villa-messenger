@@ -98,6 +98,7 @@ def _parse_llm_output(raw_json: str) -> LLMOutput | None:
         is_booking_intent=_bool_or_none(data.get("is_booking_intent")),
         needs_clarification=_bool_or_false(data.get("needs_clarification")),
         clarification_reason=_clarification_reason_or_none(data.get("clarification_reason")),
+        room_count=_int_or_none(data.get("room_count")),
     )
 
 
@@ -165,6 +166,7 @@ JSON schema:
   "child_count": "integer|null",
   "infant_count": "integer|null",
   "pet_count": "integer|null",
+  "room_count": "integer|null",
   "has_pet": "boolean|null",
   "last_message_text": "string|null",
   "is_booking_intent": "boolean|null",

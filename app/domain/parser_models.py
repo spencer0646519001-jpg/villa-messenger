@@ -37,6 +37,7 @@ class InquiryParseResult(BaseModel):
     dates: DateParseResult
     guests: GuestCountParseResult
     pets: PetParseResult
+    room_count: int | None = None
     missing_fields: list[str] = Field(default_factory=list)
     can_preliminarily_quote: bool = False
     needs_clarification: bool = False

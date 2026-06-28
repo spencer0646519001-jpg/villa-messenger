@@ -27,12 +27,14 @@ from app.domain.reply_text import (
     FULL_HOUSE_MESSAGE,
     INFANTS_CONFIRMATION,
     INVALID_DATE_MESSAGE,
+    MANUAL_REVIEW_MESSAGE,
     MISSING_CHECKIN_LINE,
     MISSING_CHECKOUT_LINE,
     MISSING_GUEST_COUNT_LINE,
     MISSING_INFO_FOOTER,
     MISSING_INFO_HEADER,
     MISSING_PET_COUNT_LINE,
+    MISSING_ROOM_COUNT_MESSAGE,
     OVER_CAPACITY_MESSAGE,
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
     OWNER_PUSH_CUSTOMER_PREFIX,
@@ -47,6 +49,7 @@ from app.domain.reply_text import (
     PETS_CONFIRMATION,
     PRICE_TYPE_LABEL,
     QUOTE_GREETING,
+    ROOM_CAPACITY_SUGGESTION_TEMPLATE,
     SAFETY_NOTE,
     SINGLE_MISSING_CHECKIN_MESSAGE,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
@@ -79,6 +82,12 @@ def _format_guest_summary(adults: int, children: int = 0, infants: int = 0) -> s
     return f"{' '.join(parts)}(共 {total} 人)"
 
 
+def _format_room_line(room_count: int | None) -> str:
+    if room_count is None:
+        return "房型:包棟"
+    return f"房型:開 {room_count} 間房"
+
+
 def render_quote_message(
     *,
     pricing: PricingResult,
@@ -88,6 +97,7 @@ def render_quote_message(
     child_count: int = 0,
     infant_count: int = 0,
     pet_count: int = 0,
+    room_count: int | None = None,
 ) -> str:
     if not pricing.can_quote:
         raise ValueError("render_quote_message requires can_quote=True")
@@ -101,7 +111,8 @@ def render_quote_message(
     lines.append(f"住宿人數:{_format_guest_summary(adult_count, child_count, infant_count)}")
     if pet_count > 0:
         lines.append(f"寵物:{pet_count} 隻")
-    lines.append("房型:包棟")
+    room_count_used = room_count or pricing.room_count_used
+    lines.append(_format_room_line(room_count_used))
     lines.append("")
     lines.append(_COST_DETAIL_HEADER)
     for n in pricing.nightly_prices:
@@ -173,6 +184,27 @@ def render_date_range_clarification_message() -> str:
 
 def render_over_capacity_message() -> str:
     return OVER_CAPACITY_MESSAGE
+
+
+def render_missing_room_count_message() -> str:
+    return MISSING_ROOM_COUNT_MESSAGE
+
+
+def render_room_capacity_suggestion_message(
+    *,
+    guest_count: int,
+    room_count: int,
+    suggested_room_count: int,
+) -> str:
+    return ROOM_CAPACITY_SUGGESTION_TEMPLATE.format(
+        guest_count=guest_count,
+        room_count=room_count,
+        suggested_room_count=suggested_room_count,
+    )
+
+
+def render_manual_review_message() -> str:
+    return MANUAL_REVIEW_MESSAGE
 
 
 def render_invalid_date_message() -> str:

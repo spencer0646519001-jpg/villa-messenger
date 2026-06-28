@@ -177,6 +177,7 @@ def _build_inquiry_service(database_path: str) -> InquiryService:
         operation_mode_service=operation_mode_service,
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
+        tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
         availability_service=None,
         llm_provider=build_llm_provider_from_env(),
     )

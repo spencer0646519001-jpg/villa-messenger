@@ -113,3 +113,10 @@ def test_original_text_keeps_unnormalized_full_width_form() -> None:
 
     assert result.original_text == "6／14有房嗎"
     assert result.dates.checkin_date == "2026-06-14"
+
+
+def test_room_count_is_parsed_but_not_a_missing_field() -> None:
+    result = parse_inquiry("7/28入住 7/29退房 13大人 開4房多少錢", reference_year=2026)
+
+    assert result.room_count == 4
+    assert "room_count" not in result.missing_fields

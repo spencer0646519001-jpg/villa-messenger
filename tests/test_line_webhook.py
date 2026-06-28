@@ -39,6 +39,7 @@ from app.services.conversation_state_service import ConversationStateService
 from app.services.operation_mode_service import OperationModeService
 from app.services.tenant_config_loaders import (
     make_tenant_pricing_loader,
+    make_tenant_room_policy_loader,
     make_tenant_special_dates_loader,
 )
 
@@ -212,7 +213,7 @@ def _seed_message_at(
 def test_valid_quote_persists_message_and_inquiry(client: TestClient, database_path: Path) -> None:
     tenant_id = _seed_channel(database_path)
     _set_system_on(database_path, tenant_id)
-    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 多少錢?")])
+    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")])
 
     response = _post(client, body, _sign(body))
 
@@ -263,7 +264,7 @@ def test_webhook_schedules_pipeline_as_background_task(
 
 def test_bad_signature_rejected_and_nothing_persisted(client: TestClient, database_path: Path) -> None:
     _seed_channel(database_path)
-    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 多少錢?")])
+    body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")])
 
     response = _post(client, body, "not-a-valid-signature")
 
@@ -596,7 +597,13 @@ _DATES_PRICE_NO_GUESTS = "5/12 入住 5/13 退房 多少錢?"
 
 
 def _expected_quote(
-    database_path: Path, tenant_id: int, *, checkin: str, checkout: str, adults: int
+    database_path: Path,
+    tenant_id: int,
+    *,
+    checkin: str,
+    checkout: str,
+    adults: int,
+    room_count: int = 2,
 ) -> str:
     """The quote the single-message path would produce for these slots, built
     from the SAME domain functions + config loaders the route uses. Guards
@@ -608,10 +615,12 @@ def _expected_quote(
         child_count=0,
         infant_count=0,
         pet_count=0,
+        room_count=room_count,
     )
     pricing = calculate_price(
         **kwargs,
         tenant_pricing=make_tenant_pricing_loader(database_path)(tenant_id),
+        room_policy=make_tenant_room_policy_loader(database_path)(tenant_id),
         tenant_special_dates=make_tenant_special_dates_loader(database_path)(tenant_id),
     )
     return render_quote_message(pricing=pricing, **kwargs)
@@ -633,7 +642,7 @@ def test_two_message_complete_flow_quotes_from_accumulation_and_completes(
 
     body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
     assert _post(client, body1, _sign(body1)).status_code == 200
-    body2 = _payload_bytes([_text_event_with_reply_token("4 大人")])  # completes it
+    body2 = _payload_bytes([_text_event_with_reply_token("4 大人 開2房")])  # completes it
     assert _post(client, body2, _sign(body2)).status_code == 200
 
     # The SECOND reply is a quote reflecting accumulated dates (msg1) + guests
@@ -677,7 +686,7 @@ def test_off_mode_complete_state_stays_silent_but_accumulates(
 
     # A SINGLE complete inquiry in off mode: slots are complete, but off mode is
     # receive-only -> no outbound, even though it would otherwise quote.
-    complete = "5/12 入住 5/13 退房 4 大人 多少錢?"
+    complete = "5/12 入住 5/13 退房 4 大人 開2房 多少錢?"
     body = _payload_bytes([_text_event_with_reply_token(complete)])
     assert _post(client, body, _sign(body)).status_code == 200
 
@@ -712,7 +721,7 @@ def test_single_complete_message_quotes_once_and_completes(
 
     # Unified path: a single complete message flows through the state-driven
     # reply too -> one quote, state immediately completed.
-    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 多少錢?")])
+    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")])
     assert _post(client, body, _sign(body)).status_code == 200
 
     assert len(calls) == 1
@@ -735,7 +744,7 @@ def test_mark_completed_failure_isolated_reply_still_sent(
         raise RuntimeError("mark_completed exploded")
 
     monkeypatch.setattr(ConversationStateService, "mark_completed", _boom)
-    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 多少錢?")])
+    body = _payload_bytes([_text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")])
 
     response = _post(client, body, _sign(body))
 

@@ -37,6 +37,7 @@ _SLOT_KEYS = (
     "adult_count",
     "child_count",
     "infant_count",
+    "room_count",
     "pet_count",
 )
 
@@ -52,6 +53,7 @@ _EMPTY_STATE_ROW: dict = {
     "adult_count": None,
     "child_count": None,
     "infant_count": None,
+    "room_count": None,
     "pet_count": None,
     "has_pet": False,
     "last_message_text": None,

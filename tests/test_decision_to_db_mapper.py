@@ -41,6 +41,17 @@ _DEFAULT_PRICING = {
     },
 }
 
+_ROOM_POLICY = {
+    "standard_capacity": 12,
+    "max_capacity": 16,
+    "room_opening_rules": [
+        {"max_people": 8, "rooms_opened": 2},
+        {"max_people": 10, "rooms_opened": 3},
+        {"max_people": 12, "rooms_opened": 4},
+        {"min_people": 13, "max_people": 16, "rooms_opened": 4, "extra_beds": True},
+    ],
+}
+
 
 class _FakeOperationModeService:
     def __init__(self, *, return_value: bool) -> None:
@@ -55,6 +66,7 @@ def _build_service(*, system_on: bool = True) -> InquiryService:
         operation_mode_service=_FakeOperationModeService(return_value=system_on),
         tenant_pricing_loader=lambda tid: _DEFAULT_PRICING,
         tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY,
     )
 
 
@@ -83,7 +95,7 @@ def _decision_for(text: str, *, system_on: bool = True) -> InquiryDecision:
 
 
 def test_happy_quote_produces_both_rows_with_quoted_total() -> None:
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?")
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
@@ -93,18 +105,18 @@ def test_happy_quote_produces_both_rows_with_quoted_total() -> None:
     assert plan.inquiry_row["adult_count"] == 4
 
 
-def test_over_capacity_inquiry_row_present_without_quoted_total() -> None:
-    decision = _decision_for("5/12 入住 5/13 退房 17 大人 多少錢?")
+def test_over_capacity_manual_review_inquiry_row_present_without_quoted_total() -> None:
+    decision = _decision_for("5/12 入住 5/13 退房 17 大人 開4房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
-    assert plan.messages_row["category"] == "over_capacity"
+    assert plan.messages_row["category"] == "room_manual_review"
     assert plan.inquiry_row is not None
     assert plan.inquiry_row["estimated_total_price"] is None
 
 
 def test_invalid_date_produces_inquiry_row() -> None:
-    decision = _decision_for("5/14 入住 5/12 退房 4 大人 多少錢?")
+    decision = _decision_for("5/14 入住 5/12 退房 4 大人 開2房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
@@ -151,7 +163,7 @@ def test_urgent_produces_only_messages_row_with_is_urgent_true() -> None:
 
 def test_off_mode_parsed_as_inquiry_produces_inquiry_row() -> None:
     decision = _decision_for(
-        "5/12 入住 5/13 退房 4 大人 多少錢?", system_on=False
+        "5/12 入住 5/13 退房 4 大人 開2房 多少錢?", system_on=False
     )
 
     plan = build_db_write_plan(decision)
@@ -176,7 +188,7 @@ def test_off_mode_non_inquiry_produces_only_messages_row() -> None:
 
 
 def test_tenant_id_present_in_both_rows() -> None:
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?")
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
@@ -191,7 +203,7 @@ def test_tenant_id_present_in_both_rows() -> None:
 
 
 def test_messages_row_keys_match_message_repository_kwargs() -> None:
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?")
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
@@ -210,7 +222,7 @@ def test_messages_row_keys_match_message_repository_kwargs() -> None:
 
 
 def test_inquiry_row_keys_match_inquiry_repository_kwargs() -> None:
-    decision = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?")
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
 
     plan = build_db_write_plan(decision)
 
@@ -254,7 +266,7 @@ def test_none_log_payload_values_pass_through_as_none() -> None:
     # Non-inquiry has inquiry_row=None, so the None passthrough check has to
     # live on a path that builds inquiry_row. Use a missing-info case where
     # pet_count, infant_count, child_count are None in log_payload.
-    missing = _decision_for("5/12 入住 5/13 退房 4 大人 多少錢?")
+    missing = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
     # 4 adults: child_count, infant_count, pet_count are None on price path.
     plan_missing = build_db_write_plan(missing)
     assert plan_missing.inquiry_row["child_count"] is None

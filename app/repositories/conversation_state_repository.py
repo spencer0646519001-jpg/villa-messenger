@@ -22,6 +22,7 @@ INSERT INTO conversation_states (
     adult_count,
     child_count,
     infant_count,
+    room_count,
     pet_count,
     has_pet,
     last_message_text,
@@ -29,7 +30,7 @@ INSERT INTO conversation_states (
     created_at,
     updated_at
 )
-VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _GET_ACTIVE_SQL = """
@@ -53,6 +54,7 @@ SET intent = COALESCE(?, intent),
     adult_count = COALESCE(?, adult_count),
     child_count = COALESCE(?, child_count),
     infant_count = COALESCE(?, infant_count),
+    room_count = COALESCE(?, room_count),
     pet_count = COALESCE(?, pet_count),
     has_pet = COALESCE(?, has_pet),
     last_message_text = COALESCE(?, last_message_text),
@@ -112,6 +114,7 @@ class ConversationStateRepository:
         adult_count: int | None = None,
         child_count: int | None = None,
         infant_count: int | None = None,
+        room_count: int | None = None,
         has_pet: bool = False,
         pet_count: int | None = None,
         last_message_text: str | None = None,
@@ -125,7 +128,7 @@ class ConversationStateRepository:
         params = (
             tenant_id, platform, platform_user_id, intent,
             checkin_date, checkout_date, adult_count, child_count, infant_count,
-            pet_count, int(has_pet), last_message_text, expires_at, now, now,
+            room_count, pet_count, int(has_pet), last_message_text, expires_at, now, now,
         )
         if connection is not None:
             return self._insert_state(connection, params)
@@ -153,6 +156,7 @@ class ConversationStateRepository:
         adult_count: int | None = None,
         child_count: int | None = None,
         infant_count: int | None = None,
+        room_count: int | None = None,
         has_pet: bool | None = None,
         pet_count: int | None = None,
         last_message_text: str | None = None,
@@ -167,7 +171,7 @@ class ConversationStateRepository:
         has_pet_param = None if has_pet is None else int(has_pet)
         params = (
             intent, checkin_date, checkout_date, adult_count, child_count,
-            infant_count, pet_count, has_pet_param, last_message_text,
+            infant_count, room_count, pet_count, has_pet_param, last_message_text,
             int(refresh_expiry), new_expires_at, now, state_id, tenant_id,
         )
         with closing(get_connection(self.database_path)) as connection:
