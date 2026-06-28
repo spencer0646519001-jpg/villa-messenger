@@ -39,3 +39,5 @@ class InquiryParseResult(BaseModel):
     pets: PetParseResult
     missing_fields: list[str] = Field(default_factory=list)
     can_preliminarily_quote: bool = False
+    needs_clarification: bool = False
+    clarification_reason: str | None = None

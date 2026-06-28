@@ -3,6 +3,7 @@ from datetime import date
 from app.domain.pricing_models import PricingResult
 from app.domain.reply_text import (
     CHILDREN_CONFIRMATION,
+    DATE_RANGE_CLARIFICATION_MESSAGE,
     FAQ_AMENITIES_EMPTY,
     FAQ_AMENITIES_HEADER,
     FAQ_BBQ_POLICY_TEMPLATE,
@@ -164,6 +165,10 @@ def render_missing_info_message(
     lines.append("")
     lines.append(MISSING_INFO_FOOTER)
     return "\n".join(lines)
+
+
+def render_date_range_clarification_message() -> str:
+    return DATE_RANGE_CLARIFICATION_MESSAGE
 
 
 def render_over_capacity_message() -> str:

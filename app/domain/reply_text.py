@@ -65,6 +65,11 @@ SINGLE_MISSING_PET_COUNT_MESSAGE: Final = (
     "小狗一隻 NT$500 清潔費,人數和日期確認後我們再為您試算總價。"
 )
 
+DATE_RANGE_CLARIFICATION_MESSAGE: Final = (
+    "您好,請問您大約是哪幾天入住呢?"
+    "例如「7/28 入住、7/29 退房」這樣的格式,系統可以幫您試算初步報價。"
+)
+
 OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "系統判定為客滿,請確認:"
 # Friendly owner-notification format (no-name baseline, PR: owner-push rewrite).
 # The header opens the push; the customer's name is OPTIONAL (rendered only when

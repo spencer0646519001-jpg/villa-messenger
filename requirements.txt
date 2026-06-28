@@ -4,5 +4,5 @@ pydantic
 python-dotenv
 pytest
 httpx
+openai>=1.0.0
 tzdata; platform_system == "Windows"
-

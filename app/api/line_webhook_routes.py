@@ -36,6 +36,7 @@ from app.adapters.line_adapter import (
     extract_text_message_events,
     line_event_to_inbound_message,
 )
+from app.adapters.llm import build_llm_provider_from_env
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.line_send_client import push_message, reply_message
@@ -177,6 +178,7 @@ def _build_inquiry_service(database_path: str) -> InquiryService:
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
         availability_service=None,
+        llm_provider=build_llm_provider_from_env(),
     )
 
 

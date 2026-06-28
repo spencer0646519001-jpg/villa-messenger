@@ -14,11 +14,14 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.llm_fallback import llm_fallback_parse
+from app.domain.llm_provider import LLMProvider
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.parser_models import InquiryParseResult
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_date_range_clarification_message,
     render_full_house_message,
     render_invalid_date_message,
     render_missing_info_message,
@@ -72,25 +75,47 @@ class InquiryService:
         tenant_special_dates_loader: Callable[[int], dict],
         now_provider: Callable[[], datetime] | None = None,
         availability_service: AvailabilityService | None = None,
+        llm_provider: LLMProvider | None = None,
     ) -> None:
         self._operation_mode_service = operation_mode_service
         self._tenant_pricing_loader = tenant_pricing_loader
         self._tenant_special_dates_loader = tenant_special_dates_loader
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
         self._availability_service = availability_service
+        self._llm_provider = llm_provider
 
     def handle_message(self, *, message: InboundMessage) -> InquiryDecision:
         urgency = detect_urgency(message.text)
         if urgency.is_urgent:
             return self._handle_urgent(message, urgency)
-        inquiry = parse_inquiry(message.text)
+        reference_year = self._reference_year()
+        inquiry = parse_inquiry(message.text, reference_year=reference_year)
         if not self._is_system_on(message):
             return self._handle_off_mode(message, inquiry)
+        inquiry = self._with_llm_fallback(message, inquiry, reference_year)
         if not self._is_quote_relevant(inquiry):
             return self._handle_non_inquiry(message, inquiry)
-        if inquiry.missing_fields:
+        if inquiry.needs_clarification or inquiry.missing_fields:
             return self._handle_missing_info(message, inquiry)
         return self._handle_pricing(message, inquiry)
+
+    def _reference_year(self) -> int:
+        return self._now().year
+
+    def _with_llm_fallback(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        reference_year: int,
+    ) -> InquiryParseResult:
+        return llm_fallback_parse(
+            inquiry,
+            message.text,
+            reference_year=reference_year,
+            is_quote_relevant=self._is_quote_relevant(inquiry),
+            tenant_id=message.tenant_id,
+            provider=self._llm_provider,
+        )
 
     def _is_system_on(self, message: InboundMessage) -> bool:
         return self._operation_mode_service.is_system_active(
@@ -225,12 +250,7 @@ class InquiryService:
         message: InboundMessage,
         inquiry: InquiryParseResult,
     ) -> InquiryDecision:
-        reply_text = render_missing_info_message(
-            missing_checkin="checkin_date" in inquiry.missing_fields,
-            missing_checkout="checkout_date" in inquiry.missing_fields,
-            missing_guest_count="guest_count" in inquiry.missing_fields,
-            missing_pet_count="pet_count" in inquiry.missing_fields,
-        )
+        reply_text = self._missing_info_reply(inquiry)
         log = self._build_base_log_payload(
             message,
             system_state="on",
@@ -243,6 +263,16 @@ class InquiryService:
             customer_reply_text=reply_text,
             log_payload=log,
             parsed_as_inquiry=True,
+        )
+
+    def _missing_info_reply(self, inquiry: InquiryParseResult) -> str:
+        if inquiry.needs_clarification and inquiry.clarification_reason == "date_range_too_broad":
+            return render_date_range_clarification_message()
+        return render_missing_info_message(
+            missing_checkin="checkin_date" in inquiry.missing_fields,
+            missing_checkout="checkout_date" in inquiry.missing_fields,
+            missing_guest_count="guest_count" in inquiry.missing_fields,
+            missing_pet_count="pet_count" in inquiry.missing_fields,
         )
 
     def _stay_kwargs(self, inquiry: InquiryParseResult) -> dict:
