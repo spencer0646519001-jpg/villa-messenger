@@ -10,6 +10,8 @@ _ZH_ROOM_PATTERNS = (
     re.compile(r"(?P<count>[一二兩三四五六七八九十]+)\s*(?:房|間(?:\s*房)?)"),
     re.compile(r"開\s*(?P<count>[一二兩三四五六七八九十]+)(?:\s*(?:房|間(?:\s*房)?))?"),
 )
+_ROOM_COUNT_ANSWER_ARABIC = re.compile(r"^(?:[開开]\s*)?(?P<count>\d+)$")
+_ROOM_COUNT_ANSWER_ZH = re.compile(r"^(?:[開开]\s*)?(?P<count>[一二兩三四五六七八九十]+)$")
 _ZH_DIGITS = {
     "一": 1,
     "二": 2,
@@ -33,6 +35,17 @@ def parse_room_count(text: str) -> int | None:
         match = pattern.search(text)
         if match is not None:
             return _parse_zh_count(match.group("count"))
+    return None
+
+
+def parse_room_count_answer(text: str) -> int | None:
+    value = text.strip()
+    match = _ROOM_COUNT_ANSWER_ARABIC.match(value)
+    if match is not None:
+        return int(match.group("count"))
+    match = _ROOM_COUNT_ANSWER_ZH.match(value)
+    if match is not None:
+        return _parse_zh_count(match.group("count"))
     return None
 
 

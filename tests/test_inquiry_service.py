@@ -446,6 +446,7 @@ def test_one_room_routes_to_manual_review() -> None:
     assert decision.customer_reply_text == MANUAL_REVIEW_MESSAGE
     assert decision.owner_push_text is not None
     assert decision.log_payload["action_taken"] == "room_manual_review"
+    assert decision.completes_conversation_state is True
 
 
 # ============================================================
@@ -464,6 +465,7 @@ def test_over_capacity_routes_to_manual_review() -> None:
     assert decision.customer_reply_text == MANUAL_REVIEW_MESSAGE
     assert decision.owner_push_text is not None
     assert decision.log_payload["action_taken"] == "room_manual_review"
+    assert decision.completes_conversation_state is True
 
 
 def test_over_capacity_could_quote_false_and_no_quoted_total() -> None:

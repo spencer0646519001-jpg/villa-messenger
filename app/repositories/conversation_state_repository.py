@@ -75,7 +75,13 @@ _EXPIRE_STALE_SQL = """
 UPDATE conversation_states
 SET status = 'expired', updated_at = ?
 WHERE status = 'in_progress'
-  AND expires_at < ?
+  AND expires_at <= ?
+"""
+
+_EXPIRE_STALE_FOR_USER_SQL = _EXPIRE_STALE_SQL + """
+  AND tenant_id = ?
+  AND platform = ?
+  AND platform_user_id = ?
 """
 
 
@@ -200,6 +206,19 @@ class ConversationStateRepository:
             cursor = connection.execute(
                 _EXPIRE_STALE_SQL + "  AND tenant_id = ?\n",
                 (now, now, tenant_id),
+            )
+            connection.commit()
+            return cursor.rowcount
+
+    def expire_stale_for_user(
+        self, *, tenant_id: int, platform: str, platform_user_id: str
+    ) -> int:
+        """Flip timed-out in_progress rows for exactly one platform user."""
+        now = _utc_now_iso()
+        with closing(get_connection(self.database_path)) as connection:
+            cursor = connection.execute(
+                _EXPIRE_STALE_FOR_USER_SQL,
+                (now, now, tenant_id, platform, platform_user_id),
             )
             connection.commit()
             return cursor.rowcount

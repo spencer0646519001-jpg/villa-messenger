@@ -7,7 +7,7 @@ import logging
 import shutil
 import uuid
 from collections.abc import Iterator
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from contextlib import closing
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,6 +21,8 @@ from app.api.dependencies import get_database_path
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
 from app.domain.reply_text import (
+    MANUAL_REVIEW_MESSAGE,
+    MISSING_ROOM_COUNT_MESSAGE,
     OWNER_RECORD_EMPTY_MESSAGE,
     OWNER_RECORD_UNREPLIED_TEXT,
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
@@ -140,6 +142,15 @@ def _post(client: TestClient, body: bytes, signature: str | None) -> object:
 def _rows(database_path: Path, table: str) -> list[dict]:
     with closing(get_connection(database_path)) as conn:
         return [dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()]
+
+
+def _force_state_expires_at(database_path: Path, state_id: int, expires_at: str) -> None:
+    with closing(get_connection(database_path)) as conn:
+        conn.execute(
+            "UPDATE conversation_states SET expires_at = ? WHERE id = ?",
+            (expires_at, state_id),
+        )
+        conn.commit()
 
 
 def _seed_tenant_owner(database_path: Path, tenant_id: int, user_id: str) -> None:
@@ -603,6 +614,7 @@ def _expected_quote(
     checkin: str,
     checkout: str,
     adults: int,
+    children: int = 0,
     room_count: int = 2,
 ) -> str:
     """The quote the single-message path would produce for these slots, built
@@ -612,7 +624,7 @@ def _expected_quote(
         checkin_date=date.fromisoformat(checkin),
         checkout_date=date.fromisoformat(checkout),
         adult_count=adults,
-        child_count=0,
+        child_count=children,
         infant_count=0,
         pet_count=0,
         room_count=room_count,
@@ -631,6 +643,135 @@ def _capture_replies(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     calls: list[dict] = []
     monkeypatch.setattr(line_webhook_routes, "reply_message", lambda **kw: calls.append(kw))
     return calls
+
+
+def test_stale_in_progress_state_does_not_block_new_round(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+    stale_id = ConversationStateRepository(database_path).create(
+        tenant_id=tenant_id,
+        platform="line",
+        platform_user_id="Uguest",
+        checkin_date="2026-07-28",
+        checkout_date="2026-07-29",
+        adult_count=13,
+    )
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    _force_state_expires_at(database_path, stale_id, past)
+
+    body = _payload_bytes([
+        _text_event_with_reply_token("7/10 入住 7/11 退房 10 大人 2 小孩 多少錢?")
+    ])
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    states = sorted(_rows(database_path, "conversation_states"), key=lambda row: row["id"])
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    assert [row["status"] for row in states] == ["expired", "in_progress"]
+    assert states[1]["checkin_date"] == "2026-07-10"
+    assert states[1]["checkout_date"] == "2026-07-11"
+    assert states[1]["adult_count"] == 10
+    assert states[1]["child_count"] == 2
+
+
+def test_dates_then_guest_count_then_room_count_quotes_without_reasking_dates(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    body1 = _payload_bytes([_text_event_with_reply_token("7/10入住7/11退房")])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+
+    assert calls[-1]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["checkin_date"] == "2026-07-10"
+    assert states[0]["checkout_date"] == "2026-07-11"
+    assert states[0]["adult_count"] is None
+
+    body2 = _payload_bytes([_text_event_with_reply_token("10大人2小孩")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["checkin_date"] == "2026-07-10"
+    assert states[0]["checkout_date"] == "2026-07-11"
+    assert states[0]["adult_count"] == 10
+    assert states[0]["child_count"] == 2
+    assert states[0]["room_count"] is None
+
+    body3 = _payload_bytes([_text_event_with_reply_token("開4房")])
+    assert _post(client, body3, _sign(body3)).status_code == 200
+
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-07-10",
+        checkout="2026-07-11", adults=10, children=2, room_count=4,
+    )
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "completed"
+
+
+def test_room_count_prompt_accepts_bare_number_followup(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    body1 = _payload_bytes([
+        _text_event_with_reply_token("5/12 入住 5/13 退房 4 大人 多少錢?")
+    ])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token("4")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert calls[0]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-05-12",
+        checkout="2026-05-13", adults=4, room_count=4,
+    )
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["room_count"] == 4
+    assert states[0]["status"] == "completed"
+
+
+def test_booking_signal_generic_question_asks_checkout_then_room_count_and_quotes(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    body1 = _payload_bytes([_text_event_with_reply_token("12人 7/10號可以嗎?")])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+
+    assert calls[-1]["text"] == SINGLE_MISSING_CHECKOUT_MESSAGE
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["checkin_date"] == "2026-07-10"
+    assert states[0]["adult_count"] == 12
+    assert states[0]["checkout_date"] is None
+
+    body2 = _payload_bytes([_text_event_with_reply_token("7/11 退房")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["checkin_date"] == "2026-07-10"
+    assert states[0]["checkout_date"] == "2026-07-11"
+    assert states[0]["room_count"] is None
+
+    body3 = _payload_bytes([_text_event_with_reply_token("開4房")])
+    assert _post(client, body3, _sign(body3)).status_code == 200
+
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-07-10",
+        checkout="2026-07-11", adults=12, room_count=4,
+    )
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "completed"
 
 
 def test_two_message_complete_flow_quotes_from_accumulation_and_completes(
@@ -731,6 +872,53 @@ def test_single_complete_message_quotes_once_and_completes(
     states = _rows(database_path, "conversation_states")
     assert len(states) == 1
     assert states[0]["status"] == "completed"
+
+
+def test_manual_review_completes_state_and_next_message_starts_fresh(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+
+    body1 = _payload_bytes([
+        _text_event_with_reply_token("7/28 入住 7/29 退房 8 大人 開1房 多少錢?")
+    ])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+
+    states = sorted(_rows(database_path, "conversation_states"), key=lambda row: row["id"])
+    assert len(states) == 1
+    assert states[0]["status"] == "completed"
+    assert states[0]["room_count"] == 1
+    assert replies[0]["text"] == MANUAL_REVIEW_MESSAGE
+    assert len(pushes) == 1
+
+    body2 = _payload_bytes([_text_event_with_reply_token("你好")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+    assert len(replies) == 1
+    assert all(row["status"] != "in_progress" for row in _rows(database_path, "conversation_states"))
+
+    body3 = _payload_bytes([
+        _text_event_with_reply_token("7/28 入住 7/29 退房 13 大人 多少錢?")
+    ])
+    assert _post(client, body3, _sign(body3)).status_code == 200
+
+    assert replies[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    states = sorted(_rows(database_path, "conversation_states"), key=lambda row: row["id"])
+    assert [row["status"] for row in states] == ["completed", "in_progress"]
+    assert states[1]["adult_count"] == 13
+    assert states[1]["room_count"] is None
+
+    body4 = _payload_bytes([_text_event_with_reply_token("開4房")])
+    assert _post(client, body4, _sign(body4)).status_code == 200
+
+    assert replies[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-07-28",
+        checkout="2026-07-29", adults=13, room_count=4,
+    )
+    states = sorted(_rows(database_path, "conversation_states"), key=lambda row: row["id"])
+    assert [row["status"] for row in states] == ["completed", "completed"]
+    assert states[1]["room_count"] == 4
 
 
 def test_mark_completed_failure_isolated_reply_still_sent(

@@ -43,6 +43,7 @@ class InquiryDecision(BaseModel):
     was_system_off: bool = False
     parsed_as_inquiry: bool = False
     could_quote: bool = False
+    completes_conversation_state: bool = False
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> "InquiryDecision":

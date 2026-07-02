@@ -49,6 +49,16 @@ def test_single_explicit_date_is_treated_as_checkin_only() -> None:
     assert result.missing_fields == ["checkout_date"]
 
 
+def test_single_checkout_labeled_date_is_checkout_only() -> None:
+    result = parse_stay_dates("5/13 退房", reference_year=2026)
+
+    assert result.checkin_date is None
+    assert result.checkout_date == "2026-05-13"
+    assert result.nights is None
+    assert result.confidence == "low"
+    assert result.missing_fields == ["checkin_date"]
+
+
 @pytest.mark.parametrize("text", ["下週六入住", "暑假四人", "端午連假有房嗎"])
 def test_vague_dates_are_not_parsed(text: str) -> None:
     result = parse_stay_dates(text, reference_year=2026)

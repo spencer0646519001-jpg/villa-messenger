@@ -10,7 +10,7 @@ import inspect
 import shutil
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -105,6 +105,23 @@ def _row_count(repo: ConversationStateRepository) -> int:
         return conn.execute("SELECT COUNT(*) FROM conversation_states").fetchone()[0]
 
 
+def _state_rows(repo: ConversationStateRepository) -> list[dict]:
+    with get_connection(repo.database_path) as conn:
+        rows = conn.execute("SELECT * FROM conversation_states ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+
+def _force_expires_at(
+    repo: ConversationStateRepository, state_id: int, expires_at: str
+) -> None:
+    with get_connection(repo.database_path) as conn:
+        conn.execute(
+            "UPDATE conversation_states SET expires_at = ? WHERE id = ?",
+            (expires_at, state_id),
+        )
+        conn.commit()
+
+
 # ============================================================
 # OPEN: quote-relevant inquiry creates a state
 # ============================================================
@@ -122,6 +139,44 @@ def test_quote_relevant_inquiry_opens_state(repo: ConversationStateRepository) -
     assert state["checkin_date"] == "2026-05-12"
     assert state["checkout_date"] == "2026-05-14"
     assert state["intent"] == "price"
+
+
+def test_stale_in_progress_for_same_user_expires_before_opening_new_state(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+    stale = repo.create(tenant_id=1, platform="line", platform_user_id="Uguest")
+    other_user = repo.create(tenant_id=1, platform="line", platform_user_id="Uother")
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    _force_expires_at(repo, stale, past)
+    _force_expires_at(repo, other_user, past)
+
+    service.record(message=_message("5/12 入住 5/14 退房 多少錢?"),
+                   decision=_decision("5/12 入住 5/14 退房 多少錢?"))
+
+    rows = _state_rows(repo)
+    active = _active(repo)
+    assert [row["status"] for row in rows] == ["expired", "in_progress", "in_progress"]
+    assert active["id"] != stale
+    assert active["checkin_date"] == "2026-05-12"
+    assert next(row for row in rows if row["id"] == other_user)["status"] == "in_progress"
+
+
+def test_completed_state_does_not_block_same_user_new_round(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+    completed = repo.create(tenant_id=1, platform="line", platform_user_id="Uguest")
+    repo.mark_completed(tenant_id=1, state_id=completed)
+
+    service.record(message=_message("5/12 入住 5/14 退房 多少錢?"),
+                   decision=_decision("5/12 入住 5/14 退房 多少錢?"))
+
+    rows = _state_rows(repo)
+    active = _active(repo)
+    assert [row["status"] for row in rows] == ["completed", "in_progress"]
+    assert active["id"] != completed
+    assert active["checkin_date"] == "2026-05-12"
 
 
 # ============================================================
@@ -156,6 +211,37 @@ def test_followup_room_count_merges_into_active_state(repo: ConversationStateRep
     state = _active(repo)
     assert state["room_count"] == 4
     assert state["adult_count"] == 13
+    assert _row_count(repo) == 1
+
+
+@pytest.mark.parametrize("text", ["4", "四", "开4"])
+def test_room_count_answer_merges_only_when_waiting_for_room_count(
+    repo: ConversationStateRepository, text: str
+) -> None:
+    service = ConversationStateService(repo)
+    service.record(message=_message("5/12 入住 5/14 退房 13 大人 多少錢?"),
+                   decision=_decision("5/12 入住 5/14 退房 13 大人 多少錢?"))
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    state = _active(repo)
+    assert state["room_count"] == 4
+    assert state["adult_count"] == 13
+    assert _row_count(repo) == 1
+
+
+@pytest.mark.parametrize("text", ["4", "4人"])
+def test_room_count_answer_does_not_merge_before_room_count_gate(
+    repo: ConversationStateRepository, text: str
+) -> None:
+    service = ConversationStateService(repo)
+    service.record(message=_message("5/12 入住 多少錢"),
+                   decision=_decision("5/12 入住 多少錢"))
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    state = _active(repo)
+    assert state["room_count"] is None
     assert _row_count(repo) == 1
 
 

@@ -17,6 +17,8 @@ def test_parse_total_guest_count(text: str, expected_count: int) -> None:
     result = parse_guest_counts(text)
 
     assert result.guest_count == expected_count
+    assert result.adult_count == expected_count
+    assert result.child_count is None
     assert result.confidence == "high"
 
 

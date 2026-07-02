@@ -6,7 +6,7 @@ Covers the four branches of compose():
   - no active state / off mode / urgent -> the per-message reply (fallback)
   - active + incomplete -> missing-slot prompt (from the accumulated state)
   - active + complete -> quote from accumulated slots + completed_state_id
-  - active + complete-but-unquotable (over capacity) -> the over-capacity reply
+  - active + manual-review gate -> owner handoff + completed_state_id
 """
 
 from datetime import date
@@ -291,7 +291,7 @@ def test_complete_but_over_capacity_returns_manual_review() -> None:
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
     assert result.text == render_manual_review_message()
     assert result.owner_push_text is not None
-    assert result.completed_state_id is None
+    assert result.completed_state_id == 9
 
 
 # ============================================================

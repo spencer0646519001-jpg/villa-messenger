@@ -31,7 +31,7 @@ def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseR
 
     if checkin is None and checkout is None and len(unlabeled_dates) == 2:
         checkin, checkout = unlabeled_dates
-    elif checkin is None and len(date_matches) == 1:
+    elif checkin is None and checkout is None and len(date_matches) == 1:
         checkin = date_matches[0][0]
 
     nights = None

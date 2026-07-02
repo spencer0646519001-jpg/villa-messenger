@@ -76,6 +76,7 @@ class ComposedReply(BaseModel):
         and -- because "已通知" must be truthful -- swaps in `push_failed_text`
         as the customer reply if (and only if) that push fails;
       - when `completed_state_id` is set, best-effort mark that state completed.
+        Quotes and manual-review handoffs both end the quote state.
 
     FAQ replies never set `completed_state_id` (FAQ does not touch quote state)."""
 
@@ -141,9 +142,16 @@ class ConversationReplyComposer:
             and _should_answer_gate3_faq(faq_match, decision, state)
         ):
             return self._compose_faq(message)
-        if _is_faq(decision):
+        if _is_faq(decision) and not _is_checkout_slot_followup(
+            faq_match, decision, state
+        ):
             return self._compose_faq(message)
         if state is None:
+            if decision.completes_conversation_state:
+                return ComposedReply(
+                    text=decision.customer_reply_text,
+                    owner_push_text=decision.owner_push_text,
+                )
             if (
                 decision.customer_reply_text is None
                 and decision.owner_push_text is not None
@@ -151,6 +159,12 @@ class ConversationReplyComposer:
             ):
                 return ComposedReply(owner_push_text=decision.owner_push_text)
             return ComposedReply(text=decision.customer_reply_text)
+        if decision.completes_conversation_state:
+            return ComposedReply(
+                text=decision.customer_reply_text,
+                owner_push_text=decision.owner_push_text,
+                completed_state_id=state["id"],
+            )
         missing = self._missing_for_state(state)
         if missing:
             return ComposedReply(text=_render_missing(missing))
@@ -263,13 +277,16 @@ class ConversationReplyComposer:
             return ComposedReply(
                 text=render_manual_review_message(),
                 owner_push_text=_manual_review_push(message),
+                completed_state_id=state["id"],
             )
         room_rule = resolve_room_pricing_rule(room_count=room_count, room_policy=room_policy)
         if guest_count <= room_rule.standard_capacity:
             return None
         if room_count == 4 and guest_count <= room_rule.max_capacity:
             return None
-        return _room_capacity_suggestion(message, room_count, guest_count, room_policy)
+        return _room_capacity_suggestion(
+            message, room_count, guest_count, room_policy, state_id=state["id"]
+        )
 
 
 def _is_faq(decision: InquiryDecision) -> bool:
@@ -278,6 +295,17 @@ def _is_faq(decision: InquiryDecision) -> bool:
     contains a price keyword) is handled at the call site in compose() —
     before this check — so this function only fires for non-NON_PRICEABLE faq."""
     return decision.log_payload.get("inquiry_intent") == "faq"
+
+
+def _is_checkout_slot_followup(
+    faq_match: FaqMatch | None, decision: InquiryDecision, state: dict | None
+) -> bool:
+    return (
+        state is not None
+        and faq_match is not None
+        and faq_match.topic == "checkout"
+        and decision.log_payload.get("parsed_checkout") is not None
+    )
 
 
 def _should_answer_gate3_faq(
@@ -335,7 +363,12 @@ def _needs_manual_room_review(
 
 
 def _room_capacity_suggestion(
-    message: InboundMessage, room_count: int, guest_count: int, room_policy: dict
+    message: InboundMessage,
+    room_count: int,
+    guest_count: int,
+    room_policy: dict,
+    *,
+    state_id: int | None = None,
 ) -> ComposedReply:
     suggested = minimum_rooms_for_guest_count(
         guest_count=guest_count,
@@ -345,6 +378,7 @@ def _room_capacity_suggestion(
         return ComposedReply(
             text=render_manual_review_message(),
             owner_push_text=_manual_review_push(message),
+            completed_state_id=state_id,
         )
     return ComposedReply(
         text=render_room_capacity_suggestion_message(

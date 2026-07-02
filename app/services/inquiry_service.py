@@ -383,6 +383,7 @@ class InquiryService:
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=False,
+            completes_conversation_state=True,
         )
 
     def _room_reply(

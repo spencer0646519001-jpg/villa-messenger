@@ -120,3 +120,21 @@ def test_room_count_is_parsed_but_not_a_missing_field() -> None:
 
     assert result.room_count == 4
     assert "room_count" not in result.missing_fields
+
+
+def test_booking_signal_generic_question_enters_quote_chain() -> None:
+    result = parse_inquiry("12人 7/10號可以嗎?", reference_year=2026)
+
+    assert result.intent.inquiry_type == "availability"
+    assert result.dates.checkin_date == "2026-07-10"
+    assert result.guests.guest_count == 12
+    assert result.guests.adult_count == 12
+    assert result.missing_fields == ["checkout_date"]
+
+
+def test_faq_topic_with_booking_signal_does_not_enter_quote_chain() -> None:
+    result = parse_inquiry("7/10可以帶寵物嗎", reference_year=2026)
+
+    assert result.intent.inquiry_type == "faq"
+    assert result.dates.checkin_date == "2026-07-10"
+    assert result.missing_fields == []

@@ -46,3 +46,30 @@ def test_other_question_can_be_faq() -> None:
 
     assert result.is_inquiry is True
     assert result.inquiry_type == "faq"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["12人 7/10號可以嗎?", "14人 7/10可以嗎", "7/10號可以嗎?", "12人可以嗎"],
+)
+def test_booking_signal_with_generic_faq_term_is_availability(text: str) -> None:
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "availability"
+
+
+@pytest.mark.parametrize("text", ["7/10可以帶寵物嗎", "12人可以烤肉嗎"])
+def test_explicit_faq_topic_with_booking_signal_stays_faq(text: str) -> None:
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "faq"
+
+
+@pytest.mark.parametrize("text", ["可以帶寵物嗎", "有什麼設備"])
+def test_pure_explicit_faq_topic_stays_faq(text: str) -> None:
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "faq"

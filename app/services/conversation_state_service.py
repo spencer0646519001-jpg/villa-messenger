@@ -19,8 +19,11 @@ Unlike InquiryService (which is forbidden the repository layer), this service
 MAY import repositories: it is the seam that keeps the webhook route thin.
 """
 
+from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
+from app.domain.room_count_parser import parse_room_count_answer
+from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.schemas import InboundMessage
 
@@ -71,14 +74,15 @@ class ConversationStateService:
         # Returns the merged in_progress row (or None) so STAGE C drives the reply
         # from the ACCUMULATED slots; assembled in-hand (mirrors the repo COALESCE),
         # no extra query.
+        identity = _state_identity(message)
+        self._repo.expire_stale_for_user(**identity)
         slots = log_payload_to_state_slots(decision.log_payload)
         active = self._repo.get_active_for_user(
-            tenant_id=message.tenant_id,
-            platform=message.platform,
-            platform_user_id=message.platform_user_id,
+            **identity,
         )
         if active is None:
             return self._open_if_inquiry(message, decision, slots)
+        self._fill_contextual_room_count(slots, active, message.text)
         if self._has_slot(slots):
             self._repo.update_slots(tenant_id=message.tenant_id, state_id=active["id"], **slots)
             return _merge_row(active, slots)
@@ -105,6 +109,11 @@ class ConversationStateService:
     def _has_slot(self, slots: dict) -> bool:
         return any(slots.get(key) is not None for key in _SLOT_KEYS)
 
+    def _fill_contextual_room_count(self, slots: dict, active: dict, text: str) -> None:
+        if slots.get("room_count") is not None or not _is_waiting_for_room_count(active):
+            return
+        slots["room_count"] = parse_room_count_answer(normalize_for_parsing(text))
+
 
 def _merge_row(base: dict, slots: dict) -> dict:
     """Apply non-None slots over a base row (mirrors the repo's COALESCE merge)."""
@@ -113,3 +122,27 @@ def _merge_row(base: dict, slots: dict) -> dict:
         if value is not None:
             merged[key] = value
     return merged
+
+
+def _state_identity(message: InboundMessage) -> dict:
+    return {
+        "tenant_id": message.tenant_id,
+        "platform": message.platform,
+        "platform_user_id": message.platform_user_id,
+    }
+
+
+def _is_waiting_for_room_count(state: dict) -> bool:
+    if state.get("room_count") is not None:
+        return False
+    return not compute_missing_fields(
+        checkin_date=state["checkin_date"],
+        checkout_date=state["checkout_date"],
+        guest_count=_state_guest_count(state),
+        has_pet=bool(state["has_pet"]),
+        pet_count=state["pet_count"],
+    )
+
+
+def _state_guest_count(state: dict) -> int | None:
+    return ((state["adult_count"] or 0) + (state["child_count"] or 0)) or None

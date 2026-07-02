@@ -76,5 +76,10 @@ def match_faq(text: str) -> FaqMatch | None:
     return None
 
 
+def has_explicit_faq_topic(text: str) -> bool:
+    """True when text hits the FAQ topic keyword whitelist."""
+    return match_faq(text) is not None
+
+
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)

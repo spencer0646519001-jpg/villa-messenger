@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import app.repositories.conversation_state_repository as repository_module
 from app.repositories.conversation_state_repository import (
     ConversationStateRepository,
 )
@@ -362,6 +363,59 @@ def test_expire_stale_only_expires_requested_tenant(database_path: Path) -> None
     assert _row_by_id(database_path, tenant_b_state)["status"] == "in_progress"
 
 
+def test_expire_stale_for_user_only_expires_requested_user(database_path: Path) -> None:
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+    target = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Utarget"
+    )
+    other_user = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uother"
+    )
+    other_platform = repository.create(
+        tenant_id=tenant_id, platform="messenger", platform_user_id="Utarget"
+    )
+    for state_id in (target, other_user, other_platform):
+        _force_expires_at(database_path, state_id, _PAST_ISO)
+
+    changed = repository.expire_stale_for_user(
+        tenant_id=tenant_id, platform="line", platform_user_id="Utarget"
+    )
+
+    assert changed == 1
+    assert _row_by_id(database_path, target)["status"] == "expired"
+    assert _row_by_id(database_path, other_user)["status"] == "in_progress"
+    assert _row_by_id(database_path, other_platform)["status"] == "in_progress"
+
+
+def test_expire_stale_for_user_uses_same_boundary_as_active_lookup(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixed_now = datetime(2026, 7, 2, 4, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(repository_module, "_utc_now_iso", lambda: fixed_now.isoformat())
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+    future = repository.create(tenant_id=tenant_id, platform="line", platform_user_id="Ufuture")
+    exact = repository.create(tenant_id=tenant_id, platform="line", platform_user_id="Uexact")
+    past = repository.create(tenant_id=tenant_id, platform="line", platform_user_id="Upast")
+    _force_expires_at(database_path, future, (fixed_now + timedelta(seconds=1)).isoformat())
+    _force_expires_at(database_path, exact, fixed_now.isoformat())
+    _force_expires_at(database_path, past, (fixed_now - timedelta(seconds=1)).isoformat())
+
+    assert repository.expire_stale_for_user(
+        tenant_id=tenant_id, platform="line", platform_user_id="Ufuture"
+    ) == 0
+    assert repository.expire_stale_for_user(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uexact"
+    ) == 1
+    assert repository.expire_stale_for_user(
+        tenant_id=tenant_id, platform="line", platform_user_id="Upast"
+    ) == 1
+    assert _row_by_id(database_path, future)["status"] == "in_progress"
+    assert _row_by_id(database_path, exact)["status"] == "expired"
+    assert _row_by_id(database_path, past)["status"] == "expired"
+
+
 # ============================================================
 # has_pet VS pet_count: "no pets" DISTINCT FROM "unasked"
 # ============================================================
@@ -441,6 +495,7 @@ def _body_line_count(func) -> int:
         ConversationStateRepository.mark_completed,
         ConversationStateRepository.mark_expired,
         ConversationStateRepository.expire_stale,
+        ConversationStateRepository.expire_stale_for_user,
     ],
 )
 def test_public_methods_under_15_body_lines(func) -> None:

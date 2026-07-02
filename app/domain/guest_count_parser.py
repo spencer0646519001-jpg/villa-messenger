@@ -27,6 +27,9 @@ def parse_guest_counts(text: str) -> GuestCountParseResult:
         guest_count = (adult_count or 0) + (child_count or 0)
     else:
         guest_count = _first_count(text, (_TOTAL_GUESTS,))
+        # conversation_states has no guest_count column; total-only counts are
+        # treated as adults so multi-turn pricing can retain the value.
+        adult_count = guest_count
 
     has_any_count = any(
         count is not None for count in (adult_count, child_count, infant_count, guest_count)
