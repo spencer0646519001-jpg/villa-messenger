@@ -4,7 +4,7 @@ import json
 import logging
 import re
 
-from app.domain.llm_provider import LLMOutput
+from app.domain.llm_provider import LLMHTTPError, LLMOutput, LLMParseError, LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,74 @@ def call_openrouter(
     return content
 
 
+def call_openrouter_strict(
+    *,
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_text: str,
+    timeout_s: float,
+) -> str:
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise LLMHTTPError("OpenAI SDK is not installed") from exc
+
+    try:
+        client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            response_format={"type": "json_object"},
+            timeout=timeout_s,
+        )
+    except Exception as exc:  # noqa: BLE001 -- strict path re-raises classified errors
+        _raise_classified_openrouter_error(exc)
+
+    try:
+        content = response.choices[0].message.content
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise LLMParseError("OpenRouter LLM response did not contain message content") from exc
+    if not isinstance(content, str):
+        raise LLMParseError("OpenRouter LLM returned non-string content")
+    return content
+
+
+def _raise_classified_openrouter_error(exc: Exception) -> None:
+    if _is_timeout_error(exc):
+        raise LLMTimeoutError("OpenRouter LLM call timed out") from exc
+    raise LLMHTTPError("OpenRouter LLM HTTP/transport call failed") from exc
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    timeout_types: list[type[BaseException]] = []
+    try:
+        from openai import APITimeoutError
+
+        timeout_types.append(APITimeoutError)
+    except ImportError:
+        pass
+    try:
+        import httpx
+
+        timeout_types.append(httpx.TimeoutException)
+    except ImportError:
+        pass
+    if timeout_types and isinstance(exc, tuple(timeout_types)):
+        return True
+    return exc.__class__.__name__ in {
+        "APITimeoutError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadTimeout",
+        "TimeoutException",
+        "WriteTimeout",
+    }
+
+
 class OpenRouterProviderBase:
     def __init__(self, *, api_key: str, model: str, timeout_s: float = 5) -> None:
         self._api_key = api_key
@@ -75,6 +143,24 @@ class OpenRouterProviderBase:
             return None
         return _parse_llm_output(raw_json)
 
+    def parse_strict(
+        self,
+        *,
+        raw_text: str,
+        reference_year: int,
+        trigger: str,
+        tenant_id: int,
+    ) -> LLMOutput:
+        _ = tenant_id
+        raw_json = call_openrouter_strict(
+            api_key=self._api_key,
+            model=self._model,
+            system_prompt=_build_system_prompt(reference_year, trigger),
+            user_text=raw_text,
+            timeout_s=self._timeout_s,
+        )
+        return _parse_llm_output_strict(raw_json)
+
 
 def _parse_llm_output(raw_json: str) -> LLMOutput | None:
     try:
@@ -85,6 +171,20 @@ def _parse_llm_output(raw_json: str) -> LLMOutput | None:
     if not isinstance(data, dict):
         logger.warning("LLM provider returned JSON that is not an object")
         return None
+    return _llm_output_from_dict(data)
+
+
+def _parse_llm_output_strict(raw_json: str) -> LLMOutput:
+    try:
+        data = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise LLMParseError("LLM provider returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise LLMParseError("LLM provider returned JSON that is not an object")
+    return _llm_output_from_dict(data)
+
+
+def _llm_output_from_dict(data: dict) -> LLMOutput:
     return LLMOutput(
         intent=_intent_or_none(data.get("intent")),
         checkin_date=_date_or_none(data.get("checkin_date")),

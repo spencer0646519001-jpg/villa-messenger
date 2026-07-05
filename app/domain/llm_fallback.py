@@ -15,7 +15,7 @@ import re
 from datetime import date
 
 from app.domain.inquiry_completeness import compute_missing_fields
-from app.domain.llm_provider import LLMOutput, LLMProvider
+from app.domain.llm_provider import LLMFallbackExhaustedError, LLMOutput, LLMProvider
 from app.domain.parser_models import (
     DateParseResult,
     GuestCountParseResult,
@@ -55,12 +55,15 @@ def llm_fallback_parse(
     if trigger is None:
         return inquiry
 
-    llm_out = provider.parse(
-        raw_text=raw_text,
-        reference_year=reference_year,
-        trigger=trigger,
-        tenant_id=tenant_id,
-    )
+    try:
+        llm_out = provider.parse(
+            raw_text=raw_text,
+            reference_year=reference_year,
+            trigger=trigger,
+            tenant_id=tenant_id,
+        )
+    except LLMFallbackExhaustedError:
+        return inquiry
     if llm_out is None:
         return inquiry
     return _merge_llm_into_inquiry(inquiry, llm_out, trigger)

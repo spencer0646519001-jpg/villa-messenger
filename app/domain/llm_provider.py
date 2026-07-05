@@ -2,6 +2,35 @@ from dataclasses import dataclass
 from typing import Protocol
 
 
+class LLMProviderError(Exception):
+    reason = "http_error"
+
+
+class LLMTimeoutError(LLMProviderError):
+    reason = "timeout"
+
+
+class LLMHTTPError(LLMProviderError):
+    reason = "http_error"
+
+
+class LLMParseError(LLMProviderError):
+    reason = "parse_error"
+
+
+class LLMFallbackExhaustedError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        primary_error: LLMProviderError,
+        fallback_error: LLMProviderError,
+    ) -> None:
+        super().__init__(message)
+        self.primary_error = primary_error
+        self.fallback_error = fallback_error
+
+
 @dataclass
 class LLMOutput:
     intent: str | None
