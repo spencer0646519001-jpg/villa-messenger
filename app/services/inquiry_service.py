@@ -477,7 +477,7 @@ class InquiryService:
         inquiry: InquiryParseResult,
         outcome: AvailabilityGateResult,
     ) -> InquiryDecision:
-        push_text = self._render_full_house_push(inquiry)
+        push_text = self._render_full_house_push(message, inquiry)
         log = self._build_base_log_payload(
             message, system_state="on", action_taken="full_house"
         )
@@ -492,10 +492,14 @@ class InquiryService:
             completes_conversation_state=True,
         )
 
-    def _render_full_house_push(self, inquiry: InquiryParseResult) -> str:
+    def _render_full_house_push(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> str:
         return render_owner_push_full_house(
             checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
             checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
+            guest_count=_guest_count(inquiry),
+            platform_user_id=message.platform_user_id,
         )
 
     def _handle_quoted_unverified(

@@ -34,6 +34,10 @@ from app.domain.reply_text import (
     FULL_HOUSE_MESSAGE,
     MISSING_ROOM_COUNT_MESSAGE,
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
+    OWNER_PUSH_FULL_HOUSE_PREFIX,
     ROOM_CAPACITY_SUGGESTION_TEMPLATE,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
@@ -157,19 +161,30 @@ def _non_inquiry_decision(log_payload: dict | None = None) -> InquiryDecision:
     )
 
 
-def _decision(*, off: bool = False, urgent: bool = False) -> InquiryDecision:
+def _decision(
+    *,
+    off: bool = False,
+    urgent: bool = False,
+    parsed_checkin: str | None = None,
+    parsed_checkout: str | None = None,
+) -> InquiryDecision:
+    payload = {"a": 1}
+    if parsed_checkin is not None:
+        payload["parsed_checkin"] = parsed_checkin
+    if parsed_checkout is not None:
+        payload["parsed_checkout"] = parsed_checkout
     if urgent:
         return InquiryDecision(
             action_type="push_owner_urgent", owner_push_text="!", was_urgent=True,
-            log_payload={"a": 1},
+            log_payload=payload,
         )
     if off:
         return InquiryDecision(
-            action_type="do_nothing", was_system_off=True, log_payload={"a": 1},
+            action_type="do_nothing", was_system_off=True, log_payload=payload,
         )
     return InquiryDecision(
         action_type="reply_to_customer_only", customer_reply_text="PER_MESSAGE",
-        log_payload={"a": 1},
+        log_payload=payload,
     )
 
 
@@ -198,6 +213,13 @@ def _availability_blocked() -> AvailabilityCheckOutcome:
                 )
             ],
         ),
+    )
+
+
+def _availability_available() -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(
+        status="available",
+        result=AvailabilityResult(has_any_blocked_nights=False, blocked_nights=[]),
     )
 
 
@@ -256,6 +278,107 @@ def test_incomplete_state_prompts_for_missing_slot() -> None:
     result = _composer().compose(message=_message(), decision=_decision(), state=state)
     assert result.text == SINGLE_MISSING_GUEST_COUNT_MESSAGE
     assert result.completed_state_id is None
+
+
+def test_early_date_range_blocked_stops_missing_prompt_and_notifies_owner() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_blocked())
+    state = _state(
+        id=42,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+    )
+
+    result = _composer(availability_service=service).compose(
+        message=_message(),
+        decision=_decision(
+            parsed_checkin="2026-05-12",
+            parsed_checkout="2026-05-13",
+        ),
+        state=state,
+    )
+
+    assert result.text == FULL_HOUSE_MESSAGE
+    assert result.owner_push_text is not None
+    assert OWNER_PUSH_FULL_HOUSE_PREFIX in result.owner_push_text
+    assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in result.owner_push_text
+    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in result.owner_push_text
+    assert result.completed_state_id == 42
+    assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
+
+
+def test_early_available_continues_to_missing_guest_prompt() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_available())
+    state = _state(checkin_date="2026-05-12", checkout_date="2026-05-13")
+
+    result = _composer(availability_service=service).compose(
+        message=_message(),
+        decision=_decision(
+            parsed_checkin="2026-05-12",
+            parsed_checkout="2026-05-13",
+        ),
+        state=state,
+    )
+
+    assert result.text == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+    assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
+
+
+def test_early_error_degrades_to_missing_guest_prompt() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_error())
+    state = _state(checkin_date="2026-05-12", checkout_date="2026-05-13")
+
+    result = _composer(availability_service=service).compose(
+        message=_message(),
+        decision=_decision(
+            parsed_checkin="2026-05-12",
+            parsed_checkout="2026-05-13",
+        ),
+        state=state,
+    )
+
+    assert result.text == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+    assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
+
+
+def test_early_gate_waits_until_date_range_is_complete() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_blocked())
+    state = _state(checkin_date="2026-05-12", checkout_date=None, adult_count=4)
+
+    result = _composer(availability_service=service).compose(
+        message=_message(),
+        decision=_decision(parsed_checkin="2026-05-12"),
+        state=state,
+    )
+
+    assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+    assert result.owner_push_text is None
+    assert result.completed_state_id is None
+    assert service.calls == []
+
+
+def test_multiturn_checkout_completion_triggers_early_block() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_blocked())
+    state = _state(
+        id=43,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+    )
+
+    result = _composer(availability_service=service).compose(
+        message=_message(),
+        decision=_decision(parsed_checkout="2026-05-13"),
+        state=state,
+    )
+
+    assert result.text == FULL_HOUSE_MESSAGE
+    assert result.owner_push_text is not None
+    assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in result.owner_push_text
+    assert result.completed_state_id == 43
+    assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
 
 
 def test_complete_state_without_room_count_asks_room_count() -> None:
@@ -358,7 +481,10 @@ def test_complete_state_blocked_availability_returns_full_house_without_quote() 
     )
 
     assert result.text == FULL_HOUSE_MESSAGE
-    assert result.owner_push_text is None
+    assert result.owner_push_text is not None
+    assert OWNER_PUSH_FULL_HOUSE_PREFIX in result.owner_push_text
+    assert f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}4" in result.owner_push_text
+    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in result.owner_push_text
     assert result.completed_state_id == 42
     assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
 

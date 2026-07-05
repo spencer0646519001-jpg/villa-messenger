@@ -39,6 +39,9 @@ from app.domain.reply_text import (
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
     OWNER_PUSH_CUSTOMER_PREFIX,
     OWNER_PUSH_DEFER_CLOSE,
+    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
     OWNER_PUSH_QUESTION_PREFIX,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
@@ -220,12 +223,20 @@ def render_owner_push_full_house(
     checkin_date: date,
     checkout_date: date,
     inquiry_id: int | None = None,
+    guest_count: int | None = None,
+    platform_user_id: str | None = None,
 ) -> str:
     lines = [OWNER_PUSH_FULL_HOUSE_PREFIX]
     if inquiry_id is not None:
         lines.append(f"詢價編號:#{inquiry_id}")
     lines.append(f"入住:{_format_date_with_weekday(checkin_date)}")
     lines.append(f"退房:{_format_date_with_weekday(checkout_date)}")
+    if guest_count is None:
+        lines.append(OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN)
+    else:
+        lines.append(f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}{guest_count}")
+    if platform_user_id:
+        lines.append(f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}{platform_user_id}")
     return "\n".join(lines)
 
 

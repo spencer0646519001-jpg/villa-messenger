@@ -54,6 +54,7 @@ from app.domain.reply_templates import (
     render_missing_room_count_message,
     render_over_capacity_message,
     render_owner_push_availability_unverified,
+    render_owner_push_full_house,
     render_owner_push_uncategorized,
     render_quote_message,
     render_room_capacity_suggestion_message,
@@ -174,6 +175,9 @@ class ConversationReplyComposer:
                 owner_push_text=decision.owner_push_text,
                 completed_state_id=state["id"],
             )
+        early_gate = self._early_availability_gate(message, decision, state)
+        if early_gate is not None:
+            return early_gate
         missing = self._missing_for_state(state)
         if missing:
             return ComposedReply(text=_render_missing(missing))
@@ -276,17 +280,34 @@ class ConversationReplyComposer:
             )
         gate = self._availability_gate(kwargs)
         if gate.status == "blocked":
-            return ComposedReply(
-                text=render_full_house_message(),
-                completed_state_id=state["id"],
-            )
+            return self._blocked_availability_reply(message, state, kwargs)
         return self._quoted_reply(state, kwargs, pricing, gate)
+
+    def _early_availability_gate(
+        self, message: InboundMessage, decision: InquiryDecision, state: dict
+    ) -> ComposedReply | None:
+        if not _should_check_availability_early(state, decision):
+            return None
+        kwargs = _state_date_kwargs(state)
+        gate = self._availability_gate(kwargs)
+        if gate.status != "blocked":
+            return None
+        return self._blocked_availability_reply(message, state, kwargs)
 
     def _availability_gate(self, kwargs: dict) -> AvailabilityGateResult:
         return evaluate_availability_gate(
             availability_service=self._availability_service,
             checkin=kwargs["checkin_date"],
             checkout=kwargs["checkout_date"],
+        )
+
+    def _blocked_availability_reply(
+        self, message: InboundMessage, state: dict, kwargs: dict
+    ) -> ComposedReply:
+        return ComposedReply(
+            text=render_full_house_message(),
+            owner_push_text=_full_house_push(message, kwargs, _state_guest_count(state)),
+            completed_state_id=state["id"],
         )
 
     def _quoted_reply(
@@ -387,6 +408,20 @@ def _state_stay_kwargs(state: dict) -> dict:
     }
 
 
+def _state_date_kwargs(state: dict) -> dict:
+    return {
+        "checkin_date": date.fromisoformat(state["checkin_date"]),
+        "checkout_date": date.fromisoformat(state["checkout_date"]),
+    }
+
+
+def _should_check_availability_early(state: dict, decision: InquiryDecision) -> bool:
+    if state.get("checkin_date") is None or state.get("checkout_date") is None:
+        return False
+    payload = decision.log_payload
+    return payload.get("parsed_checkin") is not None or payload.get("parsed_checkout") is not None
+
+
 def _needs_manual_room_review(
     room_count: int, guest_count: int, room_policy: dict
 ) -> bool:
@@ -435,6 +470,17 @@ def _availability_unverified_push(kwargs: dict) -> str:
     return render_owner_push_availability_unverified(
         checkin_date=kwargs["checkin_date"],
         checkout_date=kwargs["checkout_date"],
+    )
+
+
+def _full_house_push(
+    message: InboundMessage, kwargs: dict, guest_count: int | None
+) -> str:
+    return render_owner_push_full_house(
+        checkin_date=kwargs["checkin_date"],
+        checkout_date=kwargs["checkout_date"],
+        guest_count=guest_count,
+        platform_user_id=message.platform_user_id,
     )
 
 

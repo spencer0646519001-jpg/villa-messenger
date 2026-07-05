@@ -78,6 +78,9 @@ DATE_RANGE_CLARIFICATION_MESSAGE: Final = (
 )
 
 OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "系統判定為客滿,請確認:"
+OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX: Final = "人數:"
+OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN: Final = "人數尚未提供"
+OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX: Final = "LINE userId:"
 # Friendly owner-notification format (no-name baseline, PR: owner-push rewrite).
 # The header opens the push; the customer's name is OPTIONAL (rendered only when
 # a display name is available -- we deliberately NEVER print the raw U... userId).

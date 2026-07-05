@@ -18,9 +18,11 @@ from fastapi.testclient import TestClient
 
 from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
+from app.domain.availability_models import AvailabilityResult, BlockedNight
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
 from app.domain.reply_text import (
+    FULL_HOUSE_MESSAGE,
     MANUAL_REVIEW_MESSAGE,
     MISSING_ROOM_COUNT_MESSAGE,
     OWNER_RECORD_EMPTY_MESSAGE,
@@ -28,6 +30,9 @@ from app.domain.reply_text import (
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
     OWNER_COMMAND_TURN_OFF_MESSAGE,
     OWNER_COMMAND_TURN_ON_MESSAGE,
+    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
+    OWNER_PUSH_FULL_HOUSE_PREFIX,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
@@ -38,6 +43,7 @@ from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.services.conversation_state_service import ConversationStateService
+from app.services.availability_service import AvailabilityCheckOutcome
 from app.services.operation_mode_service import OperationModeService
 from app.services.tenant_config_loaders import (
     make_tenant_pricing_loader,
@@ -801,6 +807,7 @@ def test_two_message_incomplete_prompts_for_missing_slot(
 ) -> None:
     tenant_id = _seed_channel(database_path)
     _set_system_on(database_path, tenant_id)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: None)
     calls = _capture_replies(monkeypatch)
 
     # Opens with checkin + price (checkout + guests missing); a bare-guest
@@ -1005,6 +1012,61 @@ def _capture_sends(
 
     monkeypatch.setattr(line_webhook_routes, "push_message", _push)
     return replies, pushes
+
+
+class _WebhookFakeAvailabilityService:
+    def __init__(self, *, outcome: AvailabilityCheckOutcome) -> None:
+        self._outcome = outcome
+        self.enabled = True
+        self.calls: list[tuple[date, date]] = []
+
+    def check(self, *, checkin_date: date, checkout_date: date) -> AvailabilityCheckOutcome:
+        self.calls.append((checkin_date, checkout_date))
+        return self._outcome
+
+
+def _webhook_blocked_outcome() -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(
+        status="blocked",
+        result=AvailabilityResult(
+            has_any_blocked_nights=True,
+            blocked_nights=[
+                BlockedNight(
+                    night_date=date(2026, 5, 12),
+                    blocking_event_summary="枕23",
+                    matched_keyword="枕",
+                )
+            ],
+        ),
+    )
+
+
+def test_early_date_range_blocked_replies_pushes_owner_and_completes_state(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    fake_availability = _WebhookFakeAvailabilityService(outcome=_webhook_blocked_outcome())
+    monkeypatch.setattr(
+        line_webhook_routes,
+        "_build_availability_service",
+        lambda _tenant: fake_availability,
+    )
+    body = _payload_bytes([_text_event_with_reply_token(_MISSING_INFO_TEXT)])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert replies[-1]["text"] == FULL_HOUSE_MESSAGE
+    assert len(pushes) == 1
+    assert pushes[0]["to_user_id"] == "Uowner"
+    assert OWNER_PUSH_FULL_HOUSE_PREFIX in pushes[0]["text"]
+    assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in pushes[0]["text"]
+    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in pushes[0]["text"]
+    assert fake_availability.calls == [(date(2026, 5, 12), date(2026, 5, 14))]
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "completed"
 
 
 def test_duplicate_webhook_event_id_is_processed_once_for_guest_message(

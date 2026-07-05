@@ -33,6 +33,9 @@ from app.domain.reply_text import (
     MISSING_INFO_HEADER,
     MISSING_PET_COUNT_LINE,
     OVER_CAPACITY_MESSAGE,
+    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
     OWNER_PUSH_UNCATEGORIZED_PREFIX,
     OWNER_PUSH_URGENT_PREFIX,
@@ -471,6 +474,28 @@ def test_render_owner_push_full_house_without_inquiry_id() -> None:
     assert "詢價編號" not in out
     assert "入住:2026/05/12(二)" in out
     assert "退房:2026/05/14(四)" in out
+
+
+def test_render_owner_push_full_house_includes_guest_count_and_user_id() -> None:
+    out = render_owner_push_full_house(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+        guest_count=4,
+        platform_user_id="Uguest",
+    )
+
+    assert f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}4" in out
+    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in out
+    assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN not in out
+
+
+def test_render_owner_push_full_house_marks_guest_count_unknown() -> None:
+    out = render_owner_push_full_house(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+    )
+
+    assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in out
 
 
 def test_render_owner_push_availability_unverified() -> None:
