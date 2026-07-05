@@ -13,6 +13,7 @@ from datetime import date
 
 import pytest
 
+from app.domain.availability_models import AvailabilityResult, BlockedNight
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
@@ -30,12 +31,15 @@ from app.domain.reply_templates import (
     render_quote_message,
 )
 from app.domain.reply_text import (
+    FULL_HOUSE_MESSAGE,
     MISSING_ROOM_COUNT_MESSAGE,
+    OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
     ROOM_CAPACITY_SUGGESTION_TEMPLATE,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
+from app.services.availability_service import AvailabilityCheckOutcome
 from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
@@ -89,7 +93,18 @@ _STAY_POLICY = {
 }
 
 
-def _composer() -> ConversationReplyComposer:
+class _FakeAvailabilityService:
+    def __init__(self, *, outcome: AvailabilityCheckOutcome) -> None:
+        self._outcome = outcome
+        self.enabled = True
+        self.calls: list[tuple[date, date]] = []
+
+    def check(self, *, checkin_date: date, checkout_date: date) -> AvailabilityCheckOutcome:
+        self.calls.append((checkin_date, checkout_date))
+        return self._outcome
+
+
+def _composer(availability_service=None) -> ConversationReplyComposer:
     return ConversationReplyComposer(
         tenant_pricing_loader=lambda tid: _PRICING,
         tenant_special_dates_loader=lambda tid: {},
@@ -97,6 +112,7 @@ def _composer() -> ConversationReplyComposer:
         tenant_amenities_loader=lambda tid: _AMENITIES,
         tenant_room_policy_loader=lambda tid: _ROOM_POLICY_FAKE,
         tenant_location_loader=lambda tid: _LOCATION_FAKE,
+        availability_service=availability_service,
     )
 
 
@@ -167,6 +183,26 @@ def _state(**overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+def _availability_blocked() -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(
+        status="blocked",
+        result=AvailabilityResult(
+            has_any_blocked_nights=True,
+            blocked_nights=[
+                BlockedNight(
+                    night_date=date(2026, 5, 12),
+                    blocking_event_summary="枕123",
+                    matched_keyword="枕",
+                )
+            ],
+        ),
+    )
+
+
+def _availability_error() -> AvailabilityCheckOutcome:
+    return AvailabilityCheckOutcome(status="error", error_reason="network down")
 
 
 def test_no_active_state_returns_per_message_reply() -> None:
@@ -277,6 +313,74 @@ def test_complete_state_quotes_and_flags_completion() -> None:
         **kwargs,
     )
     assert result.text == expected
+    assert result.completed_state_id == 42
+
+
+def test_completed_per_message_quote_reuses_decision_without_availability_check() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_blocked())
+    state = _state(
+        id=42,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=4,
+        room_count=2,
+    )
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="PER_MESSAGE_QUOTE",
+        log_payload={"inquiry_intent": "price"},
+        parsed_as_inquiry=True,
+        could_quote=True,
+        completes_conversation_state=True,
+    )
+
+    result = _composer(availability_service=service).compose(
+        message=_message(), decision=decision, state=state
+    )
+
+    assert result.text == "PER_MESSAGE_QUOTE"
+    assert result.completed_state_id == 42
+    assert service.calls == []
+
+
+def test_complete_state_blocked_availability_returns_full_house_without_quote() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_blocked())
+    state = _state(
+        id=42,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=4,
+        room_count=2,
+    )
+
+    result = _composer(availability_service=service).compose(
+        message=_message(), decision=_decision(), state=state
+    )
+
+    assert result.text == FULL_HOUSE_MESSAGE
+    assert result.owner_push_text is None
+    assert result.completed_state_id == 42
+    assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
+
+
+def test_complete_state_availability_error_quotes_and_notifies_owner() -> None:
+    service = _FakeAvailabilityService(outcome=_availability_error())
+    state = _state(
+        id=42,
+        checkin_date="2026-05-12",
+        checkout_date="2026-05-13",
+        adult_count=4,
+        room_count=2,
+    )
+
+    result = _composer(availability_service=service).compose(
+        message=_message(), decision=_decision(), state=state
+    )
+
+    assert result.text is not None
+    assert "NT$9,000" in result.text
+    assert result.owner_push_text is not None
+    assert OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX in result.owner_push_text
     assert result.completed_state_id == 42
 
 

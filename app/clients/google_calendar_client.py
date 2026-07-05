@@ -13,6 +13,9 @@ layers stay Google-free (they use CalendarEvent only).
 from datetime import date, datetime, time, timezone
 from typing import Any
 
+import google_auth_httplib2
+import httplib2
+from google.auth.exceptions import GoogleAuthError
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -21,6 +24,15 @@ from app.domain.availability_models import CalendarEvent
 
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+_DEFAULT_TIMEOUT_SECONDS = 10
+_FETCH_EXCEPTIONS = (
+    HttpError,
+    OSError,
+    TimeoutError,
+    ValueError,
+    GoogleAuthError,
+    httplib2.HttpLib2Error,
+)
 
 
 class GoogleCalendarError(Exception):
@@ -30,19 +42,26 @@ class GoogleCalendarError(Exception):
 
 
 class GoogleCalendarClient:
-    def __init__(self, *, credentials_path: str, calendar_id: str) -> None:
+    def __init__(
+        self,
+        *,
+        credentials_path: str,
+        calendar_id: str,
+        timeout_seconds: int | float = _DEFAULT_TIMEOUT_SECONDS,
+    ) -> None:
         # Lazy: service is built on first fetch_events() call so constructing
         # the client never touches the network — important for tests and for
         # fast startup. The same service instance is reused after first build.
         self._credentials_path = credentials_path
         self._calendar_id = calendar_id
+        self._timeout_seconds = timeout_seconds
         self._service: Any | None = None
 
     def fetch_events(self, *, range_start: date, range_end: date) -> list[CalendarEvent]:
         """Fetch events overlapping [range_start, range_end]. Raises GoogleCalendarError on failure."""
         try:
             response = self._list_events(range_start, range_end)
-        except (HttpError, OSError, ValueError) as exc:
+        except _FETCH_EXCEPTIONS as exc:
             raise GoogleCalendarError(f"calendar fetch failed: {exc}") from exc
         return [self._to_calendar_event(item) for item in response.get("items", [])]
 
@@ -66,7 +85,9 @@ class GoogleCalendarClient:
         credentials = service_account.Credentials.from_service_account_file(
             self._credentials_path, scopes=_SCOPES
         )
-        return build("calendar", "v3", credentials=credentials, cache_discovery=False)
+        http = httplib2.Http(timeout=self._timeout_seconds)
+        authed_http = google_auth_httplib2.AuthorizedHttp(credentials, http=http)
+        return build("calendar", "v3", http=authed_http, cache_discovery=False)
 
     def _to_calendar_event(self, raw: dict) -> CalendarEvent:
         return CalendarEvent(

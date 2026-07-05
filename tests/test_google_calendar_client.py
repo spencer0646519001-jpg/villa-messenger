@@ -118,6 +118,38 @@ def test_service_reused_across_fetches() -> None:
         assert mock_build.call_count == 1
 
 
+def test_build_service_uses_configured_timeout_http() -> None:
+    with patch.object(client_module, "build") as mock_build, patch.object(
+        client_module.service_account.Credentials,
+        "from_service_account_file",
+    ) as mock_creds, patch.object(
+        client_module.httplib2, "Http"
+    ) as mock_http, patch.object(
+        client_module.google_auth_httplib2, "AuthorizedHttp"
+    ) as mock_authorized_http:
+        fake_service = MagicMock()
+        fake_service.events.return_value.list.return_value.execute.return_value = {
+            "items": []
+        }
+        mock_build.return_value = fake_service
+        mock_http.return_value = "raw-http"
+        mock_authorized_http.return_value = "authorized-http"
+
+        client = GoogleCalendarClient(
+            credentials_path="dummy/path.json",
+            calendar_id="cal-id",
+            timeout_seconds=3,
+        )
+        client.fetch_events(range_start=date(2026, 5, 12), range_end=date(2026, 5, 14))
+
+        mock_http.assert_called_once_with(timeout=3)
+        mock_authorized_http.assert_called_once_with(
+            mock_creds.return_value,
+            http="raw-http",
+        )
+        assert mock_build.call_args.kwargs["http"] == "authorized-http"
+
+
 # ============================================================
 # NORMALIZATION: ALL-DAY EVENTS
 # ============================================================
@@ -300,6 +332,13 @@ def test_httperror_wrapped_as_google_calendar_error() -> None:
 
 def test_oserror_during_fetch_wrapped() -> None:
     client = _make_client_with_exec_raises(OSError("network down"))
+
+    with pytest.raises(GoogleCalendarError, match="calendar fetch failed"):
+        client.fetch_events(range_start=date(2026, 5, 12), range_end=date(2026, 5, 14))
+
+
+def test_timeout_during_fetch_wrapped() -> None:
+    client = _make_client_with_exec_raises(TimeoutError("timed out"))
 
     with pytest.raises(GoogleCalendarError, match="calendar fetch failed"):
         client.fetch_events(range_start=date(2026, 5, 12), range_end=date(2026, 5, 14))

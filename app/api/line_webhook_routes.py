@@ -39,7 +39,13 @@ from app.adapters.line_adapter import (
 from app.adapters.llm import build_llm_provider_from_env
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
+from app.clients.google_calendar_client import GoogleCalendarClient
 from app.clients.line_send_client import push_message, reply_message
+from app.config_loader import (
+    TenantConfigLoadError,
+    load_google_calendar_settings,
+    load_tenant_config,
+)
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.operation_mode_resolver import compute_most_recent_schedule_window
 from app.domain.reply_text import (
@@ -66,6 +72,7 @@ from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_owner_repository import TenantOwnerRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas import InboundMessage
+from app.services.availability_service import AvailabilityService
 from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
@@ -95,6 +102,7 @@ _GENERIC_400_DETAIL = "Bad Request"
 _ACCESS_TOKEN_ENV = "LINE_TEST_CHANNEL_ACCESS_TOKEN"
 # STAGE D fallback: used only while a tenant has no active owner rows yet.
 _OWNER_USER_ID_ENV = "LINE_TEST_OWNER_USER_ID"
+_CALENDAR_AVAILABILITY_ENABLED_ENV = "GOOGLE_CALENDAR_AVAILABILITY_ENABLED"
 _REPLY_RETRY_DELAYS_SECONDS = (0.5, 1.0)
 _PIPELINE_FAILURE_OWNER_NOTICE = (
     "⚠️ 有一則客人訊息系統暫時無法處理，可能需要您手動查看 LINE 並回覆。"
@@ -171,19 +179,25 @@ def _extract_events(payload: dict, channel: dict) -> list[dict]:
         _reject("malformed payload: events not a list", channel["channel_id"])
 
 
-def _build_inquiry_service(database_path: str) -> InquiryService:
+def _build_inquiry_service(
+    database_path: str,
+    availability_service: AvailabilityService | None = None,
+) -> InquiryService:
     operation_mode_service = OperationModeService(repo=OperationStateRepository(database_path))
     return InquiryService(
         operation_mode_service=operation_mode_service,
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
         tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
-        availability_service=None,
+        availability_service=availability_service,
         llm_provider=build_llm_provider_from_env(),
     )
 
 
-def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
+def _build_reply_composer(
+    database_path: str,
+    availability_service: AvailabilityService | None = None,
+) -> ConversationReplyComposer:
     return ConversationReplyComposer(
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
@@ -191,16 +205,51 @@ def _build_reply_composer(database_path: str) -> ConversationReplyComposer:
         tenant_amenities_loader=make_tenant_amenities_loader(database_path),
         tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
         tenant_location_loader=make_tenant_location_loader(database_path),
+        availability_service=availability_service,
     )
 
 
-def _build_pipeline_context(database_path: str) -> _PipelineContext:
+def _build_pipeline_context(database_path: str, tenant: dict) -> _PipelineContext:
+    availability_service = _build_availability_service(tenant)
     return _PipelineContext(
-        service=_build_inquiry_service(database_path),
+        service=_build_inquiry_service(database_path, availability_service),
         persistence=MessagePersistenceService(database_path=database_path),
         state_service=ConversationStateService(ConversationStateRepository(database_path)),
-        composer=_build_reply_composer(database_path),
+        composer=_build_reply_composer(database_path, availability_service),
     )
+
+
+def _build_availability_service(tenant: dict) -> AvailabilityService | None:
+    if not _env_bool(_CALENDAR_AVAILABILITY_ENABLED_ENV, default=False):
+        return None
+    settings = _load_google_calendar_settings_for_tenant(tenant)
+    if settings is None:
+        return None
+    client = GoogleCalendarClient(
+        credentials_path=settings["credentials_path"],
+        calendar_id=settings["calendar_id"],
+    )
+    return AvailabilityService(
+        client=client,
+        booking_keywords=settings["booking_keywords"],
+        enabled=True,
+    )
+
+
+def _load_google_calendar_settings_for_tenant(tenant: dict) -> dict | None:
+    try:
+        config = load_tenant_config(tenant_slug=tenant["slug"])
+        return load_google_calendar_settings(config)
+    except TenantConfigLoadError:
+        logger.warning("Google Calendar availability disabled: config load failed", exc_info=True)
+        return None
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _event_to_message(event: dict, tenant: dict) -> InboundMessage:
@@ -561,7 +610,7 @@ def _process_pipeline_event(
 
 
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
-    context = _build_pipeline_context(database_path)
+    context = _build_pipeline_context(database_path, tenant)
     tenant_id = tenant["id"]
     for event in events:
         if not _should_process_event(event=event, tenant_id=tenant_id, database_path=database_path):

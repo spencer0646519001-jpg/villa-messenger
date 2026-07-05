@@ -55,7 +55,7 @@ Owner slash commands are planned for future tasks. Command handling should be se
 
 ## Future External Integrations
 
-Google Calendar availability checks are V2. The future design should allow each tenant to define its own calendar booking keyword. For `zhen123-house`, the keyword is `枕123`.
+Google Calendar availability checks are V2. The future design should allow each tenant to define its own calendar booking keyword. For `zhen123-house`, the configured keyword is `枕`.
 
 Booking.com API is not part of V1.5.
 

@@ -14,6 +14,10 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.availability_gate import (
+    AvailabilityGateResult,
+    evaluate_availability_gate,
+)
 from app.domain.llm_fallback import llm_fallback_parse
 from app.domain.llm_provider import LLMProvider
 from app.domain.inquiry_parser import parse_inquiry
@@ -42,10 +46,7 @@ from app.domain.room_policy import (
 )
 from app.domain.urgency_detector import UrgencyDetectionResult, detect_urgency
 from app.schemas import InboundMessage
-from app.services.availability_service import (
-    AvailabilityCheckOutcome,
-    AvailabilityService,
-)
+from app.services.availability_service import AvailabilityService
 
 
 # Night window in tenant-local time: [_NIGHT_START_HOUR, 24) U [0, _NIGHT_END_HOUR).
@@ -413,12 +414,11 @@ class InquiryService:
             customer_was_replied=True,
         )
 
-    def _check_availability(self, inquiry: InquiryParseResult) -> AvailabilityCheckOutcome:
-        if self._availability_service is None:
-            return AvailabilityCheckOutcome(status="available")
-        return self._availability_service.check(
-            checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
-            checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
+    def _check_availability(self, inquiry: InquiryParseResult) -> AvailabilityGateResult:
+        return evaluate_availability_gate(
+            availability_service=self._availability_service,
+            checkin=date.fromisoformat(inquiry.dates.checkin_date),
+            checkout=date.fromisoformat(inquiry.dates.checkout_date),
         )
 
     def _handle_unquotable(
@@ -440,6 +440,7 @@ class InquiryService:
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=False,
+            completes_conversation_state=True,
         )
 
     def _unquotable_reply(self, pricing: PricingResult) -> tuple[str, str]:
@@ -467,26 +468,28 @@ class InquiryService:
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=True,
+            completes_conversation_state=True,
         )
 
     def _handle_full_house(
         self,
         message: InboundMessage,
         inquiry: InquiryParseResult,
-        outcome: AvailabilityCheckOutcome,
+        outcome: AvailabilityGateResult,
     ) -> InquiryDecision:
         push_text = self._render_full_house_push(inquiry)
         log = self._build_base_log_payload(
             message, system_state="on", action_taken="full_house"
         )
         self._add_parsed_fields_to_log(log, inquiry)
-        log["blocked_nights_count"] = len(outcome.result.blocked_nights)
+        log["blocked_nights_count"] = len(outcome.blocked_nights)
         return InquiryDecision(
             action_type="reply_and_push",
             customer_reply_text=render_full_house_message(),
             owner_push_text=push_text,
             log_payload=log,
             parsed_as_inquiry=True,
+            completes_conversation_state=True,
         )
 
     def _render_full_house_push(self, inquiry: InquiryParseResult) -> str:
@@ -500,7 +503,7 @@ class InquiryService:
         message: InboundMessage,
         inquiry: InquiryParseResult,
         pricing: PricingResult,
-        outcome: AvailabilityCheckOutcome,
+        outcome: AvailabilityGateResult,
     ) -> InquiryDecision:
         log = self._quoted_log_with_error(message, inquiry, pricing, outcome)
         return InquiryDecision(
@@ -510,6 +513,7 @@ class InquiryService:
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=True,
+            completes_conversation_state=True,
         )
 
     def _quoted_log_with_error(
@@ -517,14 +521,14 @@ class InquiryService:
         message: InboundMessage,
         inquiry: InquiryParseResult,
         pricing: PricingResult,
-        outcome: AvailabilityCheckOutcome,
+        outcome: AvailabilityGateResult,
     ) -> dict:
         log = self._build_base_log_payload(
             message, system_state="on", action_taken="quoted_unverified"
         )
         self._add_parsed_fields_to_log(log, inquiry)
         log["quoted_total"] = pricing.total
-        log["availability_error_reason"] = outcome.error_reason
+        log["availability_error_reason"] = outcome.reason
         return log
 
     def _render_unverified_push(self, inquiry: InquiryParseResult) -> str:

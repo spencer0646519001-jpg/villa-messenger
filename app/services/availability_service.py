@@ -47,6 +47,10 @@ class AvailabilityService:
         self._booking_keywords = list(booking_keywords)
         self._enabled = enabled
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
     def check(self, *, checkin_date: date, checkout_date: date) -> AvailabilityCheckOutcome:
         if not self._enabled:
             return AvailabilityCheckOutcome(status="available")

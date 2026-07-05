@@ -106,7 +106,7 @@ Any case that cannot be quoted conservatively should be routed to staff follow-u
 ```json
 "google_calendar": {
   "v1_5_enabled": true,
-  "booking_keywords": ["枕123", "枕壹貳參", "枕一二三"]
+  "booking_keywords": ["枕"]
 }
 ```
 
@@ -139,4 +139,3 @@ Any case that cannot be quoted conservatively should be routed to staff follow-u
 - 門:鎖頭、開不了門、鑰匙
 - 衛浴:馬桶堵、馬桶不通
 - 安全:小偷、闖入、受傷、火、煙
-

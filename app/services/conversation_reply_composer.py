@@ -24,6 +24,11 @@ from typing import Callable
 
 from pydantic import BaseModel
 
+from app.domain.availability_gate import (
+    AvailabilityGateResult,
+    AvailabilityServiceLike,
+    evaluate_availability_gate,
+)
 from app.domain.faq_matcher import FaqMatch, NON_PRICEABLE, match_faq
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
@@ -42,11 +47,13 @@ from app.domain.reply_templates import (
     render_faq_room_type,
     render_faq_wifi,
     render_faq_whole_house,
+    render_full_house_message,
     render_invalid_date_message,
     render_manual_review_message,
     render_missing_info_message,
     render_missing_room_count_message,
     render_over_capacity_message,
+    render_owner_push_availability_unverified,
     render_owner_push_uncategorized,
     render_quote_message,
     render_room_capacity_suggestion_message,
@@ -96,6 +103,7 @@ class ConversationReplyComposer:
         tenant_amenities_loader: Callable[[int], dict],
         tenant_room_policy_loader: Callable[[int], dict],
         tenant_location_loader: Callable[[int], dict],
+        availability_service: AvailabilityServiceLike | None = None,
     ) -> None:
         self._pricing_loader = tenant_pricing_loader
         self._special_dates_loader = tenant_special_dates_loader
@@ -103,6 +111,7 @@ class ConversationReplyComposer:
         self._amenities_loader = tenant_amenities_loader
         self._room_policy_loader = tenant_room_policy_loader
         self._location_loader = tenant_location_loader
+        self._availability_service = availability_service
 
     def compose(
         self,
@@ -171,10 +180,7 @@ class ConversationReplyComposer:
         room_gate = self._room_gate(message, state)
         if room_gate is not None:
             return room_gate
-        return ComposedReply(
-            text=self._quote_for_state(message, state),
-            completed_state_id=state["id"],
-        )
+        return self._quote_for_state(message, state)
 
     def _compose_faq(self, message: InboundMessage) -> ComposedReply:
         """A faq-intent message: tier-1 answers from config (no push); tier-2 and
@@ -254,7 +260,7 @@ class ConversationReplyComposer:
             pet_count=state["pet_count"],
         )
 
-    def _quote_for_state(self, message: InboundMessage, state: dict) -> str:
+    def _quote_for_state(self, message: InboundMessage, state: dict) -> ComposedReply:
         kwargs = _state_stay_kwargs(state)
         room_policy = self._room_policy_loader(message.tenant_id)
         pricing = calculate_price(
@@ -264,8 +270,36 @@ class ConversationReplyComposer:
             tenant_special_dates=self._special_dates_loader(message.tenant_id),
         )
         if not pricing.can_quote:
-            return _unquotable_reply(pricing)
-        return render_quote_message(pricing=pricing, **kwargs)
+            return ComposedReply(
+                text=_unquotable_reply(pricing),
+                completed_state_id=state["id"],
+            )
+        gate = self._availability_gate(kwargs)
+        if gate.status == "blocked":
+            return ComposedReply(
+                text=render_full_house_message(),
+                completed_state_id=state["id"],
+            )
+        return self._quoted_reply(state, kwargs, pricing, gate)
+
+    def _availability_gate(self, kwargs: dict) -> AvailabilityGateResult:
+        return evaluate_availability_gate(
+            availability_service=self._availability_service,
+            checkin=kwargs["checkin_date"],
+            checkout=kwargs["checkout_date"],
+        )
+
+    def _quoted_reply(
+        self, state: dict, kwargs: dict, pricing: PricingResult, gate: AvailabilityGateResult
+    ) -> ComposedReply:
+        text = render_quote_message(pricing=pricing, **kwargs)
+        if gate.status != "error":
+            return ComposedReply(text=text, completed_state_id=state["id"])
+        return ComposedReply(
+            text=text,
+            owner_push_text=_availability_unverified_push(kwargs),
+            completed_state_id=state["id"],
+        )
 
     def _room_gate(self, message: InboundMessage, state: dict) -> ComposedReply | None:
         room_policy = self._room_policy_loader(message.tenant_id)
@@ -394,6 +428,13 @@ def _manual_review_push(message: InboundMessage) -> str:
         original_text=message.text,
         display_name=message.customer_display_name,
         customer_was_replied=True,
+    )
+
+
+def _availability_unverified_push(kwargs: dict) -> str:
+    return render_owner_push_availability_unverified(
+        checkin_date=kwargs["checkin_date"],
+        checkout_date=kwargs["checkout_date"],
     )
 
 
