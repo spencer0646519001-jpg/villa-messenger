@@ -31,16 +31,16 @@ def _openrouter_provider(
     api_key: str,
     timeout_s: float,
 ) -> LLMProvider | None:
-    if provider_name == "qwen":
-        from app.adapters.llm.qwen_provider import DEFAULT_QWEN_MODEL, QwenProvider
-
-        model = os.environ.get("LLM_PRIMARY_MODEL", DEFAULT_QWEN_MODEL)
-        return QwenProvider(api_key=api_key, model=model, timeout_s=timeout_s)
     if provider_name == "deepseek":
         from app.adapters.llm.deepseek_provider import DEFAULT_DEEPSEEK_MODEL, DeepSeekProvider
 
         model = os.environ.get("LLM_PRIMARY_MODEL", DEFAULT_DEEPSEEK_MODEL)
         return DeepSeekProvider(api_key=api_key, model=model, timeout_s=timeout_s)
+    if provider_name == "openai":
+        from app.adapters.llm.openai_provider import DEFAULT_OPENAI_MODEL, OpenAIProvider
+
+        model = os.environ.get("LLM_PRIMARY_MODEL", DEFAULT_OPENAI_MODEL)
+        return OpenAIProvider(api_key=api_key, model=model, timeout_s=timeout_s)
     logger.warning("Unknown LLM_PROVIDER=%s; LLM fallback disabled", provider_name)
     return None
 

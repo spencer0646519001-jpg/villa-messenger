@@ -53,7 +53,7 @@ EVAL_CASES = [
     },
 ]
 
-MODELS = ["deepseek/deepseek-v4-flash", "qwen/qwen3.6-flash"]
+MODELS = ["deepseek/deepseek-v4-flash", "openai/gpt-4o-mini"]
 
 
 def main() -> None:
