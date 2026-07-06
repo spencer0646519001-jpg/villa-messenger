@@ -1,0 +1,19 @@
+name: villa-messenger
+
+services:
+  web:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/homestay.db
+    ports:
+      - "${VILLA_PORT:-8002}:8000"
+    volumes:
+      - villa_sqlite:/data
+      - ./secrets:/app/secrets:ro
+    restart: unless-stopped
+
+volumes:
+  villa_sqlite:
+    name: villa_sqlite
