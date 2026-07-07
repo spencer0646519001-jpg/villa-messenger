@@ -3,7 +3,10 @@
 .env.*
 !.env.example
 secrets/
-data/
+data/*.db
+data/*.db-journal
+data/*.sqlite
+data/*.sqlite3
 __pycache__/
 */__pycache__/
 **/__pycache__/
