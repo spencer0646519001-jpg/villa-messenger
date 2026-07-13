@@ -164,3 +164,4 @@ Health endpoints:
 - `docs/operation_modes.md`
 - `docs/llm_fallback_design_v2.md`
 - `docs/v2_roadmap.md`
+- `docs/deployment.md`
