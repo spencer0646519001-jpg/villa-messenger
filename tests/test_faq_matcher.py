@@ -5,7 +5,11 @@ recognition half only -- it returns a topic+tier or None, no text.
 
 import pytest
 
-from app.domain.faq_matcher import match_faq
+from app.domain.faq_matcher import (
+    is_booking_equivalent_topic,
+    match_all_faq_topics,
+    match_faq,
+)
 from app.domain.text_normalizer import normalize_for_parsing
 
 
@@ -58,6 +62,23 @@ def test_whole_house_is_tier1(text: str) -> None:
     assert match is not None
     assert match.topic == "whole_house"
     assert match.tier == 1
+
+
+def test_only_whole_house_is_booking_equivalent() -> None:
+    assert is_booking_equivalent_topic("whole_house") is True
+    for topic in (
+        "breakfast", "checkout", "pets", "wifi", "parking", "amenities",
+        "bbq", "deposit", "room_type", "location",
+    ):
+        assert is_booking_equivalent_topic(topic) is False
+
+
+def test_all_topic_match_preserves_existing_first_match_priority() -> None:
+    text = "8/15 包棟可以帶寵物嗎 9人"
+    matches = match_all_faq_topics(text)
+
+    assert [match.topic for match in matches] == ["pets", "whole_house"]
+    assert match_faq(text).topic == "pets"
 
 
 def test_bbq_is_tier1() -> None:

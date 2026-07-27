@@ -1,4 +1,5 @@
 from app.domain.date_parser import parse_stay_dates
+from app.domain.faq_matcher import match_all_faq_topics
 from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_intent import parse_inquiry_intent
@@ -54,4 +55,7 @@ def parse_inquiry(text: str, reference_year: int | None = None) -> InquiryParseR
         room_count=room_count,
         missing_fields=missing_fields,
         can_preliminarily_quote=can_preliminarily_quote,
+        matched_faq_topics=[
+            match.topic for match in match_all_faq_topics(normalized)
+        ],
     )

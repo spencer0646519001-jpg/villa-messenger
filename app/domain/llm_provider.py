@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 
@@ -46,6 +46,7 @@ class LLMOutput:
     needs_clarification: bool
     clarification_reason: str | None
     room_count: int | None = None
+    intents: list[str] = field(default_factory=list)
 
 
 class LLMProvider(Protocol):

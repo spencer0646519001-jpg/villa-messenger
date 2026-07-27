@@ -138,3 +138,10 @@ def test_faq_topic_with_booking_signal_does_not_enter_quote_chain() -> None:
     assert result.intent.inquiry_type == "faq"
     assert result.dates.checkin_date == "2026-07-10"
     assert result.missing_fields == []
+
+
+def test_parser_records_all_matched_faq_topics_in_stable_order() -> None:
+    result = parse_inquiry("8/15可以帶寵物包棟嗎 9人", reference_year=2026)
+
+    assert result.matched_faq_topics == ["pets", "whole_house"]
+    assert result.intent.inquiry_type == "availability"

@@ -16,6 +16,7 @@ from app.domain.reply_text import (
     OWNER_PUSH_URGENT_PREFIX,
     QUOTE_GREETING,
     ROOM_CAPACITY_SUGGESTION_TEMPLATE,
+    SINGLE_MISSING_CHECKOUT_MESSAGE,
     SINGLE_MISSING_GUEST_COUNT_MESSAGE,
 )
 from app.schemas import InboundMessage
@@ -742,6 +743,51 @@ def _outcome_available() -> AvailabilityCheckOutcome:
 
 def _outcome_error(reason: str) -> AvailabilityCheckOutcome:
     return AvailabilityCheckOutcome(status="error", error_reason=reason)
+
+
+def test_inferred_single_night_probe_blocked_uses_calendar_without_real_checkout() -> None:
+    fake_avail = _FakeAvailabilityService(
+        outcome=_outcome_blocked(nights=[_date(2026, 8, 15)])
+    )
+    service, _ = _build_service(system_on=True, availability_service=fake_avail)
+
+    decision = service.handle_message(
+        message=_build_message("您好,請問8/15是否還可以包棟嗎?人數9位,謝謝")
+    )
+
+    assert decision.log_payload["inquiry_intent"] == "availability"
+    assert decision.log_payload["parsed_checkout"] is None
+    assert decision.log_payload["missing_fields"] == ["checkout_date"]
+    assert decision.log_payload["availability_probe_checkout"] == "2026-08-16"
+    assert decision.log_payload["availability_probe_checkout_was_inferred"] is True
+    assert fake_avail.calls == [(_date(2026, 8, 15), _date(2026, 8, 16))]
+    assert decision.action_type == "reply_and_push"
+    assert "8/15" in decision.customer_reply_text
+    assert "8/16" in decision.customer_reply_text
+
+
+def test_available_single_night_probe_keeps_checkout_missing_and_never_prices() -> None:
+    fake_avail = _FakeAvailabilityService(outcome=_outcome_available())
+
+    def _pricing_must_not_run(_tenant_id: int) -> dict:
+        raise AssertionError("temporary availability checkout entered pricing")
+
+    service = InquiryService(
+        operation_mode_service=FakeOperationModeService(return_value=True),
+        tenant_pricing_loader=_pricing_must_not_run,
+        tenant_special_dates_loader=lambda _tenant_id: {},
+        availability_service=fake_avail,
+    )
+
+    decision = service.handle_message(
+        message=_build_message("8/15可以包棟嗎 9人")
+    )
+
+    assert decision.customer_reply_text == SINGLE_MISSING_CHECKOUT_MESSAGE
+    assert decision.log_payload["parsed_checkout"] is None
+    assert decision.log_payload["missing_fields"] == ["checkout_date"]
+    assert decision.log_payload["quoted_total"] is None
+    assert fake_avail.calls == [(_date(2026, 8, 15), _date(2026, 8, 16))]
 
 
 # ---------- Default behavior preserved: no availability_service injected ----------

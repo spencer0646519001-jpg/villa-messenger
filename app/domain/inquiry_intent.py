@@ -1,5 +1,10 @@
 from app.domain.date_parser import parse_stay_dates
-from app.domain.faq_matcher import FaqMatch, match_faq
+from app.domain.faq_matcher import (
+    FaqMatch,
+    is_booking_equivalent_topic,
+    match_all_faq_topics,
+    match_faq,
+)
 from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.parser_models import InquiryIntentResult
 from app.domain.text_normalizer import normalize_for_parsing
@@ -24,8 +29,13 @@ def parse_inquiry_intent(text: str) -> InquiryIntentResult:
     if _contains_any(text, _BOOKING_TERMS):
         return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
 
-    faq_match = match_faq(text)
+    faq_matches = match_all_faq_topics(text)
+    faq_match = faq_matches[0] if faq_matches else None
     if faq_match is not None and not _is_checkout_date_label(faq_match, text):
+        if _has_booking_signal(text) and any(
+            is_booking_equivalent_topic(match.topic) for match in faq_matches
+        ):
+            return InquiryIntentResult(is_inquiry=True, inquiry_type="availability")
         return InquiryIntentResult(is_inquiry=True, inquiry_type="faq")
 
     if _contains_any(text, _FAQ_TERMS) and _has_booking_signal(text):

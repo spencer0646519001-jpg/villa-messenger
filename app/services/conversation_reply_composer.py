@@ -29,7 +29,13 @@ from app.domain.availability_gate import (
     AvailabilityServiceLike,
     evaluate_availability_gate,
 )
-from app.domain.faq_matcher import FaqMatch, NON_PRICEABLE, match_faq
+from app.domain.faq_matcher import (
+    FaqMatch,
+    NON_PRICEABLE,
+    is_booking_equivalent_topic,
+    match_all_faq_topics,
+    match_faq,
+)
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_models import PricingResult
@@ -73,6 +79,7 @@ from app.schemas import InboundMessage
 # confirm-and-defer lead per tier-2 topic; non-whitelist faq uses the fallback.
 # wifi and parking are now tier-1; no tier-2 topics remain.
 _DEFER_LEADS: dict[str, str] = {}
+_QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 
 
 class ComposedReply(BaseModel):
@@ -133,8 +140,18 @@ class ConversationReplyComposer:
             )
         if decision.was_system_off:
             return ComposedReply(text=decision.customer_reply_text)
-        faq_match = match_faq(normalize_for_parsing(message.text))
-        if faq_match is not None and faq_match.topic in NON_PRICEABLE:
+        faq_matches = match_all_faq_topics(normalize_for_parsing(message.text))
+        faq_match = faq_matches[0] if faq_matches else None
+        has_booking_equivalent_match = any(
+            is_booking_equivalent_topic(match.topic) for match in faq_matches
+        )
+        if (
+            faq_match is not None
+            and faq_match.topic in NON_PRICEABLE
+            and not _is_booking_equivalent_quote(
+                decision, has_booking_equivalent_match
+            )
+        ):
             return self._compose_faq(message)
         # gate3: tier-1 FAQ match answers directly when it is clearly FAQ-only.
         # Excluded cases:
@@ -149,7 +166,12 @@ class ConversationReplyComposer:
         if (
             faq_match is not None
             and faq_match.tier == 1
-            and _should_answer_gate3_faq(faq_match, decision, state)
+            and _should_answer_gate3_faq(
+                faq_match,
+                decision,
+                state,
+                has_booking_equivalent_match=has_booking_equivalent_match,
+            )
         ):
             return self._compose_faq(message)
         if _is_faq(decision) and not _is_checkout_slot_followup(
@@ -364,11 +386,31 @@ def _is_checkout_slot_followup(
 
 
 def _should_answer_gate3_faq(
-    faq_match: FaqMatch, decision: InquiryDecision, state: dict | None
+    faq_match: FaqMatch,
+    decision: InquiryDecision,
+    state: dict | None,
+    *,
+    has_booking_equivalent_match: bool | None = None,
 ) -> bool:
+    product_match = (
+        is_booking_equivalent_topic(faq_match.topic)
+        if has_booking_equivalent_match is None
+        else has_booking_equivalent_match
+    )
+    if _is_booking_equivalent_quote(decision, product_match):
+        return False
     if faq_match.topic != "checkout":
         return decision.log_payload.get("inquiry_intent") != "price"
     return _is_bare_checkout_faq(decision, state)
+
+
+def _is_booking_equivalent_quote(
+    decision: InquiryDecision, has_booking_equivalent_match: bool
+) -> bool:
+    return (
+        has_booking_equivalent_match
+        and decision.log_payload.get("inquiry_intent") in _QUOTE_RELEVANT_INTENTS
+    )
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:

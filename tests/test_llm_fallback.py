@@ -4,7 +4,10 @@ from app.adapters.llm.deepseek_provider import DeepSeekProvider
 from app.adapters.llm.fake_provider import FakeProvider
 from app.adapters.llm import openrouter_base
 from app.domain.inquiry_parser import parse_inquiry
-from app.domain.llm_fallback import llm_fallback_parse
+from app.domain.llm_fallback import (
+    TYPE_3_FAQ_BOOKING_COLLISION,
+    llm_fallback_parse,
+)
 from app.domain.llm_provider import LLMOutput
 from app.domain.reply_text import DATE_RANGE_CLARIFICATION_MESSAGE
 from app.schemas import InboundMessage
@@ -181,6 +184,51 @@ def test_type_2_non_booking_does_not_upgrade_or_mutate_slots() -> None:
     assert result.dates.checkout_date == "2026-03-17"
 
 
+def test_type_3_collision_trigger_only_runs_for_topic_plus_booking_signal() -> None:
+    provider = FakeProvider(_out(intent="availability", is_booking_intent=True))
+
+    _fallback("8/15可以包棟嗎 9人", provider)
+    _fallback("是包棟嗎", provider)
+
+    assert [call["trigger"] for call in provider.calls] == [
+        TYPE_3_FAQ_BOOKING_COLLISION
+    ]
+
+
+def test_type_3_llm_can_choose_faq_without_mutating_rule_parsed_slots() -> None:
+    provider = FakeProvider(
+        _out(intent="faq", intents=["faq:whole_house"], is_booking_intent=False)
+    )
+
+    result = _fallback("8/15可以包棟嗎 9人", provider)
+
+    assert result.intent.inquiry_type == "faq"
+    assert result.dates.checkin_date == "2026-08-15"
+    assert result.dates.checkout_date is None
+    assert result.guests.guest_count == 9
+    assert result.llm_detected_intents == ["faq:whole_house"]
+
+
+def test_type_3_provider_failure_keeps_topic_classification_rule_fallback() -> None:
+    product = _fallback("8/15可以包棟嗎 9人", FakeProvider(None))
+    policy = _fallback("7/10可以帶寵物嗎", FakeProvider(None))
+
+    assert product.intent.inquiry_type == "availability"
+    assert policy.intent.inquiry_type == "faq"
+
+
+def test_type_3_llm_disabled_uses_product_policy_rule_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    provider = FakeProvider(_out(intent="faq", is_booking_intent=False))
+
+    product = _fallback("8/15可以包棟嗎 9人", provider)
+    policy = _fallback("7/10可以帶寵物嗎", provider)
+
+    assert provider.calls == []
+    assert product.intent.inquiry_type == "availability"
+    assert policy.intent.inquiry_type == "faq"
+
+
 def test_llm_enabled_false_short_circuits_provider(monkeypatch) -> None:
     monkeypatch.setenv("LLM_ENABLED", "false")
     provider = FakeProvider(_out(checkin_date="2026-07-28", checkout_date="2026-07-29"))
@@ -229,3 +277,42 @@ def test_provider_clears_dates_that_do_not_match_iso_format(monkeypatch) -> None
     assert result is not None
     assert result.checkin_date is None
     assert result.checkout_date == "2026-07-29"
+
+
+def test_provider_preserves_valid_multi_intents_and_drops_invalid_values(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        openrouter_base,
+        "call_openrouter",
+        lambda **kwargs: (
+            '{"intent":"availability","intents":["availability","faq:whole_house",'
+            '"faq:BAD-TOPIC",42],"checkin_date":null,"checkout_date":null,'
+            '"adult_count":null,"child_count":null,"infant_count":null,'
+            '"pet_count":null,"has_pet":null,"last_message_text":null,'
+            '"is_booking_intent":true,"needs_clarification":false,'
+            '"clarification_reason":null}'
+        ),
+    )
+    provider = DeepSeekProvider(api_key="test-key", model="test-model")
+
+    result = provider.parse(
+        raw_text="8/15可以包棟嗎 9人",
+        reference_year=2026,
+        trigger=TYPE_3_FAQ_BOOKING_COLLISION,
+        tenant_id=1,
+    )
+
+    assert result is not None
+    assert result.intents == ["availability", "faq:whole_house"]
+
+
+def test_collision_prompt_forbids_availability_pricing_reply_and_slot_extraction() -> None:
+    prompt = openrouter_base._build_system_prompt(  # noqa: SLF001
+        2026, TYPE_3_FAQ_BOOKING_COLLISION
+    )
+
+    assert "不要判斷實際空房" in prompt
+    assert "不要計價" in prompt
+    assert "不要產生客人回覆" in prompt
+    assert "欄位全部填 null" in prompt

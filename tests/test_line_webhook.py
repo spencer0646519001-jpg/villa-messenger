@@ -1025,14 +1025,16 @@ class _WebhookFakeAvailabilityService:
         return self._outcome
 
 
-def _webhook_blocked_outcome() -> AvailabilityCheckOutcome:
+def _webhook_blocked_outcome(
+    night: date = date(2026, 5, 12),
+) -> AvailabilityCheckOutcome:
     return AvailabilityCheckOutcome(
         status="blocked",
         result=AvailabilityResult(
             has_any_blocked_nights=True,
             blocked_nights=[
                 BlockedNight(
-                    night_date=date(2026, 5, 12),
+                    night_date=night,
                     blocking_event_summary="枕23",
                     matched_keyword="枕",
                 )
@@ -1067,6 +1069,82 @@ def test_early_date_range_blocked_replies_pushes_owner_and_completes_state(
     assert fake_availability.calls == [(date(2026, 5, 12), date(2026, 5, 14))]
     states = _rows(database_path, "conversation_states")
     assert states[0]["status"] == "completed"
+
+
+def test_whole_house_single_date_collision_blocked_checks_assumed_night_end_to_end(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    fake_availability = _WebhookFakeAvailabilityService(
+        outcome=_webhook_blocked_outcome(date(2026, 8, 15))
+    )
+    monkeypatch.setattr(
+        line_webhook_routes, "_build_availability_service",
+        lambda _tenant: fake_availability,
+    )
+    monkeypatch.setattr(
+        line_webhook_routes, "build_llm_provider_from_env", lambda: None
+    )
+    text = "您好,請問8/15是否還可以包棟嗎?人數9位,謝謝"
+    body = _payload_bytes([_text_event_with_reply_token(text)])
+
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    assert fake_availability.calls == [(date(2026, 8, 15), date(2026, 8, 16))]
+    assert "8/15" in replies[-1]["text"]
+    assert "8/16" in replies[-1]["text"]
+    assert "一次只接待一組客人" not in replies[-1]["text"]
+    assert len(pushes) == 1
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "completed"
+    assert states[0]["checkin_date"] == "2026-08-15"
+    assert states[0]["checkout_date"] is None
+    assert states[0]["adult_count"] == 9
+    inquiry = _rows(database_path, "inquiries")[0]
+    assert inquiry["inquiry_type"] == "availability"
+    assert inquiry["checkout_date"] is None
+    raw_log = json.loads(_rows(database_path, "messages")[0]["raw_log_payload"])
+    assert raw_log["availability_probe_checkout"] == "2026-08-16"
+    assert raw_log["availability_probe_checkout_was_inferred"] is True
+
+
+def test_whole_house_single_date_collision_available_still_asks_checkout(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    replies, pushes = _capture_sends(monkeypatch)
+    fake_availability = _WebhookFakeAvailabilityService(
+        outcome=AvailabilityCheckOutcome(
+            status="available",
+            result=AvailabilityResult(
+                has_any_blocked_nights=False, blocked_nights=[]
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        line_webhook_routes, "_build_availability_service",
+        lambda _tenant: fake_availability,
+    )
+    monkeypatch.setattr(
+        line_webhook_routes, "build_llm_provider_from_env", lambda: None
+    )
+    body = _payload_bytes([
+        _text_event_with_reply_token("您好,請問8/15是否還可以包棟嗎?人數9位,謝謝")
+    ])
+
+    assert _post(client, body, _sign(body)).status_code == 200
+
+    assert replies[-1]["text"] == SINGLE_MISSING_CHECKOUT_MESSAGE
+    assert pushes == []
+    assert fake_availability.calls == [(date(2026, 8, 15), date(2026, 8, 16))]
+    state = _rows(database_path, "conversation_states")[0]
+    assert state["status"] == "in_progress"
+    assert state["checkin_date"] == "2026-08-15"
+    assert state["checkout_date"] is None
+    assert state["adult_count"] == 9
 
 
 def test_duplicate_webhook_event_id_is_processed_once_for_guest_message(

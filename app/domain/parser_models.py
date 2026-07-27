@@ -42,3 +42,7 @@ class InquiryParseResult(BaseModel):
     can_preliminarily_quote: bool = False
     needs_clarification: bool = False
     clarification_reason: str | None = None
+    matched_faq_topics: list[str] = Field(default_factory=list)
+    llm_detected_intents: list[str] = Field(default_factory=list)
+    availability_probe_checkout: str | None = None
+    availability_probe_checkout_was_inferred: bool = False

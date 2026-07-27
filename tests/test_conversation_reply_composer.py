@@ -1031,6 +1031,38 @@ def test_gate3_whole_house_no_question_mark() -> None:
     assert result.completed_state_id is None
 
 
+def test_whole_house_availability_intent_is_not_hijacked_by_gate3() -> None:
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text=SINGLE_MISSING_CHECKOUT_MESSAGE,
+        log_payload={"inquiry_intent": "availability"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("8/15可以包棟嗎 9人"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+
+
+def test_product_topic_prevents_earlier_policy_topic_from_hijacking_quote() -> None:
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text=SINGLE_MISSING_CHECKOUT_MESSAGE,
+        log_payload={"inquiry_intent": "availability"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("8/15可以帶寵物包棟嗎 9人"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+
+
 def test_gate3_checkout_no_question_mark_answers_from_config() -> None:
     """「幾點退房」has no 嗎/? but is bare checkout FAQ, so gate3 answers."""
     result = _composer().compose(

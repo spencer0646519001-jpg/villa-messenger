@@ -15,6 +15,9 @@ import re
 from datetime import date
 
 from app.domain.inquiry_completeness import compute_missing_fields
+from app.domain.date_parser import parse_stay_dates
+from app.domain.faq_matcher import match_all_faq_topics
+from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.llm_provider import LLMFallbackExhaustedError, LLMOutput, LLMProvider
 from app.domain.parser_models import (
     DateParseResult,
@@ -27,6 +30,7 @@ from app.domain.text_normalizer import normalize_for_parsing
 
 TYPE_1_DATE_TRANSLATION = "type_1_date_translation"
 TYPE_2_INTENT_JUDGMENT = "type_2_intent_judgment"
+TYPE_3_FAQ_BOOKING_COLLISION = "type_3_faq_booking_collision"
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -81,6 +85,8 @@ def _select_trigger(
     raw_text: str,
     is_quote_relevant: bool,
 ) -> str | None:
+    if _has_faq_booking_collision(raw_text):
+        return TYPE_3_FAQ_BOOKING_COLLISION
     dates_complete = inquiry.dates.checkin_date is not None and inquiry.dates.checkout_date is not None
     if not dates_complete and _date_signal_present(raw_text):
         return TYPE_1_DATE_TRANSLATION
@@ -94,11 +100,28 @@ def _date_signal_present(raw_text: str) -> bool:
     return any(pattern.search(text) for pattern in _DATE_SIGNAL_PATTERNS)
 
 
+def _has_faq_booking_collision(raw_text: str) -> bool:
+    text = normalize_for_parsing(raw_text)
+    dates = parse_stay_dates(text)
+    has_date = dates.checkin_date is not None or dates.checkout_date is not None
+    faq_matches = [
+        match
+        for match in match_all_faq_topics(text)
+        if not (match.topic == "checkout" and has_date)
+    ]
+    if not faq_matches:
+        return False
+    has_guests = parse_guest_counts(text).guest_count is not None
+    return has_date or has_guests
+
+
 def _merge_llm_into_inquiry(
     inquiry: InquiryParseResult,
     llm_out: LLMOutput,
     trigger: str,
 ) -> InquiryParseResult:
+    if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
+        return _merge_collision_judgment(inquiry, llm_out)
     if llm_out.needs_clarification:
         clarified = _maybe_upgrade_intent(inquiry, llm_out)
         clarified = clarified.model_copy(
@@ -115,6 +138,47 @@ def _merge_llm_into_inquiry(
     merged = _merge_slots(inquiry, llm_out)
     merged = _maybe_upgrade_intent(merged, llm_out)
     return _recompute_flags(merged)
+
+
+def _merge_collision_judgment(
+    inquiry: InquiryParseResult, llm_out: LLMOutput
+) -> InquiryParseResult:
+    judgment = _collision_booking_judgment(llm_out)
+    merged = inquiry.model_copy(
+        update={"llm_detected_intents": list(llm_out.intents)}
+    )
+    if judgment is None:
+        return merged
+    if judgment:
+        mapped = _map_llm_intent(llm_out.intent) or "availability"
+        merged = merged.model_copy(
+            update={
+                "intent": InquiryIntentResult(
+                    is_inquiry=True,
+                    inquiry_type=mapped,
+                )
+            }
+        )
+    else:
+        merged = merged.model_copy(
+            update={
+                "intent": InquiryIntentResult(
+                    is_inquiry=True,
+                    inquiry_type="faq",
+                )
+            }
+        )
+    return _recompute_flags(merged)
+
+
+def _collision_booking_judgment(llm_out: LLMOutput) -> bool | None:
+    if llm_out.is_booking_intent is not None:
+        return llm_out.is_booking_intent
+    if llm_out.intent in ("price", "availability", "booking"):
+        return True
+    if llm_out.intent == "faq":
+        return False
+    return None
 
 
 def _merge_slots(inquiry: InquiryParseResult, llm_out: LLMOutput) -> InquiryParseResult:

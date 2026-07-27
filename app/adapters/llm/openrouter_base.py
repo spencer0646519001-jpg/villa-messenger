@@ -199,6 +199,7 @@ def _llm_output_from_dict(data: dict) -> LLMOutput:
         needs_clarification=_bool_or_false(data.get("needs_clarification")),
         clarification_reason=_clarification_reason_or_none(data.get("clarification_reason")),
         room_count=_int_or_none(data.get("room_count")),
+        intents=_intents_or_empty(data.get("intents")),
     )
 
 
@@ -232,7 +233,32 @@ def _clarification_reason_or_none(value: object) -> str | None:
     return value if value == _CLARIFICATION_REASON else None
 
 
+def _intents_or_empty(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [
+        item
+        for item in value
+        if isinstance(item, str)
+        and (item in _ALLOWED_INTENTS or re.fullmatch(r"faq:[a-z_]+", item))
+    ]
+
+
 def _build_system_prompt(reference_year: int, trigger: str) -> str:
+    collision_instruction = ""
+    if trigger == "type_3_faq_booking_collision":
+        collision_instruction = """
+
+本次是 FAQ topic 與訂房線索同時出現的語意衝突。你只負責判斷意圖:
+- 若客人在詢問名詞定義、規則或附加服務政策,回 intent "faq"、
+  is_booking_intent false。
+- 若客人在用該詞表達想訂住宿或查指定日期能否入住,回 intent
+  "availability" 或 "booking"、is_booking_intent true。
+- 不要判斷實際空房、不要計價、不要產生客人回覆。
+- 本 trigger 不做欄位抽取;日期、人數、房數、寵物欄位全部填 null。
+- intents 可列出所有看見的意圖,例如 ["availability", "faq:pets"];
+  intent 欄位仍放主要意圖。
+"""
     return f"""
 你是民宿訂房訊息的欄位抽取器。只輸出 JSON,不要解釋,不要產生給客人的回覆文字。
 
@@ -243,6 +269,7 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
 - tenant_id 不在 prompt 中使用,也不可輸出。
 
 trigger: {trigger}
+{collision_instruction}
 
 簡寫日期範例:
 - "7/28-29" => checkin_date "2026-07-28", checkout_date "2026-07-29"
@@ -260,6 +287,7 @@ trigger: {trigger}
 JSON schema:
 {{
   "intent": "price|availability|booking|faq|other|unknown|null",
+  "intents": ["price|availability|booking|faq|faq:topic|other|unknown"],
   "checkin_date": "YYYY-MM-DD|null",
   "checkout_date": "YYYY-MM-DD|null",
   "adult_count": "integer|null",

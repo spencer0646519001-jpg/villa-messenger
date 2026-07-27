@@ -73,3 +73,16 @@ def test_pure_explicit_faq_topic_stays_faq(text: str) -> None:
 
     assert result.is_inquiry is True
     assert result.inquiry_type == "faq"
+
+
+def test_booking_equivalent_topic_with_booking_signals_is_availability() -> None:
+    result = parse_inquiry_intent("您好,請問8/15是否還可以包棟嗎?人數9位,謝謝")
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "availability"
+
+
+def test_any_booking_equivalent_topic_wins_rule_fallback_collision() -> None:
+    result = parse_inquiry_intent("8/15 包棟可以帶寵物嗎 9人")
+
+    assert result.inquiry_type == "availability"

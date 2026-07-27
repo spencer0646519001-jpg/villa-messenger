@@ -26,6 +26,11 @@ FULL_HOUSE_MESSAGE: Final = (
     "您好,您詢問的日期目前可能已有訂房,"
     "需請民宿人員和您確認是否仍有空房。"
 )
+ASSUMED_SINGLE_NIGHT_NOTICE_TEMPLATE: Final = (
+    "您好,您詢問的入住 {checkin}、退房 {checkout}(住一晚)目前可能已有訂房,"
+    "需請民宿人員和您確認是否仍有空房。若您的入住天數不只一晚,"
+    "歡迎告訴我們正確的日期,我們再重新確認。"
+)
 
 OVER_CAPACITY_MESSAGE: Final = (
     "您好,您詢問的人數超過我們的最大可容納人數(16 人),"

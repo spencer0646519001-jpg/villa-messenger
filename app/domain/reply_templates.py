@@ -2,6 +2,7 @@ from datetime import date
 
 from app.domain.pricing_models import PricingResult
 from app.domain.reply_text import (
+    ASSUMED_SINGLE_NIGHT_NOTICE_TEMPLATE,
     CHILDREN_CONFIRMATION,
     DATE_RANGE_CLARIFICATION_MESSAGE,
     FAQ_AMENITIES_EMPTY,
@@ -216,6 +217,18 @@ def render_invalid_date_message() -> str:
 
 def render_full_house_message() -> str:
     return FULL_HOUSE_MESSAGE
+
+
+def render_assumed_single_night_full_house_message(
+    *,
+    checkin_date: date,
+    checkout_date: date,
+) -> str:
+    """Full-house reply that makes the temporary one-night probe explicit."""
+    return ASSUMED_SINGLE_NIGHT_NOTICE_TEMPLATE.format(
+        checkin=f"{checkin_date.month}/{checkin_date.day}",
+        checkout=f"{checkout_date.month}/{checkout_date.day}",
+    )
 
 
 def render_owner_push_full_house(

@@ -51,6 +51,13 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
 
 _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()
 
+# Booking-equivalent topics describe the lodging product / booking action itself,
+# rather than an ancillary policy.  A customer who supplies a date or guest count
+# while asking about 包棟 is normally asking whether the whole-house stay can be
+# booked, not what "whole house" means.  Keep this classification centralized so
+# the intent classifier and final reply composer cannot drift apart.
+_BOOKING_EQUIVALENT_TOPICS: frozenset[FaqTopic] = frozenset({"whole_house"})
+
 # Informational topics that are NOT stage-C pricing line-items.  When match_faq
 # hits one of these, the composer overrides the per-message price/availability
 # intent and routes directly to the FAQ branch.
@@ -66,14 +73,26 @@ NON_PRICEABLE: frozenset[FaqTopic] = frozenset({
 
 def match_faq(text: str) -> FaqMatch | None:
     """Return the whitelisted FAQ topic+tier this text hits, or None."""
+    matches = match_all_faq_topics(text)
+    return matches[0] if matches else None
+
+
+def match_all_faq_topics(text: str) -> tuple[FaqMatch, ...]:
+    """Return every FAQ topic hit, preserving the existing topic priority order."""
     lowered = text.lower()  # 'wifi'/'checkout' keywords are ASCII; CJK unaffected.
+    matches: list[FaqMatch] = []
     for topic, keywords in _TIER1_KEYWORDS:
         if _contains_any(lowered, keywords):
-            return FaqMatch(topic=topic, tier=1)
+            matches.append(FaqMatch(topic=topic, tier=1))
     for topic, keywords in _TIER2_KEYWORDS:
         if _contains_any(lowered, keywords):
-            return FaqMatch(topic=topic, tier=2)
-    return None
+            matches.append(FaqMatch(topic=topic, tier=2))
+    return tuple(matches)
+
+
+def is_booking_equivalent_topic(topic: str) -> bool:
+    """True when a topic names the bookable lodging product/action itself."""
+    return topic in _BOOKING_EQUIVALENT_TOPICS
 
 
 def has_explicit_faq_topic(text: str) -> bool:

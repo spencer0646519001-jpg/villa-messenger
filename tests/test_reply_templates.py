@@ -6,6 +6,7 @@ import pytest
 
 from app.domain.pricing_policy import calculate_price as _calculate_price
 from app.domain.reply_templates import (
+    render_assumed_single_night_full_house_message,
     _format_date_with_weekday,
     _format_guest_summary,
     _format_money,
@@ -425,6 +426,19 @@ def test_render_invalid_date_message() -> None:
 
 def test_render_full_house_message() -> None:
     assert render_full_house_message() == FULL_HOUSE_MESSAGE
+
+
+def test_render_assumed_single_night_full_house_message() -> None:
+    result = render_assumed_single_night_full_house_message(
+        checkin_date=date(2026, 8, 15),
+        checkout_date=date(2026, 8, 16),
+    )
+
+    assert result == (
+        "您好,您詢問的入住 8/15、退房 8/16(住一晚)目前可能已有訂房,"
+        "需請民宿人員和您確認是否仍有空房。若您的入住天數不只一晚,"
+        "歡迎告訴我們正確的日期,我們再重新確認。"
+    )
 
 
 def test_render_missing_room_count_message() -> None:

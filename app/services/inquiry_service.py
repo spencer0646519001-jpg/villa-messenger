@@ -13,18 +13,20 @@ from datetime import date, datetime, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
-from app.domain.inquiry_decision import InquiryDecision
+from app.domain.availability_probe import with_single_night_availability_probe
 from app.domain.availability_gate import (
     AvailabilityGateResult,
     evaluate_availability_gate,
 )
+from app.domain.inquiry_decision import InquiryDecision
+from app.domain.inquiry_parser import parse_inquiry
 from app.domain.llm_fallback import llm_fallback_parse
 from app.domain.llm_provider import LLMProvider
-from app.domain.inquiry_parser import parse_inquiry
 from app.domain.parser_models import InquiryParseResult
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
+    render_assumed_single_night_full_house_message,
     render_date_range_clarification_message,
     render_full_house_message,
     render_invalid_date_message,
@@ -73,6 +75,10 @@ _OPTIONAL_LOG_FIELDS: tuple[str, ...] = (
     "parsed_pet_count",
     "quoted_total",
     "missing_fields",
+    "matched_faq_topics",
+    "llm_detected_intents",
+    "availability_probe_checkout",
+    "availability_probe_checkout_was_inferred",
 )
 
 
@@ -107,8 +113,17 @@ class InquiryService:
         if not self._is_system_on(message):
             return self._handle_off_mode(message, inquiry)
         inquiry = self._with_llm_fallback(message, inquiry, reference_year)
+        inquiry = with_single_night_availability_probe(inquiry, message.text)
         if not self._is_quote_relevant(inquiry):
             return self._handle_non_inquiry(message, inquiry)
+        return self._handle_quote_relevant(message, inquiry)
+
+    def _handle_quote_relevant(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> InquiryDecision:
+        probe_block = self._handle_probe_if_blocked(message, inquiry)
+        if probe_block is not None:
+            return probe_block
         if inquiry.needs_clarification or inquiry.missing_fields:
             return self._handle_missing_info(message, inquiry)
         return self._handle_pricing(message, inquiry)
@@ -191,6 +206,12 @@ class InquiryService:
         log["parsed_infant_count"] = inquiry.guests.infant_count
         log["parsed_room_count"] = inquiry.room_count
         log["parsed_pet_count"] = inquiry.pets.pet_count
+        log["matched_faq_topics"] = list(inquiry.matched_faq_topics)
+        log["llm_detected_intents"] = list(inquiry.llm_detected_intents)
+        log["availability_probe_checkout"] = inquiry.availability_probe_checkout
+        log["availability_probe_checkout_was_inferred"] = (
+            inquiry.availability_probe_checkout_was_inferred
+        )
 
     def _handle_urgent(
         self,
@@ -415,11 +436,68 @@ class InquiryService:
         )
 
     def _check_availability(self, inquiry: InquiryParseResult) -> AvailabilityGateResult:
-        return evaluate_availability_gate(
-            availability_service=self._availability_service,
+        return self._check_availability_range(
             checkin=date.fromisoformat(inquiry.dates.checkin_date),
             checkout=date.fromisoformat(inquiry.dates.checkout_date),
         )
+
+    def _check_availability_range(
+        self, *, checkin: date, checkout: date
+    ) -> AvailabilityGateResult:
+        return evaluate_availability_gate(
+            availability_service=self._availability_service,
+            checkin=checkin,
+            checkout=checkout,
+        )
+
+    def _handle_probe_if_blocked(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> InquiryDecision | None:
+        if not inquiry.availability_probe_checkout_was_inferred:
+            return None
+        checkin = date.fromisoformat(inquiry.dates.checkin_date)
+        checkout = date.fromisoformat(inquiry.availability_probe_checkout)
+        outcome = self._check_availability_range(checkin=checkin, checkout=checkout)
+        if outcome.status != "blocked":
+            return None
+        return self._probe_full_house_decision(
+            message, inquiry, outcome, checkin, checkout
+        )
+
+    def _probe_full_house_decision(
+        self, message: InboundMessage, inquiry: InquiryParseResult,
+        outcome: AvailabilityGateResult, checkin: date, checkout: date,
+    ) -> InquiryDecision:
+        log = self._probe_full_house_log(message, inquiry, outcome)
+        reply = render_assumed_single_night_full_house_message(
+            checkin_date=checkin, checkout_date=checkout,
+        )
+        push = render_owner_push_full_house(
+            checkin_date=checkin, checkout_date=checkout, guest_count=_guest_count(inquiry),
+            platform_user_id=message.platform_user_id,
+        )
+        return InquiryDecision(
+            action_type="reply_and_push",
+            customer_reply_text=reply,
+            owner_push_text=push,
+            log_payload=log,
+            parsed_as_inquiry=True,
+            completes_conversation_state=True,
+        )
+
+    def _probe_full_house_log(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        outcome: AvailabilityGateResult,
+    ) -> dict:
+        log = self._build_base_log_payload(
+            message, system_state="on", action_taken="full_house"
+        )
+        self._add_parsed_fields_to_log(log, inquiry)
+        log["blocked_nights_count"] = len(outcome.blocked_nights)
+        log["missing_fields"] = list(inquiry.missing_fields)
+        return log
 
     def _handle_unquotable(
         self,
