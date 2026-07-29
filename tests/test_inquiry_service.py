@@ -247,12 +247,34 @@ def test_not_paused_customer_proceeds_normally_when_tenant_on() -> None:
     assert decision.action_type == "reply_to_customer_only"
 
 
-def test_tenant_off_short_circuits_before_handoff_lookup() -> None:
+def test_tenant_off_still_checks_handoff_pause() -> None:
+    """Handoff pause must be checked even when the tenant is off, so an
+    owner-paused customer is tagged "paused_by_owner" instead of a plain
+    "off" silent drop -- otherwise the nightly digest / /待回覆 can't tell
+    "owner already took over" from ordinary off-mode noise."""
     service, fake_handoff = _build_service_with_handoff(system_on=False, paused=False)
 
     service.handle_message(message=_build_message("你好"))
 
-    assert fake_handoff.calls == []
+    assert fake_handoff.calls != []
+
+
+def test_tenant_off_and_paused_by_owner_tags_paused_by_owner() -> None:
+    service, _ = _build_service_with_handoff(system_on=False, paused=True)
+
+    decision = service.handle_message(message=_build_message("你好"))
+
+    assert decision.action_type == "do_nothing"
+    assert decision.log_payload["system_state_at_time"] == "paused_by_owner"
+
+
+def test_tenant_off_and_not_paused_tags_off() -> None:
+    service, _ = _build_service_with_handoff(system_on=False, paused=False)
+
+    decision = service.handle_message(message=_build_message("你好"))
+
+    assert decision.action_type == "do_nothing"
+    assert decision.log_payload["system_state_at_time"] == "off"
 
 
 def test_urgent_bypasses_handoff_pause() -> None:

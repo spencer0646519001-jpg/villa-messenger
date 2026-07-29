@@ -92,6 +92,11 @@ class MessageRepository:
         return int(cursor.lastrowid)
 
     def list_unhandled(self, tenant_id: int, limit: int = 20) -> list[dict]:
+        """Excludes rows the owner already took ownership of via a handoff
+        pause (system_state_at_time = 'paused_by_owner') at the SQL level --
+        filtering those out in Python AFTER a LIMIT would risk dropping real
+        pending rows off the end whenever the oldest `limit` rows happen to
+        all be paused ones."""
         with closing(get_connection(self.database_path)) as connection:
             rows = connection.execute(
                 """
@@ -99,6 +104,7 @@ class MessageRepository:
                 FROM messages
                 WHERE tenant_id = ?
                   AND handled = 0
+                  AND system_state_at_time != 'paused_by_owner'
                 ORDER BY created_at ASC, id ASC
                 LIMIT ?
                 """,

@@ -135,7 +135,6 @@ _NIGHT_START_TIME = time(23, 0)
 _NIGHT_END_TIME = time(8, 0)
 _OWNER_RECORD_MAX_TEXT_CHARS = 4500
 _DIGEST_UNHANDLED_LIMIT = 50
-_PAUSED_SYSTEM_STATE = "paused_by_owner"
 
 
 @dataclass(frozen=True)
@@ -521,11 +520,11 @@ def _reply_owner_record(*, event: dict, message: InboundMessage, database_path: 
 
 
 def _pending_rows(*, database_path: str, tenant_id: int) -> list[dict]:
-    """messages that never got a customer reply nor an owner push (handled=0),
-    excluding ones the owner already took ownership of via a handoff pause --
-    those would just be noise she already knows about."""
-    rows = MessageRepository(database_path).list_unhandled(tenant_id, limit=_DIGEST_UNHANDLED_LIMIT)
-    return [row for row in rows if row["system_state_at_time"] != _PAUSED_SYSTEM_STATE]
+    """messages that never got a customer reply nor an owner push (handled=0).
+    list_unhandled already excludes ones the owner took ownership of via a
+    handoff pause at the SQL level -- those would just be noise she already
+    knows about."""
+    return MessageRepository(database_path).list_unhandled(tenant_id, limit=_DIGEST_UNHANDLED_LIMIT)
 
 
 def _format_owner_pending_reply(rows: list[dict], tenant_timezone: str) -> str:

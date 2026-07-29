@@ -151,18 +151,23 @@ class InquiryService:
 
     def _system_state(self, message: InboundMessage) -> str:
         """"on" | "off" (tenant-wide schedule) | "paused_by_owner" (this one
-        customer was manually paused via the handoff service, Layer 1)."""
-        if not self._operation_mode_service.is_system_active(
-            tenant_id=message.tenant_id,
-            tenant_timezone=message.tenant_timezone,
-        ):
-            return "off"
+        customer was manually paused via the handoff service, Layer 1).
+
+        Checked in this order so an owner-paused customer is always recorded
+        as "paused_by_owner", even while the tenant is also off -- otherwise
+        the nightly digest / /待回覆 can't tell "owner already took over" from
+        an ordinary off-mode silent drop and would re-surface it as noise."""
         if self._conversation_handoff_service is not None and self._conversation_handoff_service.is_paused(
             tenant_id=message.tenant_id,
             platform=message.platform,
             platform_user_id=message.platform_user_id,
         ):
             return "paused_by_owner"
+        if not self._operation_mode_service.is_system_active(
+            tenant_id=message.tenant_id,
+            tenant_timezone=message.tenant_timezone,
+        ):
+            return "off"
         return "on"
 
     def _is_quote_relevant(self, inquiry: InquiryParseResult) -> bool:
