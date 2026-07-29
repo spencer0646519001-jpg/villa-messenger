@@ -7,7 +7,7 @@
 > token、calendar ID,或任何真實的 LINE ID。所有敏感值一律以 `<placeholder>`
 > 表示,請自行填入伺服器上的 `.env`。
 
-最後更新:2026-07-13
+最後更新:2026-07-29
 
 ---
 
@@ -312,6 +312,186 @@ httpx.HTTPStatusError: Client error '400 Bad Request'
 
 ---
 
+### 坑 7:`_ensure_column` 是手動註冊制,不會自動掃描 `schema.sql`
+
+**症狀**:`schema.sql` 加了新欄位,正式站也照著跑了 `init_db()`,但欄位還是不
+存在,程式報 `no such column: xxx`。
+
+**原因**:`init_db()`(見 `app/repositories/sqlite.py`)對「新表」是用
+`CREATE TABLE IF NOT EXISTS`,新表會照 `schema.sql` 完整建立,沒問題。但對
+「既有表新增欄位」**不是自動比對 `schema.sql` 做的**——每個要補的欄位都必須在
+`init_db()` 裡手寫一行對應的 `_ensure_column(connection, table, column, ddl)`
+呼叫。`_ensure_column` 本身只做一件事:檢查該欄位在不在,不在就
+`ALTER TABLE ADD COLUMN`。
+
+也就是說,`schema.sql` 加了欄位,如果忘記同步在 `init_db()` 補一行
+`_ensure_column`,既有資料庫**永遠不會拿到那個欄位**——不會報錯提醒你,只會
+在程式真的讀寫到那個欄位時才炸。
+
+**解法**:在 `schema.sql` 新增欄位時,必須同時在 `init_db()` 加一行對應的
+`_ensure_column()`,否則既有資料庫永遠不會拿到那個欄位(新表不用,
+`CREATE TABLE IF NOT EXISTS` 會處理)。本次(27bc622)實際新增的五行,可當
+範例:
+
+```python
+_ensure_column(connection, "conversation_states", "room_count", "INTEGER")
+_ensure_column(
+    connection, "conversation_states", "accumulated_while_off", "INTEGER NOT NULL DEFAULT 0"
+)
+_ensure_column(connection, "conversation_states", "last_off_mode_update_at", "TEXT")
+_ensure_column(connection, "messages", "customer_display_name", "TEXT")
+_ensure_column(connection, "tenant_operation_state", "last_digest_sent_date", "TEXT")
+```
+
+**補充兩點**:
+
+- `NOT NULL DEFAULT <value>` 這種形式是可以的,SQLite 的 `ADD COLUMN` 支援帶
+  預設值的 NOT NULL 欄位,既有資料列會套用該預設值(本次 `accumulated_while_off`
+  實測正常)。
+- 但 **NOT NULL 且沒有預設值、UNIQUE 約束、欄位改名、型別變更**,`ADD COLUMN`
+  都做不到,需要正式 migration 或重建策略。
+
+**部署前自我檢查**(比對 `schema.sql` 改動和 `_ensure_column` 數量是否對得上):
+
+```bash
+# 看整個部署區間 schema.sql 改了什麼
+git diff <正式站目前的commit>..origin/main -- app/repositories/schema.sql
+
+# 對照新版有沒有補上對應的 _ensure_column
+git show origin/main:app/repositories/sqlite.py | grep -n "_ensure_column"
+```
+
+兩邊數量對不上,就代表有欄位會被漏掉。
+
+---
+
+### 坑 8:有 schema 變更時,`exec` 用的是舊 image,必須先 build 再用 `run --rm` 做 migration
+
+**症狀**:換版前想先跑 migration「墊底」,用
+`docker compose exec web python -c "...init_db..."`,結果新欄位還是沒加上去。
+
+**原因**:`exec` 是進入**目前正在跑的容器**,裡面是**舊 image**——舊版
+`sqlite.py` 根本沒有新欄位對應的 `_ensure_column` 呼叫,自然加不出新欄位。必須
+用**新 image**跑 migration,而新 image 要先 build 出來,但還不能立刻拿去換版
+(舊容器此時仍在正常服務客人)。
+
+**正確順序**:
+
+```bash
+# 1. 先 build 新 image(此時舊容器還在服務,客人不受影響)
+docker compose -p villa-messenger build
+
+# 2. 用「新 image」跑一次性容器做 migration(用 run --rm,不是 exec)
+docker compose -p villa-messenger run --rm web \
+  sh -c "cd /app && PYTHONPATH=. python -c \"from app.repositories.sqlite import init_db; init_db('/data/homestay.db')\""
+
+# 3. 驗證欄位/表確實建好(見下方指令)
+# 4. 確認無誤才換版
+docker compose -p villa-messenger up -d
+```
+
+關鍵是:**`run --rm` 用的是剛 build 好的新 image;`exec` 用的是舊容器**,兩者
+不能混用來做 migration。
+
+**驗證 migration 的指令**:
+
+```bash
+docker compose -p villa-messenger run --rm web \
+  python -c "import sqlite3; c=sqlite3.connect('/data/homestay.db'); print('messages:', [r[1] for r in c.execute('PRAGMA table_info(messages)')]); print('conv_states:', [r[1] for r in c.execute('PRAGMA table_info(conversation_states)')])"
+```
+
+**另一個要注意的細節**:migration 指令裡的資料庫路徑**一律直接寫死
+`/data/homestay.db`**,不要假設腳本會自己讀對 `settings.database_path`。本次
+實測,`scripts/set_mode.py` 在容器內執行時解析到了錯誤的相對路徑,甚至建出一個
+0 bytes 的空資料庫(細節見下方「尚待處理的 TODO」)——這跟坑 2 記錄的「容器內
+一律用絕對路徑」是同一類陷阱,任何 seed / migration / 查詢腳本都要小心,不要
+假設它們會自己讀對路徑。
+
+---
+
+### 坑 9:伺服器上未 commit 的手動修改,會擋住下次 `git pull`
+
+**症狀**:`git pull` 直接失敗:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+        .dockerignore
+        docker-compose.yml
+```
+
+**原因**:上次部署救火時,直接在伺服器上改了這兩個檔案應急(見坑 1、坑 3),但
+沒有立刻回頭把同樣的修改補進 repo commit。後來這些修復也正確地補進了 repo
+(獨立 commit),於是伺服器本機未提交的手動修改,和新 `pull` 下來的版本改到了
+同一個地方,產生衝突。
+
+**正確處理方式**(不要直接 `git checkout .` 或 `git stash` 了事):
+
+```bash
+# 1. 先備份
+cp .dockerignore .dockerignore.server-backup
+cp docker-compose.yml docker-compose.yml.server-backup
+
+# 2. 看清楚伺服器上到底手改了什麼
+git diff .dockerignore docker-compose.yml
+
+# 3. 看新版(即將 pull 下來的版本)長怎樣
+git show origin/main:docker-compose.yml
+
+# 4. 確認新版「完整包含」手改的內容,才丟棄本機修改
+git checkout -- .dockerignore docker-compose.yml
+git pull
+```
+
+**為什麼要比對而不是直接丟棄**:伺服器上的手改可能包含正式環境專屬的設定
+(port、volume、環境變數),盲目丟棄可能把服務弄壞。本次比對後確認新版已完整
+包含手改內容(`--log-level debug`、`--timeout-graceful-shutdown 30`、精確的
+`.dockerignore` glob),才安全覆蓋。
+
+**根本解法**:伺服器上救火修改後,要盡快把同樣的修改補進 repo 並 commit,不要
+讓它只存在於單一台機器上,否則遲早在下次 `git pull` 時衝突。
+
+---
+
+## 更新既有服務的標準流程(含 schema 變更)
+
+以下是實際跑過、驗證有效的「更新既有服務」完整順序。適用於有 schema 變更的
+部署;若這次沒有 schema 變更,可省略其中 migration 相關步驟。
+
+1. `cd /root/villa-messenger && git log -1 --oneline` —— **先記下目前
+   commit**,萬一要回滾會用到。
+2. `docker compose -p villa-messenger ps` —— 確認 service 名稱(本專案是
+   `web`)。
+3. `git fetch && git log --oneline <目前commit>..origin/main` —— 確認落後
+   多少 commit。
+4. `git diff <目前commit>..origin/main -- app/repositories/schema.sql` ——
+   確認 schema 變更範圍,並依坑 7 的方法對照 `_ensure_column` 是否補齊。
+5. **備份資料庫**(容器內 + host 各留一份,見下方指令)。
+6. 若 `git pull` 因伺服器手改衝突失敗,依坑 9 處理。
+7. `build` → 用新 image `run --rm` 跑 migration → 驗證欄位(依坑 8)→ 確認
+   無誤才 `up -d`。
+8. `docker compose -p villa-messenger logs -f web` 確認出現
+   `Application startup complete` 且沒有 `OperationalError`。
+9. 用真實 LINE 帳號實際發一則訊息驗證。
+
+**備份指令**:
+
+```bash
+docker compose -p villa-messenger exec web \
+  sh -c "cp /data/homestay.db /data/homestay.db.bak-$(date +%Y%m%d-%H%M)"
+docker compose -p villa-messenger exec web ls -lh /data/
+
+# 再拉一份到 host,避免容器/volume 出事時連備份都沒了
+docker compose -p villa-messenger cp web:/data/homestay.db ./homestay-backup-$(date +%Y%m%d-%H%M).db
+```
+
+**回滾方式**:
+
+- 程式有問題 → `git checkout <舊commit> && build && up -d`(舊程式碼配新
+  schema 通常仍可運作,多出來的欄位不影響舊程式讀寫)。
+- 資料庫有問題 → 先停服務,用備份覆蓋 `/data/homestay.db`,再退回舊 commit。
+
+---
+
 ## 切換 LINE 官方帳號的完整流程
 
 當要從測試帳號切換到正式官方帳號(或更換任何官方帳號)時,依序執行:
@@ -390,6 +570,17 @@ httpx.HTTPStatusError: Client error '400 Bad Request'
 - `app/main.py` 應加 `logging.basicConfig()`,讓 logging 不依賴 uvicorn
   啟動參數(見坑 3)。
 - Owner push 加上「跳轉到該客人對話」的 LINE deep link(可行性待查)。
+- `scripts/set_mode.py` 在容器內執行時會踩到跟坑 2 一樣的路徑陷阱:腳本頂部
+  寫死 `DATABASE_PATH = "data/homestay.db"`(相對路徑,腳本自己的註解也承認
+  「Hardcoded for now」),不是讀 `app.settings.database_path`,即使
+  `docker-compose.yml` 已把 `DATABASE_PATH` 環境變數設成 `/data/homestay.db`
+  也不會生效——腳本沒有讀那個環境變數。實測在容器內直接執行會解析到
+  `/app/data/homestay.db`,建出一個 0 bytes 的空資料庫,之後任何操作都報
+  `no such table: tenants`。優先度低(民宿主人平常用 LINE 指令切換模式,不會
+  用到這支腳本;若真的需要在容器內手動切換模式,改用 `docker compose exec web`
+  搭配 `OperationModeService` 直接下 `python -c` 並指定絕對路徑,不要直接跑
+  `scripts/set_mode.py`),但下次一併修掉 `seed_sandbox.py` / `add_owner.py`
+  的硬編碼路徑時,應該把這支腳本也一起改成讀 `settings.database_path`。
 
 ---
 
