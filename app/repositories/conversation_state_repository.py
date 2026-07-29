@@ -26,11 +26,13 @@ INSERT INTO conversation_states (
     pet_count,
     has_pet,
     last_message_text,
+    accumulated_while_off,
+    last_off_mode_update_at,
     expires_at,
     created_at,
     updated_at
 )
-VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _GET_ACTIVE_SQL = """
@@ -58,7 +60,17 @@ SET intent = COALESCE(?, intent),
     pet_count = COALESCE(?, pet_count),
     has_pet = COALESCE(?, has_pet),
     last_message_text = COALESCE(?, last_message_text),
+    accumulated_while_off = COALESCE(?, accumulated_while_off),
+    last_off_mode_update_at = COALESCE(?, last_off_mode_update_at),
     expires_at = CASE WHEN ? THEN ? ELSE expires_at END,
+    updated_at = ?
+WHERE id = ?
+  AND tenant_id = ?
+"""
+
+_CLEAR_ACCUMULATED_WHILE_OFF_SQL = """
+UPDATE conversation_states
+SET accumulated_while_off = 0,
     updated_at = ?
 WHERE id = ?
   AND tenant_id = ?
@@ -124,6 +136,8 @@ class ConversationStateRepository:
         has_pet: bool = False,
         pet_count: int | None = None,
         last_message_text: str | None = None,
+        accumulated_while_off: bool = False,
+        last_off_mode_update_at: str | None = None,
         ttl_hours: int = 24,
         connection: sqlite3.Connection | None = None,
     ) -> int:
@@ -134,7 +148,8 @@ class ConversationStateRepository:
         params = (
             tenant_id, platform, platform_user_id, intent,
             checkin_date, checkout_date, adult_count, child_count, infant_count,
-            room_count, pet_count, int(has_pet), last_message_text, expires_at, now, now,
+            room_count, pet_count, int(has_pet), last_message_text,
+            int(accumulated_while_off), last_off_mode_update_at, expires_at, now, now,
         )
         if connection is not None:
             return self._insert_state(connection, params)
@@ -166,22 +181,41 @@ class ConversationStateRepository:
         has_pet: bool | None = None,
         pet_count: int | None = None,
         last_message_text: str | None = None,
+        accumulated_while_off: bool | None = None,
+        last_off_mode_update_at: str | None = None,
         refresh_expiry: bool = True,
         ttl_hours: int = 24,
     ) -> None:
         """Merge non-None slots into the row (None leaves a slot unchanged);
-        slide expires_at to now + ttl_hours when refresh_expiry is True."""
+        slide expires_at to now + ttl_hours when refresh_expiry is True.
+
+        accumulated_while_off / last_off_mode_update_at follow the same
+        None-means-untouched COALESCE convention: pass None from an on-mode
+        update to leave whatever the row already carries; pass an explicit
+        value (True + a fresh timestamp) from an off/paused update to force
+        both forward -- see ConversationStateService._off_flag_kwargs."""
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
         new_expires_at = (now_dt + timedelta(hours=ttl_hours)).isoformat()
         has_pet_param = None if has_pet is None else int(has_pet)
+        accumulated_while_off_param = None if accumulated_while_off is None else int(accumulated_while_off)
         params = (
             intent, checkin_date, checkout_date, adult_count, child_count,
             infant_count, room_count, pet_count, has_pet_param, last_message_text,
+            accumulated_while_off_param, last_off_mode_update_at,
             int(refresh_expiry), new_expires_at, now, state_id, tenant_id,
         )
         with closing(get_connection(self.database_path)) as connection:
             connection.execute(_UPDATE_SLOTS_SQL, params)
+            connection.commit()
+
+    def clear_accumulated_while_off(self, *, tenant_id: int, state_id: int) -> None:
+        """Best-effort clear after the reply composer has shown the
+        reconfirmation nudge once (Layer 2) -- so the NEXT turn proceeds
+        normally instead of nudging again."""
+        now = _utc_now_iso()
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(_CLEAR_ACCUMULATED_WHILE_OFF_SQL, (now, state_id, tenant_id))
             connection.commit()
 
     def mark_completed(self, *, tenant_id: int, state_id: int) -> None:

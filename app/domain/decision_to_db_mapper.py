@@ -33,7 +33,7 @@ def build_db_write_plan(decision: InquiryDecision) -> DbWritePlan:
     - Missing/None log_payload values pass through as None in the row.
     """
     payload = decision.log_payload
-    messages_row = _build_messages_row(payload)
+    messages_row = _build_messages_row(payload, action_type=decision.action_type)
     if not _should_save_inquiry(decision):
         return DbWritePlan(messages_row=messages_row, inquiry_row=None)
     return DbWritePlan(
@@ -46,16 +46,22 @@ def _should_save_inquiry(decision: InquiryDecision) -> bool:
     return decision.parsed_as_inquiry
 
 
-def _build_messages_row(payload: dict) -> dict:
+def _build_messages_row(payload: dict, *, action_type: str) -> dict:
     return {
         "tenant_id": payload["tenant_id"],
         "platform": payload["platform"],
         "platform_user_id": payload["customer_platform_id"],
+        "customer_display_name": payload.get("customer_display_name"),
         "message_text": payload["raw_text"],
         "category": payload["action_taken"],
         "is_night": payload["is_night"],
         "system_state_at_time": payload["system_state_at_time"],
         "is_urgent": payload["action_taken"] == "urgent",
+        # "do_nothing" (schedule-off or Layer 1 per-customer pause) is the ONLY
+        # action_type where neither the customer nor the owner learned about
+        # this message -- see MessageRepository.list_unhandled / the /待回覆
+        # command and nightly digest that surface exactly these rows later.
+        "handled": action_type != "do_nothing",
         "raw_log_payload": json.dumps(payload, ensure_ascii=False, default=str),
     }
 

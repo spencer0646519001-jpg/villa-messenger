@@ -56,6 +56,24 @@ def compute_next_schedule_boundary(
     return tomorrow_start
 
 
+def compute_next_active_window_end(
+    *,
+    start_time: time,
+    end_time: time,
+    now: datetime,
+) -> datetime:
+    """Next moment the auto-on window closes (an on->off transition).
+
+    Unlike compute_next_schedule_boundary (which stops at whichever boundary
+    comes first, start or end), this always resolves to an end_time
+    occurrence -- so a caller pausing before or during the upcoming on-window
+    gets covered through its entire remaining span, not just until the
+    window starts.
+    """
+    today_end = _combine(now, end_time)
+    return today_end if today_end > now else today_end + timedelta(days=1)
+
+
 def compute_most_recent_schedule_window_start(
     *,
     start_time: time,

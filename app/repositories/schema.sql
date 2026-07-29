@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS messages (
     platform_user_id TEXT NOT NULL,
     contact_id INTEGER,
     reservation_id INTEGER,
+    customer_display_name TEXT,
     message_text TEXT NOT NULL,
     category TEXT NOT NULL,
     risk_level INTEGER,
@@ -161,7 +162,25 @@ CREATE TABLE IF NOT EXISTS tenant_operation_state (
     manual_set_at TEXT,
     manual_valid_until TEXT,
     last_changed_by_owner_id INTEGER,
+    last_digest_sent_date TEXT,
     updated_at TEXT NOT NULL,
+    FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+);
+
+-- Per-customer manual handoff: owner pauses ONE customer via a LINE command
+-- (see /<display name> toggle in the webhook route) so the schedule-driven
+-- auto-on window does not barge into a conversation the owner is handling.
+-- One row per paused customer; resuming deletes the row (absence == not paused).
+CREATE TABLE IF NOT EXISTS conversation_manual_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tenant_id INTEGER NOT NULL,
+    platform TEXT NOT NULL,
+    platform_user_id TEXT NOT NULL,
+    paused_until TEXT NOT NULL,
+    created_by_owner_id INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, platform, platform_user_id),
     FOREIGN KEY (tenant_id) REFERENCES tenants(id)
 );
 
@@ -181,6 +200,12 @@ CREATE TABLE IF NOT EXISTS conversation_states (
     pet_count INTEGER,
     has_pet INTEGER NOT NULL DEFAULT 0,
     last_message_text TEXT,
+    -- Set when a slot update happened while the tenant was off/paused (schedule
+    -- off OR a per-customer handoff pause), so the reply composer can nudge the
+    -- customer to reconfirm stale context once the bot wakes back up, instead of
+    -- silently quoting from data collected while nobody was actually listening.
+    accumulated_while_off INTEGER NOT NULL DEFAULT 0,
+    last_off_mode_update_at TEXT,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,

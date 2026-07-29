@@ -19,6 +19,8 @@ Unlike InquiryService (which is forbidden the repository layer), this service
 MAY import repositories: it is the seam that keeps the webhook route thin.
 """
 
+from datetime import datetime, timezone
+
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
@@ -60,6 +62,8 @@ _EMPTY_STATE_ROW: dict = {
     "pet_count": None,
     "has_pet": False,
     "last_message_text": None,
+    "accumulated_while_off": False,
+    "last_off_mode_update_at": None,
 }
 
 
@@ -67,9 +71,7 @@ class ConversationStateService:
     def __init__(self, repo: ConversationStateRepository) -> None:
         self._repo = repo
 
-    def record(
-        self, *, message: InboundMessage, decision: InquiryDecision
-    ) -> dict | None:
+    def record(self, *, message: InboundMessage, decision: InquiryDecision) -> dict | None:
         """Merge this message's slots into the user's active state (or open one)."""
         # Returns the merged in_progress row (or None) so STAGE C drives the reply
         # from the ACCUMULATED slots; assembled in-hand (mirrors the repo COALESCE),
@@ -77,34 +79,44 @@ class ConversationStateService:
         identity = _state_identity(message)
         self._repo.expire_stale_for_user(**identity)
         slots = log_payload_to_state_slots(decision.log_payload)
-        active = self._repo.get_active_for_user(
-            **identity,
-        )
+        off_kwargs = _off_flag_kwargs(decision)
+        active = self._repo.get_active_for_user(**identity)
         if active is None:
-            return self._open_if_inquiry(message, decision, slots)
+            return self._open_if_inquiry(message, decision, slots, off_kwargs)
+        return self._update_active(message, active, slots, off_kwargs)
+
+    def _update_active(self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict) -> dict:
         self._fill_contextual_room_count(slots, active, message.text)
-        if self._has_slot(slots):
-            self._repo.update_slots(tenant_id=message.tenant_id, state_id=active["id"], **slots)
-            return _merge_row(active, slots)
-        return active
+        if not self._has_slot(slots):
+            return active
+        self._repo.update_slots(
+            tenant_id=message.tenant_id, state_id=active["id"], **slots, **off_kwargs
+        )
+        return _merge_row(active, {**slots, **off_kwargs})
 
     def mark_completed(self, *, tenant_id: int, state_id: int) -> None:
         """Flip a state to completed (STAGE C, after a quote is sent)."""
         self._repo.mark_completed(tenant_id=tenant_id, state_id=state_id)
 
+    def clear_accumulated_while_off(self, *, tenant_id: int, state_id: int) -> None:
+        """Best-effort: called after the reply composer shows the Layer 2
+        reconfirmation nudge once, so the next turn is treated as fresh."""
+        self._repo.clear_accumulated_while_off(tenant_id=tenant_id, state_id=state_id)
+
     def _open_if_inquiry(
-        self, message: InboundMessage, decision: InquiryDecision, slots: dict
+        self, message: InboundMessage, decision: InquiryDecision, slots: dict, off_kwargs: dict
     ) -> dict | None:
         intent = decision.log_payload.get("inquiry_intent")
         if not (decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS):
             return None
+        create_kwargs = {**slots, **_drop_none(off_kwargs)}
         state_id = self._repo.create(
             tenant_id=message.tenant_id,
             platform=message.platform,
             platform_user_id=message.platform_user_id,
-            **slots,
+            **create_kwargs,
         )
-        return _merge_row({**_EMPTY_STATE_ROW, "id": state_id}, slots)
+        return _merge_row({**_EMPTY_STATE_ROW, "id": state_id}, create_kwargs)
 
     def _has_slot(self, slots: dict) -> bool:
         return any(slots.get(key) is not None for key in _SLOT_KEYS)
@@ -122,6 +134,27 @@ def _merge_row(base: dict, slots: dict) -> dict:
         if value is not None:
             merged[key] = value
     return merged
+
+
+def _off_flag_kwargs(decision: InquiryDecision) -> dict:
+    """None/None when this update happened while the system was ON (leaves
+    whatever accumulated_while_off/last_off_mode_update_at the row already
+    carries untouched -- e.g. a same-turn slot fill after the reconfirm nudge
+    already fired stays cleared). True/now when it happened OFF (tenant-wide
+    schedule off OR a Layer 1 per-customer pause both set was_system_off) --
+    forces the flag on and the timestamp forward every off-mode touch, so a
+    customer who keeps messaging while off has last_off_mode_update_at track
+    their MOST RECENT off-mode message, not their first."""
+    if not decision.was_system_off:
+        return {"accumulated_while_off": None, "last_off_mode_update_at": None}
+    return {
+        "accumulated_while_off": True,
+        "last_off_mode_update_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _drop_none(values: dict) -> dict:
+    return {key: value for key, value in values.items() if value is not None}
 
 
 def _state_identity(message: InboundMessage) -> dict:

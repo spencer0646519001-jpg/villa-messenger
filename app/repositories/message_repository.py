@@ -13,6 +13,7 @@ INSERT INTO messages (
     platform_user_id,
     contact_id,
     reservation_id,
+    customer_display_name,
     message_text,
     category,
     risk_level,
@@ -26,7 +27,7 @@ INSERT INTO messages (
     created_at,
     raw_log_payload
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -44,6 +45,7 @@ class MessageRepository:
         is_night: bool,
         contact_id: int | None = None,
         reservation_id: int | None = None,
+        customer_display_name: str | None = None,
         risk_level: int | None = None,
         reply_text: str | None = None,
         is_urgent: bool = False,
@@ -60,6 +62,7 @@ class MessageRepository:
             platform_user_id,
             contact_id,
             reservation_id,
+            customer_display_name,
             message_text,
             category,
             risk_level,
@@ -123,6 +126,28 @@ class MessageRepository:
                 (tenant_id, start, end),
             ).fetchall()
 
+        return [dict(row) for row in rows]
+
+    def find_candidates_by_display_name(
+        self, *, tenant_id: int, platform: str, display_name: str
+    ) -> list[dict]:
+        """One row per distinct platform_user_id that has ever sent a message
+        with this exact display name, most-recently-active first. Used to
+        resolve an owner's "/<display name>" pause command back to a
+        platform_user_id (see ConversationHandoffService)."""
+        with closing(get_connection(self.database_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT platform_user_id, MAX(created_at) AS last_message_at
+                FROM messages
+                WHERE tenant_id = ?
+                  AND platform = ?
+                  AND customer_display_name = ?
+                GROUP BY platform_user_id
+                ORDER BY last_message_at DESC
+                """,
+                (tenant_id, platform, display_name),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def get_by_id(self, tenant_id: int, message_id: int) -> dict | None:

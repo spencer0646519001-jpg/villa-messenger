@@ -18,6 +18,12 @@ def init_db(database_path: str | Path) -> None:
     with closing(get_connection(path)) as connection:
         connection.executescript(schema_sql)
         _ensure_column(connection, "conversation_states", "room_count", "INTEGER")
+        _ensure_column(
+            connection, "conversation_states", "accumulated_while_off", "INTEGER NOT NULL DEFAULT 0"
+        )
+        _ensure_column(connection, "conversation_states", "last_off_mode_update_at", "TEXT")
+        _ensure_column(connection, "messages", "customer_display_name", "TEXT")
+        _ensure_column(connection, "tenant_operation_state", "last_digest_sent_date", "TEXT")
         connection.commit()
 
 

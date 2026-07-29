@@ -192,6 +192,78 @@ def test_off_mode_log_payload_has_off_state_and_action() -> None:
     assert decision.log_payload["action_taken"] == "off_mode_logged_only"
 
 
+# ============================================================
+# LAYER 1: per-customer handoff pause
+# ============================================================
+
+
+class FakeConversationHandoffService:
+    def __init__(self, *, paused: bool) -> None:
+        self._paused = paused
+        self.calls: list[tuple] = []
+
+    def is_paused(self, *, tenant_id: int, platform: str, platform_user_id: str) -> bool:
+        self.calls.append((tenant_id, platform, platform_user_id))
+        return self._paused
+
+
+def _build_service_with_handoff(
+    *, system_on: bool = True, paused: bool
+) -> tuple[InquiryService, FakeConversationHandoffService]:
+    fake_handoff = FakeConversationHandoffService(paused=paused)
+    service = InquiryService(
+        operation_mode_service=FakeOperationModeService(return_value=system_on),
+        conversation_handoff_service=fake_handoff,
+        tenant_pricing_loader=lambda tid: _DEFAULT_PRICING,
+        tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _DEFAULT_ROOM_POLICY,
+    )
+    return service, fake_handoff
+
+
+def test_paused_customer_returns_do_nothing_when_tenant_on() -> None:
+    service, _ = _build_service_with_handoff(system_on=True, paused=True)
+
+    decision = service.handle_message(message=_build_message("5/12 入住 5/13 退房 4 大人"))
+
+    assert decision.action_type == "do_nothing"
+    assert decision.was_system_off is True
+    assert decision.customer_reply_text is None
+
+
+def test_paused_customer_log_payload_tags_paused_by_owner() -> None:
+    service, _ = _build_service_with_handoff(system_on=True, paused=True)
+
+    decision = service.handle_message(message=_build_message("你好"))
+
+    assert decision.log_payload["system_state_at_time"] == "paused_by_owner"
+
+
+def test_not_paused_customer_proceeds_normally_when_tenant_on() -> None:
+    service, _ = _build_service_with_handoff(system_on=True, paused=False)
+
+    decision = service.handle_message(message=_build_message("5/12 入住 5/13 退房 4 大人 開2房 多少錢?"))
+
+    assert decision.action_type == "reply_to_customer_only"
+
+
+def test_tenant_off_short_circuits_before_handoff_lookup() -> None:
+    service, fake_handoff = _build_service_with_handoff(system_on=False, paused=False)
+
+    service.handle_message(message=_build_message("你好"))
+
+    assert fake_handoff.calls == []
+
+
+def test_urgent_bypasses_handoff_pause() -> None:
+    service, fake_handoff = _build_service_with_handoff(system_on=True, paused=True)
+
+    decision = service.handle_message(message=_build_message("火災!"))
+
+    assert decision.action_type == "push_owner_urgent"
+    assert fake_handoff.calls == []
+
+
 def test_off_mode_parser_runs_and_parsed_fields_logged() -> None:
     service, _ = _build_service(system_on=False)
 

@@ -55,6 +55,13 @@ class TenantRepository:
 
         return _row_to_dict(row)
 
+    def list_active(self) -> list[dict]:
+        with closing(get_connection(self.database_path)) as connection:
+            rows = connection.execute(
+                "SELECT * FROM tenants WHERE status = 'active' ORDER BY id"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_by_id(self, tenant_id: int) -> dict | None:
         with closing(get_connection(self.database_path)) as connection:
             row = connection.execute(

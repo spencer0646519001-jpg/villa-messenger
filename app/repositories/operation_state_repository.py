@@ -124,6 +124,20 @@ class OperationStateRepository:
             )
             connection.commit()
 
+    def mark_digest_sent(self, *, tenant_id: int, date_str: str) -> None:
+        now = _utc_now_iso()
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(
+                """
+                UPDATE tenant_operation_state
+                SET last_digest_sent_date = ?,
+                    updated_at = ?
+                WHERE tenant_id = ?
+                """,
+                (date_str, now, tenant_id),
+            )
+            connection.commit()
+
     def set_schedule_window(
         self,
         *,

@@ -19,7 +19,7 @@ it is forbidden the repository layer; it receives the state row as a plain dict
 and returns a ComposedReply for the route to send/act on.
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from pydantic import BaseModel
@@ -63,6 +63,7 @@ from app.domain.reply_templates import (
     render_owner_push_full_house,
     render_owner_push_uncategorized,
     render_quote_message,
+    render_reconfirm_stale_context_message,
     render_room_capacity_suggestion_message,
 )
 from app.domain.reply_text import (
@@ -81,6 +82,13 @@ from app.schemas import InboundMessage
 _DEFER_LEADS: dict[str, str] = {}
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 
+# Layer 2 (23:00-boot-interrupt fix): a state whose slots were last touched
+# while off/paused gets ONE reconfirmation nudge instead of an auto-quote once
+# the bot is on again -- but only if enough time has passed that the customer
+# plausibly forgot they asked. A same-session continuation within this window
+# (e.g. 22:59 then 23:05) is common and harmless, so it is NOT nudged.
+_STALE_RECONFIRM_MINUTES = 20
+
 
 class ComposedReply(BaseModel):
     """What the route should do, described declaratively (the composer does NO
@@ -92,6 +100,10 @@ class ComposedReply(BaseModel):
         as the customer reply if (and only if) that push fails;
       - when `completed_state_id` is set, best-effort mark that state completed.
         Quotes and manual-review handoffs both end the quote state.
+      - when `reconfirm_shown_state_id` is set, best-effort clear that state's
+        accumulated_while_off flag -- the nudge was shown once, so the state
+        stays in_progress (unlike completed_state_id) but the NEXT turn
+        proceeds normally instead of nudging again.
 
     FAQ replies never set `completed_state_id` (FAQ does not touch quote state)."""
 
@@ -99,6 +111,7 @@ class ComposedReply(BaseModel):
     owner_push_text: str | None = None
     push_failed_text: str | None = None
     completed_state_id: int | None = None
+    reconfirm_shown_state_id: int | None = None
 
 
 class ConversationReplyComposer:
@@ -112,6 +125,7 @@ class ConversationReplyComposer:
         tenant_room_policy_loader: Callable[[int], dict],
         tenant_location_loader: Callable[[int], dict],
         availability_service: AvailabilityServiceLike | None = None,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self._pricing_loader = tenant_pricing_loader
         self._special_dates_loader = tenant_special_dates_loader
@@ -120,6 +134,7 @@ class ConversationReplyComposer:
         self._room_policy_loader = tenant_room_policy_loader
         self._location_loader = tenant_location_loader
         self._availability_service = availability_service
+        self._now = now_provider or (lambda: datetime.now(timezone.utc))
 
     def compose(
         self,
@@ -196,6 +211,11 @@ class ConversationReplyComposer:
                 text=decision.customer_reply_text,
                 owner_push_text=decision.owner_push_text,
                 completed_state_id=state["id"],
+            )
+        if _is_stale_off_accumulation(state, self._now()):
+            return ComposedReply(
+                text=render_reconfirm_stale_context_message(),
+                reconfirm_shown_state_id=state["id"],
             )
         early_gate = self._early_availability_gate(message, decision, state)
         if early_gate is not None:
@@ -364,6 +384,15 @@ class ConversationReplyComposer:
         return _room_capacity_suggestion(
             message, room_count, guest_count, room_policy, state_id=state["id"]
         )
+
+
+def _is_stale_off_accumulation(state: dict, now: datetime) -> bool:
+    if not state.get("accumulated_while_off"):
+        return False
+    last_touch = state.get("last_off_mode_update_at")
+    if not last_touch:
+        return False
+    return now - datetime.fromisoformat(last_touch) > timedelta(minutes=_STALE_RECONFIRM_MINUTES)
 
 
 def _is_faq(decision: InquiryDecision) -> bool:

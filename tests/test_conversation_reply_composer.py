@@ -9,7 +9,7 @@ Covers the four branches of compose():
   - active + manual-review gate -> owner handoff + completed_state_id
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -29,6 +29,7 @@ from app.domain.reply_templates import (
     render_faq_whole_house,
     render_manual_review_message,
     render_quote_message,
+    render_reconfirm_stale_context_message,
 )
 from app.domain.reply_text import (
     FULL_HOUSE_MESSAGE,
@@ -108,7 +109,7 @@ class _FakeAvailabilityService:
         return self._outcome
 
 
-def _composer(availability_service=None) -> ConversationReplyComposer:
+def _composer(availability_service=None, now_provider=None) -> ConversationReplyComposer:
     return ConversationReplyComposer(
         tenant_pricing_loader=lambda tid: _PRICING,
         tenant_special_dates_loader=lambda tid: {},
@@ -117,6 +118,7 @@ def _composer(availability_service=None) -> ConversationReplyComposer:
         tenant_room_policy_loader=lambda tid: _ROOM_POLICY_FAKE,
         tenant_location_loader=lambda tid: _LOCATION_FAKE,
         availability_service=availability_service,
+        now_provider=now_provider,
     )
 
 
@@ -1130,4 +1132,71 @@ def test_regression_checkout_no_question_mark_answers_from_gate3() -> None:
     )
     assert result.text == render_faq_checkout(check_in_after="15:00", checkout_before="11:00")
     assert result.owner_push_text is None
+
+
+# ============================================================
+# LAYER 2: stale off-mode accumulation reconfirmation gate
+# ============================================================
+
+_NOW = datetime(2026, 5, 12, 23, 30, tzinfo=timezone.utc)
+
+
+def _stale_state(**overrides) -> dict:
+    base = _state(
+        checkin_date="2026-05-12", checkout_date="2026-05-13", adult_count=4, room_count=2,
+        accumulated_while_off=1,
+        last_off_mode_update_at=(_NOW - timedelta(minutes=25)).isoformat(),
+    )
+    base.update(overrides)
+    return base
+
+
+def test_stale_off_accumulation_returns_nudge_not_quote() -> None:
+    result = _composer(now_provider=lambda: _NOW).compose(
+        message=_message(), decision=_decision(), state=_stale_state()
+    )
+
+    assert result.text == render_reconfirm_stale_context_message()
+    assert result.reconfirm_shown_state_id == _stale_state()["id"]
     assert result.completed_state_id is None
+
+
+def test_recent_off_accumulation_within_grace_period_quotes_normally() -> None:
+    state = _stale_state(last_off_mode_update_at=(_NOW - timedelta(minutes=5)).isoformat())
+
+    result = _composer(now_provider=lambda: _NOW).compose(
+        message=_message(), decision=_decision(), state=state
+    )
+
+    assert result.text != render_reconfirm_stale_context_message()
+    assert result.reconfirm_shown_state_id is None
+
+
+def test_flag_false_never_nudges_even_if_timestamp_old() -> None:
+    state = _stale_state(accumulated_while_off=0)
+
+    result = _composer(now_provider=lambda: _NOW).compose(
+        message=_message(), decision=_decision(), state=state
+    )
+
+    assert result.text != render_reconfirm_stale_context_message()
+    assert result.reconfirm_shown_state_id is None
+
+
+def test_completes_conversation_state_bypasses_reconfirm_gate() -> None:
+    """A message that is itself self-contained and complete should quote from
+    ITS OWN freshly-parsed data, not get nudged over stale accumulated state."""
+    state = _stale_state()
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="FRESH_QUOTE",
+        log_payload={"a": 1},
+        completes_conversation_state=True,
+    )
+
+    result = _composer(now_provider=lambda: _NOW).compose(
+        message=_message(), decision=decision, state=state
+    )
+
+    assert result.text == "FRESH_QUOTE"
+    assert result.completed_state_id == state["id"]

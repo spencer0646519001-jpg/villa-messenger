@@ -40,7 +40,7 @@ from app.adapters.llm import build_llm_provider_from_env
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.google_calendar_client import GoogleCalendarClient
-from app.clients.line_send_client import push_message, reply_message
+from app.clients.line_send_client import get_profile, push_message, reply_message
 from app.config_loader import (
     TenantConfigLoadError,
     load_google_calendar_settings,
@@ -48,7 +48,17 @@ from app.config_loader import (
 )
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.operation_mode_resolver import compute_most_recent_schedule_window
+from app.domain.reply_templates import (
+    render_handoff_ambiguous_message,
+    render_handoff_not_found_message,
+    render_handoff_paused_message,
+    render_handoff_resumed_message,
+    render_owner_pending_digest_message,
+)
 from app.domain.reply_text import (
+    OWNER_PENDING_EMPTY_HEADER,
+    OWNER_PENDING_EMPTY_MESSAGE,
+    OWNER_PENDING_HEADER_TEMPLATE,
     OWNER_RECORD_EMPTY_HEADER,
     OWNER_RECORD_EMPTY_MESSAGE,
     OWNER_RECORD_GUEST_PREFIX,
@@ -63,6 +73,7 @@ from app.domain.reply_text import (
 )
 from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.manual_hold_repository import ManualHoldRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.processed_webhook_event_repository import (
@@ -73,6 +84,7 @@ from app.repositories.tenant_owner_repository import TenantOwnerRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas import InboundMessage
 from app.services.availability_service import AvailabilityService
+from app.services.conversation_handoff_service import ConversationHandoffService
 from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
@@ -111,15 +123,19 @@ _OWNER_COMMAND_TURN_ON = "/開機"
 _OWNER_COMMAND_TURN_OFF = "/關機"
 _OWNER_COMMAND_STATUS = "/狀態"
 _OWNER_COMMAND_RECORD = "/紀錄"
+_OWNER_COMMAND_PENDING = "/待回覆"
 _OWNER_COMMANDS = {
     _OWNER_COMMAND_TURN_ON,
     _OWNER_COMMAND_TURN_OFF,
     _OWNER_COMMAND_STATUS,
     _OWNER_COMMAND_RECORD,
+    _OWNER_COMMAND_PENDING,
 }
 _NIGHT_START_TIME = time(23, 0)
 _NIGHT_END_TIME = time(8, 0)
 _OWNER_RECORD_MAX_TEXT_CHARS = 4500
+_DIGEST_UNHANDLED_LIMIT = 50
+_PAUSED_SYSTEM_STATE = "paused_by_owner"
 
 
 @dataclass(frozen=True)
@@ -179,6 +195,14 @@ def _extract_events(payload: dict, channel: dict) -> list[dict]:
         _reject("malformed payload: events not a list", channel["channel_id"])
 
 
+def _build_handoff_service(database_path: str) -> ConversationHandoffService:
+    return ConversationHandoffService(
+        hold_repo=ManualHoldRepository(database_path),
+        message_repo=MessageRepository(database_path),
+        operation_state_repo=OperationStateRepository(database_path),
+    )
+
+
 def _build_inquiry_service(
     database_path: str,
     availability_service: AvailabilityService | None = None,
@@ -186,6 +210,7 @@ def _build_inquiry_service(
     operation_mode_service = OperationModeService(repo=OperationStateRepository(database_path))
     return InquiryService(
         operation_mode_service=operation_mode_service,
+        conversation_handoff_service=_build_handoff_service(database_path),
         tenant_pricing_loader=make_tenant_pricing_loader(database_path),
         tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
         tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
@@ -250,6 +275,23 @@ def _env_bool(name: str, *, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _fetch_customer_display_name(platform_user_id: str) -> str | None:
+    """Best-effort LINE profile lookup so owner pushes / the "/<name>" handoff
+    command have a real name to work with. Never raises: a lookup failure
+    (blocked OA, transient LINE API error) must never break receiving --
+    the message just keeps flowing with no display name, exactly like
+    before this lookup existed."""
+    access_token = os.environ.get(_ACCESS_TOKEN_ENV)
+    if not access_token:
+        return None
+    try:
+        profile = get_profile(user_id=platform_user_id, access_token=access_token)
+    except Exception:  # noqa: BLE001 -- profile lookup must NEVER break receiving
+        logger.warning("LINE profile fetch failed", exc_info=True)
+        return None
+    return profile.get("displayName")
 
 
 def _event_to_message(event: dict, tenant: dict) -> InboundMessage:
@@ -357,9 +399,22 @@ def _send_owner_push(*, database_path: str, tenant_id: int, text: str) -> bool:
     return sent_any
 
 
-def _parse_owner_command(text: str) -> str | None:
+def _parse_fixed_owner_command(text: str) -> str | None:
     command = normalize_for_parsing(text).strip()
     return command if command in _OWNER_COMMANDS else None
+
+
+def _parse_display_name_command(text: str) -> str | None:
+    """A '/<name>' that is not one of the fixed commands is a pause/resume
+    toggle target for the named customer (Layer 1 handoff). Returns the name
+    with the leading '/' stripped, or None when the text is not that shape.
+    Normalizes first (same as _parse_fixed_owner_command) so a full-width
+    '／' slash still matches, like the existing fixed commands."""
+    stripped = normalize_for_parsing(text).strip()
+    if not stripped.startswith("/"):
+        return None
+    name = stripped[1:].strip()
+    return name or None
 
 
 def _is_active_owner_sender(database_path: str, message: InboundMessage) -> bool:
@@ -465,19 +520,92 @@ def _reply_owner_record(*, event: dict, message: InboundMessage, database_path: 
     _send_reply(event, text)
 
 
+def _pending_rows(*, database_path: str, tenant_id: int) -> list[dict]:
+    """messages that never got a customer reply nor an owner push (handled=0),
+    excluding ones the owner already took ownership of via a handoff pause --
+    those would just be noise she already knows about."""
+    rows = MessageRepository(database_path).list_unhandled(tenant_id, limit=_DIGEST_UNHANDLED_LIMIT)
+    return [row for row in rows if row["system_state_at_time"] != _PAUSED_SYSTEM_STATE]
+
+
+def _format_owner_pending_reply(rows: list[dict], tenant_timezone: str) -> str:
+    if not rows:
+        return f"{OWNER_PENDING_EMPTY_HEADER}\n\n{OWNER_PENDING_EMPTY_MESSAGE}"
+    tenant_zone = ZoneInfo(tenant_timezone)
+    entries = [_format_owner_record_entry(row, tenant_zone) for row in rows]
+    header = OWNER_PENDING_HEADER_TEMPLATE.format(count=len(entries))
+    return _assemble_owner_record_text(header, entries, len(entries))
+
+
+def _reply_owner_pending(*, event: dict, message: InboundMessage, database_path: str) -> None:
+    rows = _pending_rows(database_path=database_path, tenant_id=message.tenant_id)
+    text = _format_owner_pending_reply(rows, message.tenant_timezone)
+    _send_reply(event, text)
+
+
+def _reply_owner_handoff_toggle(
+    *, event: dict, message: InboundMessage, database_path: str, display_name: str
+) -> None:
+    handoff_service = _build_handoff_service(database_path)
+    lookup = handoff_service.resolve_by_display_name(
+        tenant_id=message.tenant_id, platform=message.platform, display_name=display_name
+    )
+    if lookup.status == "not_found":
+        _send_reply(event, render_handoff_not_found_message(display_name=display_name))
+        return
+    if lookup.status == "ambiguous":
+        tenant_zone = ZoneInfo(message.tenant_timezone)
+        local_times = [
+            f"{datetime.fromisoformat(c.last_message_at).astimezone(tenant_zone):%m/%d %H:%M}"
+            for c in lookup.candidates
+        ]
+        _send_reply(
+            event,
+            render_handoff_ambiguous_message(
+                display_name=display_name, candidates_local_times=local_times
+            ),
+        )
+        return
+    action = handoff_service.toggle(
+        tenant_id=message.tenant_id,
+        tenant_timezone=message.tenant_timezone,
+        platform=message.platform,
+        platform_user_id=lookup.platform_user_id,
+        owner_id=None,
+    )
+    text = (
+        render_handoff_paused_message(display_name=display_name)
+        if action == "paused"
+        else render_handoff_resumed_message(display_name=display_name)
+    )
+    _send_reply(event, text)
+
+
 def _handle_owner_command(*, event: dict, message: InboundMessage, database_path: str) -> bool:
-    command = _parse_owner_command(message.text)
-    if command is None or not _is_active_owner_sender(database_path, message):
+    if not normalize_for_parsing(message.text).strip().startswith("/"):
         return False
+    if not _is_active_owner_sender(database_path, message):
+        return False
+    command = _parse_fixed_owner_command(message.text)
     if command == _OWNER_COMMAND_RECORD:
         _reply_owner_record(event=event, message=message, database_path=database_path)
         return True
-    service = OperationModeService(repo=OperationStateRepository(database_path))
-    if command == _OWNER_COMMAND_STATUS:
-        _reply_owner_status(event, message, service)
-    else:
-        _push_owner_mode_change(
-            command=command, message=message, database_path=database_path, service=service
+    if command == _OWNER_COMMAND_PENDING:
+        _reply_owner_pending(event=event, message=message, database_path=database_path)
+        return True
+    if command is not None:
+        service = OperationModeService(repo=OperationStateRepository(database_path))
+        if command == _OWNER_COMMAND_STATUS:
+            _reply_owner_status(event, message, service)
+        else:
+            _push_owner_mode_change(
+                command=command, message=message, database_path=database_path, service=service
+            )
+        return True
+    display_name = _parse_display_name_command(message.text)
+    if display_name:
+        _reply_owner_handoff_toggle(
+            event=event, message=message, database_path=database_path, display_name=display_name
         )
     return True
 
@@ -547,6 +675,23 @@ def _mark_if_complete(
         logger.warning("LINE conversation-state mark_completed failed", exc_info=True)
 
 
+def _clear_reconfirm_if_shown(
+    state_service: ConversationStateService, tenant_id: int, composed: ComposedReply
+) -> None:
+    """Best-effort AFTER the reply is sent (send-first), mirrors _mark_if_complete.
+    The Layer 2 reconfirmation nudge was just sent -- clear accumulated_while_off
+    so the NEXT turn proceeds normally instead of nudging again."""
+    if composed.reconfirm_shown_state_id is None:
+        return
+    try:
+        state_service.clear_accumulated_while_off(
+            tenant_id=tenant_id,
+            state_id=composed.reconfirm_shown_state_id,
+        )
+    except Exception:  # noqa: BLE001 -- clearing must NEVER break the sent reply
+        logger.warning("LINE conversation-state clear_accumulated_while_off failed", exc_info=True)
+
+
 def _rollback_processed_event(*, event: dict, tenant_id: int, database_path: str) -> None:
     webhook_event_id = event.get("webhookEventId")
     if not webhook_event_id:
@@ -594,6 +739,9 @@ def _process_pipeline_event(
     message = _event_to_message(event, tenant)
     if _handle_owner_command(event=event, message=message, database_path=database_path):
         return
+    display_name = _fetch_customer_display_name(message.platform_user_id)
+    if display_name:
+        message = message.model_copy(update={"customer_display_name": display_name})
     decision = context.service.handle_message(message=message)
     context.persistence.persist(decision=decision)
     state = _record_state(context.state_service, message, decision)
@@ -607,6 +755,7 @@ def _process_pipeline_event(
         )
         return
     _mark_if_complete(context.state_service, message.tenant_id, composed)
+    _clear_reconfirm_if_shown(context.state_service, message.tenant_id, composed)
 
 
 def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
@@ -624,6 +773,54 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
             )
         except Exception:  # noqa: BLE001 -- keep the background task alive for later events
             _handle_pipeline_failure(event=event, tenant_id=tenant_id, database_path=database_path)
+
+
+def _should_send_digest(*, tenant_state: dict, now_local: datetime) -> bool:
+    if not tenant_state["auto_schedule_enabled"]:
+        return False
+    start_time = time.fromisoformat(tenant_state["auto_on_start_time"])
+    if now_local.time() < start_time:
+        return False
+    today = now_local.date().isoformat()
+    return tenant_state.get("last_digest_sent_date") != today
+
+
+def _check_and_send_digest_for_tenant(
+    *, tenant: dict, database_path: str, state_repo: OperationStateRepository
+) -> None:
+    tenant_id = tenant["id"]
+    state = state_repo.get_or_create(tenant_id)
+    now_local = _now_in_tenant_timezone(tenant["timezone"])
+    if not _should_send_digest(tenant_state=state, now_local=now_local):
+        return
+    # Mark sent for today BEFORE looking at rows: this is a once-per-tenant-
+    # local-day check, so a later re-check on the same day (e.g. the next poll
+    # tick) must not re-fire even if it happens to find nothing right now.
+    state_repo.mark_digest_sent(tenant_id=tenant_id, date_str=now_local.date().isoformat())
+    rows = _pending_rows(database_path=database_path, tenant_id=tenant_id)
+    if not rows:
+        return
+    text = render_owner_pending_digest_message(count=len(rows))
+    _send_owner_push(database_path=database_path, tenant_id=tenant_id, text=text)
+
+
+def run_nightly_digest_check(database_path: str) -> None:
+    """Best-effort: for each active tenant, once per tenant-local day after
+    auto_on_start_time, push ONE batched digest of messages that arrived
+    while the system was off/paused and never got a reply or an owner push.
+    Called on a periodic background loop (see app/main.py); never raises --
+    one tenant's failure must not skip the rest or kill the loop."""
+    tenants = TenantRepository(database_path).list_active()
+    state_repo = OperationStateRepository(database_path)
+    for tenant in tenants:
+        try:
+            _check_and_send_digest_for_tenant(
+                tenant=tenant, database_path=database_path, state_repo=state_repo
+            )
+        except Exception:  # noqa: BLE001 -- one tenant's failure must not skip the rest
+            logger.warning(
+                "Nightly digest check failed for tenant_id=%s", tenant["id"], exc_info=True
+            )
 
 
 @router.post("/webhooks/line")

@@ -93,8 +93,10 @@ class InquiryService:
         now_provider: Callable[[], datetime] | None = None,
         availability_service: AvailabilityService | None = None,
         llm_provider: LLMProvider | None = None,
+        conversation_handoff_service=None,
     ) -> None:
         self._operation_mode_service = operation_mode_service
+        self._conversation_handoff_service = conversation_handoff_service
         self._tenant_pricing_loader = tenant_pricing_loader
         self._tenant_special_dates_loader = tenant_special_dates_loader
         self._tenant_room_policy_loader = tenant_room_policy_loader or (
@@ -110,8 +112,9 @@ class InquiryService:
             return self._handle_urgent(message, urgency)
         reference_year = self._reference_year()
         inquiry = parse_inquiry(message.text, reference_year=reference_year)
-        if not self._is_system_on(message):
-            return self._handle_off_mode(message, inquiry)
+        system_state = self._system_state(message)
+        if system_state != "on":
+            return self._handle_off_mode(message, inquiry, system_state)
         inquiry = self._with_llm_fallback(message, inquiry, reference_year)
         inquiry = with_single_night_availability_probe(inquiry, message.text)
         if not self._is_quote_relevant(inquiry):
@@ -146,11 +149,21 @@ class InquiryService:
             provider=self._llm_provider,
         )
 
-    def _is_system_on(self, message: InboundMessage) -> bool:
-        return self._operation_mode_service.is_system_active(
+    def _system_state(self, message: InboundMessage) -> str:
+        """"on" | "off" (tenant-wide schedule) | "paused_by_owner" (this one
+        customer was manually paused via the handoff service, Layer 1)."""
+        if not self._operation_mode_service.is_system_active(
             tenant_id=message.tenant_id,
             tenant_timezone=message.tenant_timezone,
-        )
+        ):
+            return "off"
+        if self._conversation_handoff_service is not None and self._conversation_handoff_service.is_paused(
+            tenant_id=message.tenant_id,
+            platform=message.platform,
+            platform_user_id=message.platform_user_id,
+        ):
+            return "paused_by_owner"
+        return "on"
 
     def _is_quote_relevant(self, inquiry: InquiryParseResult) -> bool:
         return (
@@ -244,10 +257,11 @@ class InquiryService:
         self,
         message: InboundMessage,
         inquiry: InquiryParseResult,
+        system_state: str = "off",
     ) -> InquiryDecision:
         log = self._build_base_log_payload(
             message,
-            system_state="off",
+            system_state=system_state,
             action_taken="off_mode_logged_only",
         )
         self._add_parsed_fields_to_log(log, inquiry)

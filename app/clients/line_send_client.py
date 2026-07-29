@@ -11,12 +11,17 @@ Two endpoints:
   - push_message  -> /message/push: send unprompted to a known userId (needs the
     recipient's `U...` id; used to notify the OWNER, who has no replyToken).
 Both use the same channel access token.
+
+get_profile -> GET /profile/{userId}: fetch a customer's LINE display name
+(and picture/status message, unused here). Requires the customer to be a
+friend of the OA, which is implicit for anyone who has messaged it.
 """
 
 import httpx
 
 _REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 _PUSH_URL = "https://api.line.me/v2/bot/message/push"
+_PROFILE_URL_TEMPLATE = "https://api.line.me/v2/bot/profile/{user_id}"
 _TIMEOUT_SECONDS = 5.0
 
 
@@ -48,3 +53,19 @@ def push_message(*, to_user_id: str, text: str, access_token: str) -> None:
         timeout=_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
+
+
+def get_profile(*, user_id: str, access_token: str) -> dict:
+    """GET a customer's LINE profile ({"displayName": ..., ...}).
+
+    Same failure contract as reply_message/push_message: raises
+    httpx.HTTPError / HTTPStatusError (e.g. the user blocked the OA, or a
+    transient LINE API failure); callers MUST catch + swallow so a profile
+    lookup failure never breaks receiving."""
+    response = httpx.get(
+        _PROFILE_URL_TEMPLATE.format(user_id=user_id),
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    return response.json()

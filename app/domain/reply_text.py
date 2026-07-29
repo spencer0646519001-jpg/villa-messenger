@@ -119,6 +119,32 @@ OWNER_RECORD_TRUNCATED_TEMPLATE: Final = (
     "（訊息較多，僅顯示最近 {shown} 則，今晚共 {total} 則）"
 )
 
+# ---- Per-customer manual handoff (owner sends "/<display name>" to toggle) --
+HANDOFF_NOT_FOUND_TEMPLATE: Final = (
+    "查無「{display_name}」這位客人，可能他還沒傳過訊息。"
+)
+HANDOFF_AMBIGUOUS_HEADER_TEMPLATE: Final = (
+    "有多位客人顯示名稱都是「{display_name}」，請問是哪一位？"
+)
+HANDOFF_AMBIGUOUS_CANDIDATE_TEMPLATE: Final = "{index}. 最後傳訊息時間 {last_message_at}"
+HANDOFF_PAUSED_TEMPLATE: Final = "「{display_name}」已暫停，系統不會自動回她/他囉。"
+HANDOFF_RESUMED_TEMPLATE: Final = "「{display_name}」已恢復，系統會照常自動回她/他。"
+
+# ---- Layer 3: pull-based backlog + nightly digest --------------------------
+OWNER_PENDING_HEADER_TEMPLATE: Final = "📋 待回覆訊息（共 {count} 則）"
+OWNER_PENDING_EMPTY_HEADER: Final = "📋 待回覆訊息"
+OWNER_PENDING_EMPTY_MESSAGE: Final = "目前沒有待回覆的訊息。"
+OWNER_PENDING_DIGEST_TEMPLATE: Final = (
+    "🌙 今晚有 {count} 則訊息在系統關閉期間收到、尚未回覆，"
+    "請輸入 /待回覆 查看。"
+)
+
+# ---- Layer 2: stale off-mode context reconfirmation nudge -------------------
+RECONFIRM_STALE_CONTEXT_MESSAGE: Final = (
+    "您好，請問先前提供的需求資訊還有效嗎？方便的話請再跟我們說一次，"
+    "系統會依最新的訊息為您試算。"
+)
+
 # ---- STAGE D: FAQ answers ------------------------------------------------
 # Tier-1 (config-driven, self-contained -- NO "已通知" line; nothing is pushed).
 FAQ_BREAKFAST_PROVIDED: Final = "您好,我們有提供早餐喔。"

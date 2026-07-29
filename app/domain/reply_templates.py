@@ -5,6 +5,13 @@ from app.domain.reply_text import (
     ASSUMED_SINGLE_NIGHT_NOTICE_TEMPLATE,
     CHILDREN_CONFIRMATION,
     DATE_RANGE_CLARIFICATION_MESSAGE,
+    HANDOFF_AMBIGUOUS_CANDIDATE_TEMPLATE,
+    HANDOFF_AMBIGUOUS_HEADER_TEMPLATE,
+    HANDOFF_NOT_FOUND_TEMPLATE,
+    HANDOFF_PAUSED_TEMPLATE,
+    HANDOFF_RESUMED_TEMPLATE,
+    OWNER_PENDING_DIGEST_TEMPLATE,
+    RECONFIRM_STALE_CONTEXT_MESSAGE,
     FAQ_AMENITIES_EMPTY,
     FAQ_AMENITIES_HEADER,
     FAQ_BBQ_POLICY_TEMPLATE,
@@ -376,6 +383,37 @@ def render_faq_location(*, address: str | None) -> str:
 
 def render_faq_fallback(*, notified: bool) -> str:
     return render_faq_confirm_and_defer(lead=FAQ_FALLBACK_LEAD, notified=notified)
+
+
+def render_handoff_not_found_message(*, display_name: str) -> str:
+    return HANDOFF_NOT_FOUND_TEMPLATE.format(display_name=display_name)
+
+
+def render_handoff_ambiguous_message(
+    *, display_name: str, candidates_local_times: list[str]
+) -> str:
+    header = HANDOFF_AMBIGUOUS_HEADER_TEMPLATE.format(display_name=display_name)
+    lines = [
+        HANDOFF_AMBIGUOUS_CANDIDATE_TEMPLATE.format(index=index, last_message_at=local_time)
+        for index, local_time in enumerate(candidates_local_times, start=1)
+    ]
+    return "\n".join([header, *lines])
+
+
+def render_handoff_paused_message(*, display_name: str) -> str:
+    return HANDOFF_PAUSED_TEMPLATE.format(display_name=display_name)
+
+
+def render_handoff_resumed_message(*, display_name: str) -> str:
+    return HANDOFF_RESUMED_TEMPLATE.format(display_name=display_name)
+
+
+def render_owner_pending_digest_message(*, count: int) -> str:
+    return OWNER_PENDING_DIGEST_TEMPLATE.format(count=count)
+
+
+def render_reconfirm_stale_context_message() -> str:
+    return RECONFIRM_STALE_CONTEXT_MESSAGE
 
 
 def render_owner_push_uncategorized(

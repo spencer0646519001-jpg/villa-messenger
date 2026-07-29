@@ -25,6 +25,7 @@ from app.domain.reply_text import (
     FULL_HOUSE_MESSAGE,
     MANUAL_REVIEW_MESSAGE,
     MISSING_ROOM_COUNT_MESSAGE,
+    OWNER_PENDING_EMPTY_MESSAGE,
     OWNER_RECORD_EMPTY_MESSAGE,
     OWNER_RECORD_UNREPLIED_TEXT,
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
@@ -1915,6 +1916,255 @@ def test_faq_silent_in_off_mode_no_push(
     assert replies == []  # off mode -> silent
     assert pushes == []   # and no owner push
     assert len(_rows(database_path, "messages")) == 1  # still received
+
+
+# ============================================================
+# LAYER 1: per-customer handoff pause ("/<display name>" toggle)
+# ============================================================
+
+
+def _set_display_name(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    monkeypatch.setattr(
+        line_webhook_routes, "get_profile", lambda **kw: {"displayName": name}
+    )
+
+
+def test_handoff_toggle_pauses_then_resumes_by_display_name(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Wendy")
+    guest_body = _payload_bytes([_text_event("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")])
+    _post(client, guest_body, _sign(guest_body))
+    replies.clear()
+
+    pause_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy", "rt-1", user_id="Uowner-a")]
+    )
+    pause_response = _post(client, pause_body, _sign(pause_body))
+
+    assert pause_response.status_code == 200
+    assert "已暫停" in replies[0]["text"]
+    replies.clear()
+
+    guest_body_2 = _payload_bytes([_text_event_with_reply_token("還在嗎", user_id="Uguest")])
+    _post(client, guest_body_2, _sign(guest_body_2))
+    assert replies == []  # paused customer: system stays silent even though tenant is "on"
+
+    resume_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy", "rt-2", user_id="Uowner-a")]
+    )
+    resume_response = _post(client, resume_body, _sign(resume_body))
+
+    assert resume_response.status_code == 200
+    assert "已恢復" in replies[0]["text"]
+
+
+def test_handoff_toggle_not_found_replies_politely(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/NoSuchGuest", "rt-1", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert "查無" in replies[0]["text"]
+
+
+def test_handoff_toggle_ambiguous_lists_candidates(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Wendy")
+    for user_id in ("Uguest-1", "Uguest-2"):
+        body = _payload_bytes([_text_event(f"{user_id} 你好嗎", user_id=user_id)])
+        _post(client, body, _sign(body))
+    replies.clear()
+
+    toggle_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy", "rt-1", user_id="Uowner-a")]
+    )
+    response = _post(client, toggle_body, _sign(toggle_body))
+
+    assert response.status_code == 200
+    assert "請問是哪一位" in replies[0]["text"]
+
+
+def test_urgent_message_from_paused_customer_still_pushes_owner(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, pushes = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Wendy")
+    guest_body = _payload_bytes([_text_event("哈囉")])
+    _post(client, guest_body, _sign(guest_body))
+    toggle_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy", "rt-1", user_id="Uowner-a")]
+    )
+    _post(client, toggle_body, _sign(toggle_body))
+    pushes.clear()
+
+    urgent_body = _payload_bytes([_text_event_with_reply_token("火災!")])
+    _post(client, urgent_body, _sign(urgent_body))
+
+    assert len(pushes) == 1  # urgent bypasses the pause entirely
+
+
+# ============================================================
+# LAYER 3: /待回覆 pull command + nightly digest
+# ============================================================
+
+
+def test_pending_command_lists_unhandled_messages(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="8/15 還有空房嗎", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/待回覆", "rt-1", user_id="Uowner-a")]
+    )
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert "8/15 還有空房嗎" in replies[0]["text"]
+    assert OWNER_RECORD_UNREPLIED_TEXT in replies[0]["text"]
+
+
+def test_pending_command_excludes_paused_by_owner_rows(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="已由主人接手的訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    with closing(get_connection(database_path)) as conn:
+        conn.execute("UPDATE messages SET system_state_at_time = 'paused_by_owner'")
+        conn.commit()
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/待回覆", "rt-1", user_id="Uowner-a")]
+    )
+
+    _post(client, body, _sign(body))
+
+    assert "已由主人接手的訊息" not in replies[0]["text"]
+
+
+def test_pending_command_empty_when_nothing_unhandled(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    body = _payload_bytes(
+        [_text_event_with_reply_token("/待回覆", "rt-1", user_id="Uowner-a")]
+    )
+
+    _post(client, body, _sign(body))
+
+    assert OWNER_PENDING_EMPTY_MESSAGE in replies[0]["text"]
+
+
+def test_nightly_digest_pushes_once_when_unhandled_present(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="夜間漏接訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, hour=23, minute=5)
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert len(pushes) == 1
+    assert "今晚有 1 則" in pushes[0]["text"]
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert row["last_digest_sent_date"] is not None
+
+
+def test_nightly_digest_no_push_when_nothing_unhandled(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, hour=23, minute=5)
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert pushes == []
+
+
+def test_nightly_digest_not_yet_due_before_schedule_start(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="還沒到晚上", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, hour=14, minute=0)
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert pushes == []  # before auto_on_start_time (23:00) -> not due yet
+
+
+def test_nightly_digest_only_fires_once_per_tenant_local_day(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, hour=23, minute=5)
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+    line_webhook_routes.run_nightly_digest_check(database_path)
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="第二次檢查前才收到的訊息",
+        created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert pushes == []  # already marked sent for today; would need /待回覆 or tomorrow
 
 
 # ============================================================

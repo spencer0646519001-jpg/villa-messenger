@@ -183,6 +183,43 @@ def test_off_mode_non_inquiry_produces_only_messages_row() -> None:
 
 
 # ============================================================
+# HANDLED (Layer 3: do_nothing is the only unhandled action_type)
+# ============================================================
+
+
+def test_off_mode_messages_row_is_unhandled() -> None:
+    decision = _decision_for("你好", system_on=False)
+
+    plan = build_db_write_plan(decision)
+
+    assert plan.messages_row["handled"] is False
+
+
+def test_quoted_messages_row_is_handled() -> None:
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
+
+    plan = build_db_write_plan(decision)
+
+    assert plan.messages_row["handled"] is True
+
+
+def test_urgent_messages_row_is_handled() -> None:
+    decision = _decision_for("火災!")
+
+    plan = build_db_write_plan(decision)
+
+    assert plan.messages_row["handled"] is True
+
+
+def test_customer_display_name_passes_through() -> None:
+    decision = _decision_for("5/12 入住 5/13 退房 4 大人 開2房 多少錢?")
+
+    plan = build_db_write_plan(decision)
+
+    assert plan.messages_row["customer_display_name"] == "Test User"
+
+
+# ============================================================
 # TENANT SAFETY
 # ============================================================
 
@@ -211,11 +248,13 @@ def test_messages_row_keys_match_message_repository_kwargs() -> None:
         "tenant_id",
         "platform",
         "platform_user_id",
+        "customer_display_name",
         "message_text",
         "category",
         "is_night",
         "system_state_at_time",
         "is_urgent",
+        "handled",
         "raw_log_payload",
     }
     assert set(plan.messages_row.keys()) == expected_keys

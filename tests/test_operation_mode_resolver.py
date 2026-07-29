@@ -7,6 +7,7 @@ from app.domain.operation_mode_resolver import (
     OperationStateSnapshot,
     compute_most_recent_schedule_window,
     compute_most_recent_schedule_window_start,
+    compute_next_active_window_end,
     compute_next_schedule_boundary,
     resolve_effective_mode,
 )
@@ -176,6 +177,76 @@ def test_compute_next_schedule_boundary_non_wrap(
     )
 
     assert boundary == expected
+
+
+@pytest.mark.parametrize(
+    "now,expected",
+    [
+        # Before tonight's window opens -- must be protected through the
+        # entire upcoming on-window, not just until it starts.
+        (
+            datetime(2026, 5, 12, 14, 0, tzinfo=TPE),
+            datetime(2026, 5, 13, 8, 0, tzinfo=TPE),
+        ),
+        # During the window.
+        (
+            datetime(2026, 5, 12, 23, 30, tzinfo=TPE),
+            datetime(2026, 5, 13, 8, 0, tzinfo=TPE),
+        ),
+        # During the window, early-morning half.
+        (
+            datetime(2026, 5, 13, 7, 0, tzinfo=TPE),
+            datetime(2026, 5, 13, 8, 0, tzinfo=TPE),
+        ),
+        # Right after the window just closed -- rolls to tomorrow's window.
+        (
+            datetime(2026, 5, 13, 8, 0, tzinfo=TPE),
+            datetime(2026, 5, 14, 8, 0, tzinfo=TPE),
+        ),
+    ],
+)
+def test_compute_next_active_window_end_wrap_around(
+    now: datetime, expected: datetime
+) -> None:
+    end = compute_next_active_window_end(
+        start_time=time(23, 0),
+        end_time=time(8, 0),
+        now=now,
+    )
+
+    assert end == expected
+
+
+@pytest.mark.parametrize(
+    "now,expected",
+    [
+        # Before today's window opens.
+        (
+            datetime(2026, 5, 12, 5, 0, tzinfo=TPE),
+            datetime(2026, 5, 12, 18, 0, tzinfo=TPE),
+        ),
+        # During the window.
+        (
+            datetime(2026, 5, 12, 12, 0, tzinfo=TPE),
+            datetime(2026, 5, 12, 18, 0, tzinfo=TPE),
+        ),
+        # After the window closed -- rolls to tomorrow's window.
+        (
+            datetime(2026, 5, 12, 22, 0, tzinfo=TPE),
+            datetime(2026, 5, 13, 18, 0, tzinfo=TPE),
+        ),
+    ],
+)
+def test_compute_next_active_window_end_non_wrap(
+    now: datetime, expected: datetime
+) -> None:
+    end = compute_next_active_window_end(
+        start_time=time(8, 0),
+        end_time=time(18, 0),
+        now=now,
+    )
+
+    assert end == expected
 
 
 def test_most_recent_schedule_window_start_daytime_returns_previous_night_start() -> None:

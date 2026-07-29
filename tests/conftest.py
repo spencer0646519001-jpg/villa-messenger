@@ -56,15 +56,30 @@ def _isolate_line_outbound(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixt
     def _fake_push_message(**kwargs: Any) -> None:
         _record_route_call("push_message", kwargs)
 
+    def _fake_get_profile(**kwargs: Any) -> dict[str, Any]:
+        # Safe default: no display name (matches pre-existing behavior, where
+        # the adapter always set customer_display_name=None). Tests that need
+        # a specific name locally monkeypatch line_webhook_routes.get_profile.
+        _record_route_call("get_profile", kwargs)
+        return {}
+
     def _blocked_httpx_post(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError(
             "Unexpected outbound HTTP via httpx.post during tests. "
             "Patch the route-level LINE send function or the send-client boundary explicitly."
         )
 
+    def _blocked_httpx_get(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError(
+            "Unexpected outbound HTTP via httpx.get during tests. "
+            "Patch the route-level LINE send function or the send-client boundary explicitly."
+        )
+
     monkeypatch.setattr(line_webhook_routes, "reply_message", _fake_reply_message)
     monkeypatch.setattr(line_webhook_routes, "push_message", _fake_push_message)
+    monkeypatch.setattr(line_webhook_routes, "get_profile", _fake_get_profile)
     monkeypatch.setattr(line_send_client.httpx, "post", _blocked_httpx_post)
+    monkeypatch.setattr(line_send_client.httpx, "get", _blocked_httpx_get)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:

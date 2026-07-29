@@ -281,6 +281,109 @@ def test_chatter_against_active_state_is_noop(repo: ConversationStateRepository)
 
 
 # ============================================================
+# LAYER 2: accumulated_while_off / last_off_mode_update_at
+# ============================================================
+
+
+def _off_inquiry_service() -> InquiryService:
+    class _FakeOffOperationModeService:
+        def is_system_active(self, *, tenant_id: int, tenant_timezone: str) -> bool:
+            return False
+
+    return InquiryService(
+        operation_mode_service=_FakeOffOperationModeService(),
+        tenant_pricing_loader=lambda tid: _PRICING,
+        tenant_special_dates_loader=lambda tid: {},
+        tenant_room_policy_loader=lambda tid: _ROOM_POLICY,
+    )
+
+
+def _off_decision(text: str) -> InquiryDecision:
+    return _off_inquiry_service().handle_message(message=_message(text))
+
+
+def test_off_mode_open_sets_accumulated_flag_and_timestamp(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+
+    service.record(
+        message=_message("5/12 入住 5/14 退房 多少錢?"),
+        decision=_off_decision("5/12 入住 5/14 退房 多少錢?"),
+    )
+
+    state = _active(repo)
+    assert state["accumulated_while_off"] == 1
+    assert state["last_off_mode_update_at"] is not None
+    assert state["checkin_date"] == "2026-05-12"
+
+
+def test_on_mode_open_leaves_accumulated_flag_clear(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+
+    service.record(
+        message=_message("5/12 入住 5/14 退房 多少錢?"),
+        decision=_decision("5/12 入住 5/14 退房 多少錢?"),
+    )
+
+    state = _active(repo)
+    assert state["accumulated_while_off"] == 0
+    assert state["last_off_mode_update_at"] is None
+
+
+def test_on_mode_update_does_not_clear_flag_set_earlier_off(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 多少錢?"), decision=_off_decision("5/12 入住 多少錢?")
+    )
+    off_state = _active(repo)
+
+    service.record(
+        message=_message("2 大人"), decision=_decision("2 大人")
+    )
+
+    state = _active(repo)
+    assert state["accumulated_while_off"] == 1
+    assert state["last_off_mode_update_at"] == off_state["last_off_mode_update_at"]
+    assert state["adult_count"] == 2
+
+
+def test_off_mode_second_touch_advances_timestamp(
+    repo: ConversationStateRepository,
+) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 多少錢?"), decision=_off_decision("5/12 入住 多少錢?")
+    )
+    first = _active(repo)
+
+    service.record(
+        message=_message("2 大人"), decision=_off_decision("2 大人")
+    )
+
+    second = _active(repo)
+    assert second["last_off_mode_update_at"] >= first["last_off_mode_update_at"]
+    assert second["accumulated_while_off"] == 1
+
+
+def test_clear_accumulated_while_off(repo: ConversationStateRepository) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 多少錢?"), decision=_off_decision("5/12 入住 多少錢?")
+    )
+    state = _active(repo)
+
+    service.clear_accumulated_while_off(tenant_id=1, state_id=state["id"])
+
+    after = _active(repo)
+    assert after["accumulated_while_off"] == 0
+
+
+# ============================================================
 # DISCIPLINE
 # ============================================================
 
