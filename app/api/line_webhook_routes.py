@@ -23,9 +23,10 @@ break signature verification.
 import json
 import logging
 import os
+import re
 from time import sleep
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import NoReturn
 from zoneinfo import ZoneInfo
 
@@ -84,7 +85,10 @@ from app.repositories.tenant_owner_repository import TenantOwnerRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas import InboundMessage
 from app.services.availability_service import AvailabilityService
-from app.services.conversation_handoff_service import ConversationHandoffService
+from app.services.conversation_handoff_service import (
+    ConversationHandoffService,
+    DisplayNameLookupResult,
+)
 from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
@@ -403,17 +407,28 @@ def _parse_fixed_owner_command(text: str) -> str | None:
     return command if command in _OWNER_COMMANDS else None
 
 
-def _parse_display_name_command(text: str) -> str | None:
+_AMBIGUOUS_CANDIDATE_SUFFIX = re.compile(r"^(.*\S)\s+(\d+)$")
+
+
+def _parse_display_name_command(text: str) -> tuple[str, int | None] | None:
     """A '/<name>' that is not one of the fixed commands is a pause/resume
-    toggle target for the named customer (Layer 1 handoff). Returns the name
-    with the leading '/' stripped, or None when the text is not that shape.
-    Normalizes first (same as _parse_fixed_owner_command) so a full-width
-    '／' slash still matches, like the existing fixed commands."""
+    toggle target for the named customer (Layer 1 handoff). Returns
+    (name, candidate_index) with the leading '/' stripped, or None when the
+    text is not that shape. A trailing "<space><digits>" (e.g. "/Wendy 1")
+    is the owner picking a numbered candidate from a prior ambiguous-name
+    reply, so it is split off as candidate_index instead of being part of
+    the name. Normalizes first (same as _parse_fixed_owner_command) so a
+    full-width '／' slash still matches, like the existing fixed commands."""
     stripped = normalize_for_parsing(text).strip()
     if not stripped.startswith("/"):
         return None
     name = stripped[1:].strip()
-    return name or None
+    if not name:
+        return None
+    match = _AMBIGUOUS_CANDIDATE_SUFFIX.match(name)
+    if match:
+        return match.group(1), int(match.group(2))
+    return name, None
 
 
 def _is_active_owner_sender(database_path: str, message: InboundMessage) -> bool:
@@ -495,21 +510,34 @@ def _assemble_owner_record_text(header: str, entries: list[str], total: int) -> 
     return "\n\n".join(parts)
 
 
+def _truncate_rows_to_char_limit(
+    rows: list[dict], entries: list[str], header: str
+) -> tuple[list[str], list[dict]]:
+    """Keep as many of the MOST RECENT entries (from the end of the list) as
+    fit within _OWNER_RECORD_MAX_TEXT_CHARS, dropping older ones first. rows
+    and entries must be index-aligned; returns the kept entries alongside
+    their source rows so a caller can tell exactly what was shown."""
+    selected_entries: list[str] = []
+    selected_rows: list[dict] = []
+    for row, entry in zip(reversed(rows), reversed(entries)):
+        candidate_entries = [entry, *selected_entries]
+        text = _assemble_owner_record_text(header, candidate_entries, len(entries))
+        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS and selected_entries:
+            break
+        selected_entries = candidate_entries
+        selected_rows = [row, *selected_rows]
+        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS:
+            break
+    return selected_entries, selected_rows
+
+
 def _format_owner_record_reply(rows: list[dict], tenant_timezone: str) -> str:
     if not rows:
         return f"{OWNER_RECORD_EMPTY_HEADER}\n\n{OWNER_RECORD_EMPTY_MESSAGE}"
     tenant_zone = ZoneInfo(tenant_timezone)
     entries = [_format_owner_record_entry(row, tenant_zone) for row in rows]
     header = OWNER_RECORD_HEADER_TEMPLATE.format(count=len(entries))
-    selected: list[str] = []
-    for entry in reversed(entries):
-        candidate = [entry, *selected]
-        text = _assemble_owner_record_text(header, candidate, len(entries))
-        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS and selected:
-            break
-        selected = candidate
-        if len(text) > _OWNER_RECORD_MAX_TEXT_CHARS:
-            break
+    selected, _ = _truncate_rows_to_char_limit(rows, entries, header)
     return _assemble_owner_record_text(header, selected, len(entries))
 
 
@@ -527,23 +555,77 @@ def _pending_rows(*, database_path: str, tenant_id: int) -> list[dict]:
     return MessageRepository(database_path).list_unhandled(tenant_id, limit=_DIGEST_UNHANDLED_LIMIT)
 
 
-def _format_owner_pending_reply(rows: list[dict], tenant_timezone: str) -> str:
+def _close_pending_rows(*, database_path: str, tenant_id: int, rows: list[dict]) -> None:
+    """Once backlog rows have actually been shown to the owner (via /待回覆
+    or the nightly digest), mark them handled so they are not reported again
+    tomorrow -- otherwise the backlog only ever grows."""
+    try:
+        MessageRepository(database_path).mark_many_handled(
+            tenant_id=tenant_id, message_ids=[row["id"] for row in rows]
+        )
+    except Exception:  # noqa: BLE001 -- closing the backlog must NEVER break the reply already sent
+        logger.warning("LINE pending-backlog close failed", exc_info=True)
+
+
+def _format_owner_pending_reply(
+    rows: list[dict], tenant_timezone: str
+) -> tuple[str, list[dict]]:
+    """Returns (reply_text, shown_rows) -- shown_rows is the (possibly
+    truncated) subset of `rows` actually included in reply_text, so the
+    caller only closes out backlog entries the owner was actually shown."""
     if not rows:
-        return f"{OWNER_PENDING_EMPTY_HEADER}\n\n{OWNER_PENDING_EMPTY_MESSAGE}"
+        return f"{OWNER_PENDING_EMPTY_HEADER}\n\n{OWNER_PENDING_EMPTY_MESSAGE}", []
     tenant_zone = ZoneInfo(tenant_timezone)
     entries = [_format_owner_record_entry(row, tenant_zone) for row in rows]
     header = OWNER_PENDING_HEADER_TEMPLATE.format(count=len(entries))
-    return _assemble_owner_record_text(header, entries, len(entries))
+    selected_entries, selected_rows = _truncate_rows_to_char_limit(rows, entries, header)
+    return _assemble_owner_record_text(header, selected_entries, len(entries)), selected_rows
 
 
 def _reply_owner_pending(*, event: dict, message: InboundMessage, database_path: str) -> None:
     rows = _pending_rows(database_path=database_path, tenant_id=message.tenant_id)
-    text = _format_owner_pending_reply(rows, message.tenant_timezone)
-    _send_reply(event, text)
+    text, shown_rows = _format_owner_pending_reply(rows, message.tenant_timezone)
+    if _send_reply(event, text) and shown_rows:
+        _close_pending_rows(
+            database_path=database_path, tenant_id=message.tenant_id, rows=shown_rows
+        )
+
+
+def _select_ambiguous_candidate(
+    lookup: DisplayNameLookupResult, candidate_index: int | None
+) -> str | None:
+    """None means still ambiguous -- caller must (re-)show the candidate
+    list rather than guess."""
+    if candidate_index is None:
+        return None
+    if 1 <= candidate_index <= len(lookup.candidates):
+        return lookup.candidates[candidate_index - 1].platform_user_id
+    return None
+
+
+def _send_ambiguous_reply(
+    *, event: dict, message: InboundMessage, display_name: str, candidates: list
+) -> None:
+    tenant_zone = ZoneInfo(message.tenant_timezone)
+    local_times = [
+        f"{datetime.fromisoformat(c.last_message_at).astimezone(tenant_zone):%m/%d %H:%M}"
+        for c in candidates
+    ]
+    _send_reply(
+        event,
+        render_handoff_ambiguous_message(
+            display_name=display_name, candidates_local_times=local_times
+        ),
+    )
 
 
 def _reply_owner_handoff_toggle(
-    *, event: dict, message: InboundMessage, database_path: str, display_name: str
+    *,
+    event: dict,
+    message: InboundMessage,
+    database_path: str,
+    display_name: str,
+    candidate_index: int | None,
 ) -> None:
     handoff_service = _build_handoff_service(database_path)
     lookup = handoff_service.resolve_by_display_name(
@@ -552,24 +634,21 @@ def _reply_owner_handoff_toggle(
     if lookup.status == "not_found":
         _send_reply(event, render_handoff_not_found_message(display_name=display_name))
         return
-    if lookup.status == "ambiguous":
-        tenant_zone = ZoneInfo(message.tenant_timezone)
-        local_times = [
-            f"{datetime.fromisoformat(c.last_message_at).astimezone(tenant_zone):%m/%d %H:%M}"
-            for c in lookup.candidates
-        ]
-        _send_reply(
-            event,
-            render_handoff_ambiguous_message(
-                display_name=display_name, candidates_local_times=local_times
-            ),
+    platform_user_id = (
+        lookup.platform_user_id
+        if lookup.status == "found"
+        else _select_ambiguous_candidate(lookup, candidate_index)
+    )
+    if platform_user_id is None:
+        _send_ambiguous_reply(
+            event=event, message=message, display_name=display_name, candidates=lookup.candidates
         )
         return
     action = handoff_service.toggle(
         tenant_id=message.tenant_id,
         tenant_timezone=message.tenant_timezone,
         platform=message.platform,
-        platform_user_id=lookup.platform_user_id,
+        platform_user_id=platform_user_id,
         owner_id=None,
     )
     text = (
@@ -601,26 +680,58 @@ def _handle_owner_command(*, event: dict, message: InboundMessage, database_path
                 command=command, message=message, database_path=database_path, service=service
             )
         return True
-    display_name = _parse_display_name_command(message.text)
-    if display_name:
+    parsed_display_name = _parse_display_name_command(message.text)
+    if parsed_display_name:
+        display_name, candidate_index = parsed_display_name
         _reply_owner_handoff_toggle(
-            event=event, message=message, database_path=database_path, display_name=display_name
+            event=event,
+            message=message,
+            database_path=database_path,
+            display_name=display_name,
+            candidate_index=candidate_index,
         )
     return True
 
 
-def _resolve_customer_text(composed: ComposedReply, database_path: str, tenant_id: int) -> str | None:
-    """Push first; use notified wording only when an owner push succeeded."""
+def _resolve_customer_text(
+    composed: ComposedReply, database_path: str, tenant_id: int
+) -> tuple[str | None, bool]:
+    """Push first; use notified wording only when an owner push succeeded.
+    Returns (customer_text, owner_push_succeeded) -- the second element is
+    False whenever no push was attempted."""
     if composed.owner_push_text is None:
-        return composed.text
+        return composed.text, False
     pushed = _send_owner_push(
         database_path=database_path,
         tenant_id=tenant_id,
         text=composed.owner_push_text,
     )
     if not pushed and composed.push_failed_text is not None:
-        return composed.push_failed_text
-    return composed.text
+        return composed.push_failed_text, pushed
+    return composed.text, pushed
+
+
+def _correct_handled_if_silent_drop(
+    *,
+    database_path: str,
+    tenant_id: int,
+    message_id: int,
+    decision: InquiryDecision,
+    reached_someone: bool,
+) -> None:
+    """decision_to_db_mapper optimistically marks handled=True for every
+    action_type other than "do_nothing" -- correct here when the actual
+    delivery attempt (customer reply and/or owner push) failed and nobody
+    was actually informed, so the row reappears in /待回覆 and the nightly
+    digest instead of being silently lost."""
+    if reached_someone or decision.action_type == "do_nothing":
+        return
+    try:
+        MessageRepository(database_path).mark_unhandled(
+            tenant_id=tenant_id, message_id=message_id
+        )
+    except Exception:  # noqa: BLE001 -- correction must NEVER break receiving
+        logger.warning("LINE handled-flag correction failed", exc_info=True)
 
 
 def _record_state(
@@ -742,17 +853,34 @@ def _process_pipeline_event(
     if display_name:
         message = message.model_copy(update={"customer_display_name": display_name})
     decision = context.service.handle_message(message=message)
-    context.persistence.persist(decision=decision)
+    persisted = context.persistence.persist(decision=decision)
+    message_id = persisted["message_id"]
     state = _record_state(context.state_service, message, decision)
     composed = _compose_reply(context.composer, message, decision, state)
-    customer_text = _resolve_customer_text(composed, database_path, message.tenant_id)
+    customer_text, owner_push_ok = _resolve_customer_text(
+        composed, database_path, message.tenant_id
+    )
     if not _send_reply_with_retry(event, customer_text):
+        _correct_handled_if_silent_drop(
+            database_path=database_path,
+            tenant_id=message.tenant_id,
+            message_id=message_id,
+            decision=decision,
+            reached_someone=owner_push_ok,
+        )
         _rollback_processed_event(
             event=event,
             tenant_id=message.tenant_id,
             database_path=database_path,
         )
         return
+    _correct_handled_if_silent_drop(
+        database_path=database_path,
+        tenant_id=message.tenant_id,
+        message_id=message_id,
+        decision=decision,
+        reached_someone=customer_text is not None or owner_push_ok,
+    )
     _mark_if_complete(context.state_service, message.tenant_id, composed)
     _clear_reconfirm_if_shown(context.state_service, message.tenant_id, composed)
 
@@ -774,14 +902,26 @@ def _run_pipeline(events: list[dict], tenant: dict, database_path: str) -> None:
             _handle_pipeline_failure(event=event, tenant_id=tenant_id, database_path=database_path)
 
 
-def _should_send_digest(*, tenant_state: dict, now_local: datetime) -> bool:
-    if not tenant_state["auto_schedule_enabled"]:
-        return False
-    start_time = time.fromisoformat(tenant_state["auto_on_start_time"])
-    if now_local.time() < start_time:
-        return False
-    today = now_local.date().isoformat()
-    return tenant_state.get("last_digest_sent_date") != today
+def _digest_window_start_date(
+    *, start_time: time, end_time: time, now_local: datetime
+) -> str | None:
+    """Tenant-local calendar date the current auto-on window began, or None
+    if now is outside the window. start_time may wrap past midnight (e.g.
+    23:00-08:00) -- during the 00:00-end_time tail the window "began
+    yesterday" even though now_local's own date has already rolled over, so
+    a bare now_local.date() would misidentify the boundary (and cause a
+    restart during that tail to think the digest already happened, or won't
+    happen until tomorrow -- see the 27bc622 case study)."""
+    now_time = now_local.time()
+    if start_time <= end_time:
+        if not (start_time <= now_time < end_time):
+            return None
+        return now_local.date().isoformat()
+    if now_time >= start_time:
+        return now_local.date().isoformat()
+    if now_time < end_time:
+        return (now_local.date() - timedelta(days=1)).isoformat()
+    return None
 
 
 def _check_and_send_digest_for_tenant(
@@ -789,18 +929,28 @@ def _check_and_send_digest_for_tenant(
 ) -> None:
     tenant_id = tenant["id"]
     state = state_repo.get_or_create(tenant_id)
-    now_local = _now_in_tenant_timezone(tenant["timezone"])
-    if not _should_send_digest(tenant_state=state, now_local=now_local):
+    if not state["auto_schedule_enabled"]:
         return
-    # Mark sent for today BEFORE looking at rows: this is a once-per-tenant-
-    # local-day check, so a later re-check on the same day (e.g. the next poll
-    # tick) must not re-fire even if it happens to find nothing right now.
-    state_repo.mark_digest_sent(tenant_id=tenant_id, date_str=now_local.date().isoformat())
+    now_local = _now_in_tenant_timezone(tenant["timezone"])
+    window_start_date = _digest_window_start_date(
+        start_time=time.fromisoformat(state["auto_on_start_time"]),
+        end_time=time.fromisoformat(state["auto_on_end_time"]),
+        now_local=now_local,
+    )
+    if window_start_date is None or state.get("last_digest_sent_date") == window_start_date:
+        return
     rows = _pending_rows(database_path=database_path, tenant_id=tenant_id)
     if not rows:
+        state_repo.mark_digest_sent(tenant_id=tenant_id, date_str=window_start_date)
         return
     text = render_owner_pending_digest_message(count=len(rows))
-    _send_owner_push(database_path=database_path, tenant_id=tenant_id, text=text)
+    # Mark sent only AFTER a confirmed push: an unconfirmed/failed push must
+    # stay retryable on the next 5-minute poll tick instead of being silently
+    # given up on for the rest of the day.
+    if not _send_owner_push(database_path=database_path, tenant_id=tenant_id, text=text):
+        return
+    state_repo.mark_digest_sent(tenant_id=tenant_id, date_str=window_start_date)
+    _close_pending_rows(database_path=database_path, tenant_id=tenant_id, rows=rows)
 
 
 def run_nightly_digest_check(database_path: str) -> None:

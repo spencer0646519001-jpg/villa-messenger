@@ -31,7 +31,6 @@ from app.domain.reply_text import (
     OWNER_COMMAND_STATUS_OFF_MESSAGE,
     OWNER_COMMAND_TURN_OFF_MESSAGE,
     OWNER_COMMAND_TURN_ON_MESSAGE,
-    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
     SINGLE_MISSING_CHECKOUT_MESSAGE,
@@ -39,10 +38,13 @@ from app.domain.reply_text import (
 )
 from app.main import app
 from app.repositories.conversation_state_repository import ConversationStateRepository
+from app.repositories.manual_hold_repository import ManualHoldRepository
+from app.repositories.message_repository import MessageRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
+from app.services.conversation_handoff_service import ConversationHandoffService
 from app.services.conversation_state_service import ConversationStateService
 from app.services.availability_service import AvailabilityCheckOutcome
 from app.services.operation_mode_service import OperationModeService
@@ -1066,7 +1068,7 @@ def test_early_date_range_blocked_replies_pushes_owner_and_completes_state(
     assert pushes[0]["to_user_id"] == "Uowner"
     assert OWNER_PUSH_FULL_HOUSE_PREFIX in pushes[0]["text"]
     assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in pushes[0]["text"]
-    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in pushes[0]["text"]
+    assert "Uguest" not in pushes[0]["text"]  # raw userId never printed
     assert fake_availability.calls == [(date(2026, 5, 12), date(2026, 5, 14))]
     states = _rows(database_path, "conversation_states")
     assert states[0]["status"] == "completed"
@@ -2001,6 +2003,68 @@ def test_handoff_toggle_ambiguous_lists_candidates(
     assert "請問是哪一位" in replies[0]["text"]
 
 
+def test_handoff_toggle_numbered_selection_pauses_correct_candidate(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After an ambiguous "/Wendy" listed candidates 1/2, "/Wendy 1" must
+    actually resolve to and pause the first candidate -- previously this was
+    parsed as a literal (nonexistent) display name "Wendy 1" and always
+    failed with "查無"."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Wendy")
+    for user_id in ("Uguest-1", "Uguest-2"):
+        body = _payload_bytes([_text_event(f"{user_id} 你好嗎", user_id=user_id)])
+        _post(client, body, _sign(body))
+    ambiguous_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy", "rt-1", user_id="Uowner-a")]
+    )
+    _post(client, ambiguous_body, _sign(ambiguous_body))
+    replies.clear()
+    candidates = ConversationHandoffService(
+        hold_repo=ManualHoldRepository(database_path),
+        message_repo=MessageRepository(database_path),
+        operation_state_repo=OperationStateRepository(database_path),
+    ).resolve_by_display_name(tenant_id=tenant_id, platform="line", display_name="Wendy")
+    first_candidate_user_id = candidates.candidates[0].platform_user_id
+
+    select_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy 1", "rt-2", user_id="Uowner-a")]
+    )
+    response = _post(client, select_body, _sign(select_body))
+
+    assert response.status_code == 200
+    assert "已暫停" in replies[0]["text"]
+    holds = _rows(database_path, "conversation_manual_holds")
+    assert len(holds) == 1
+    assert holds[0]["platform_user_id"] == first_candidate_user_id
+
+
+def test_handoff_toggle_numbered_selection_out_of_range_relists_candidates(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Wendy")
+    for user_id in ("Uguest-1", "Uguest-2"):
+        body = _payload_bytes([_text_event(f"{user_id} 你好嗎", user_id=user_id)])
+        _post(client, body, _sign(body))
+    replies.clear()
+
+    select_body = _payload_bytes(
+        [_text_event_with_reply_token("/Wendy 9", "rt-2", user_id="Uowner-a")]
+    )
+    response = _post(client, select_body, _sign(select_body))
+
+    assert response.status_code == 200
+    assert "請問是哪一位" in replies[0]["text"]
+    assert _rows(database_path, "conversation_manual_holds") == []
+
+
 def test_urgent_message_from_paused_customer_still_pushes_owner(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2125,6 +2189,130 @@ def test_nightly_digest_no_push_when_nothing_unhandled(
     assert pushes == []
 
 
+def test_pending_command_closes_shown_rows(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="8/15 還有空房嗎", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    first_body = _payload_bytes(
+        [_text_event_with_reply_token("/待回覆", "rt-1", user_id="Uowner-a")]
+    )
+    _post(client, first_body, _sign(first_body))
+    replies.clear()
+    second_body = _payload_bytes(
+        [_text_event_with_reply_token("/待回覆", "rt-2", user_id="Uowner-a")]
+    )
+
+    _post(client, second_body, _sign(second_body))
+
+    # already shown once via /待回覆 -> closed out, second call finds nothing left
+    assert OWNER_PENDING_EMPTY_MESSAGE in replies[0]["text"]
+
+
+def test_nightly_digest_closes_rows_after_successful_push(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="夜間漏接訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, hour=23, minute=5)
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: None)
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    messages = _rows(database_path, "messages")
+    assert messages[0]["handled"] == 1  # shown once via digest -> closed, not recounted tomorrow
+
+
+def test_nightly_digest_push_failure_leaves_rows_pending(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="夜間漏接訊息(推播失敗)", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)  # no token -> push fails
+    _freeze_owner_record_now(monkeypatch, hour=23, minute=5)
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    messages = _rows(database_path, "messages")
+    assert messages[0]["handled"] == 0  # never shown to anyone -> stays pending
+
+
+# ============================================================
+# LAYER 3b: handled reflects actual delivery, not the optimistic action_type
+# ============================================================
+
+
+def test_uncategorized_message_owner_push_failure_stays_unhandled(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """push_to_owner_only with no customer reply and no push_failed_text
+    fallback: if the owner push fails, nobody learns about this message. The
+    optimistic handled=True the mapper wrote at persist time must be
+    corrected back to 0 so it surfaces via /待回覆 instead of vanishing."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)  # owner push will fail
+    body = _payload_bytes([_text_event("測試訊息abc123不知道在問什麼")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    messages = _rows(database_path, "messages")
+    assert len(messages) == 1
+    assert messages[0]["handled"] == 0
+
+
+def test_uncategorized_message_owner_push_success_stays_handled(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: None)
+    body = _payload_bytes([_text_event("測試訊息abc123不知道在問什麼")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    messages = _rows(database_path, "messages")
+    assert messages[0]["handled"] == 1
+
+
+def test_urgent_message_owner_push_failure_stays_unhandled(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even push_owner_urgent (fire-alarm class messages) has no customer
+    reply and no push_failed_text fallback -- a failed push must not be
+    silently marked handled=True either."""
+    tenant_id = _seed_channel(database_path)
+    monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)
+    body = _payload_bytes([_text_event("火災!")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    messages = _rows(database_path, "messages")
+    assert messages[0]["handled"] == 0
+
+
 def test_nightly_digest_not_yet_due_before_schedule_start(
     database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2143,6 +2331,91 @@ def test_nightly_digest_not_yet_due_before_schedule_start(
     line_webhook_routes.run_nightly_digest_check(database_path)
 
     assert pushes == []  # before auto_on_start_time (23:00) -> not due yet
+
+
+def test_nightly_digest_fires_for_stale_boundary_after_midnight_restart(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the digest-check loop wasn't running through last night's 23:00
+    boundary (e.g. a deploy restart) and only comes back up at 00:05, the
+    stale boundary must still be caught -- not silently skipped until the
+    NEXT day's 23:00. Regression test for the bare now.time() < start_time
+    comparison, which can't tell "haven't reached today's boundary yet" from
+    "already past yesterday's boundary" once the clock has wrapped."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="半夜重啟前漏接的訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, day=16, hour=0, minute=5)  # just after midnight
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert len(pushes) == 1
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert row["last_digest_sent_date"] == "2026-03-15"  # yesterday's boundary, not today's
+
+
+def test_nightly_digest_daytime_gap_between_windows_not_due(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """08:30 is past both yesterday's and today's on-window ends -- the
+    daytime gap between windows must stay "not due", not misread as a stale
+    boundary needing catch-up."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="白天訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    _freeze_owner_record_now(monkeypatch, day=16, hour=8, minute=30)
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert pushes == []
+
+
+def test_nightly_digest_retries_after_push_failure(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed push must not be marked as sent -- the next 5-minute poll
+    tick should retry rather than waiting until tomorrow's boundary."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    _seed_message_at(
+        database_path, tenant_id=tenant_id, user_id="Uguest-a",
+        message_text="推播會失敗的訊息", created_at=_created_at_from_taipei(2026, 3, 15, 14, 0),
+    )
+    _freeze_owner_record_now(monkeypatch, day=16, hour=23, minute=5)
+    monkeypatch.delenv(_ACCESS_TOKEN_ENV, raising=False)  # no token -> push fails
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert row["last_digest_sent_date"] is None  # not marked sent -> retryable
+    messages = _rows(database_path, "messages")
+    assert messages[0]["handled"] == 0  # not shown to anyone yet
+
+    # transient failure recovers on the next poll tick
+    monkeypatch.setenv(_ACCESS_TOKEN_ENV, "tok-abc")
+    pushes: list[dict] = []
+    monkeypatch.setattr(line_webhook_routes, "push_message", lambda **kw: pushes.append(kw))
+
+    line_webhook_routes.run_nightly_digest_check(database_path)
+
+    assert len(pushes) == 1
+    row = OperationStateRepository(database_path).get_or_create(tenant_id)
+    assert row["last_digest_sent_date"] == "2026-03-16"
 
 
 def test_nightly_digest_only_fires_once_per_tenant_local_day(

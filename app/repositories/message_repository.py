@@ -156,6 +156,32 @@ class MessageRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def mark_unhandled(self, tenant_id: int, message_id: int) -> None:
+        """Correct an optimistically-True `handled` flag back to 0 when the
+        actual delivery attempt (customer reply and/or owner push) turned out
+        to reach nobody, so the message reappears in list_unhandled / the
+        nightly digest instead of being silently lost."""
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(
+                "UPDATE messages SET handled = 0 WHERE tenant_id = ? AND id = ?",
+                (tenant_id, message_id),
+            )
+            connection.commit()
+
+    def mark_many_handled(self, tenant_id: int, message_ids: list[int]) -> None:
+        """Close out backlog rows once they have actually been shown to the
+        owner (via /待回覆 or the nightly digest), so they are not reported
+        again on the next check."""
+        if not message_ids:
+            return
+        placeholders = ",".join("?" for _ in message_ids)
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(
+                f"UPDATE messages SET handled = 1 WHERE tenant_id = ? AND id IN ({placeholders})",
+                (tenant_id, *message_ids),
+            )
+            connection.commit()
+
     def get_by_id(self, tenant_id: int, message_id: int) -> dict | None:
         with closing(get_connection(self.database_path)) as connection:
             row = connection.execute(
