@@ -34,7 +34,6 @@ from app.domain.reply_text import (
     MISSING_INFO_HEADER,
     MISSING_PET_COUNT_LINE,
     OVER_CAPACITY_MESSAGE,
-    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
@@ -462,45 +461,41 @@ def test_render_manual_review_message() -> None:
 # --- Owner push ---
 
 
-def test_render_owner_push_full_house() -> None:
-    out = render_owner_push_full_house(
-        checkin_date=date(2026, 5, 12),
-        checkout_date=date(2026, 5, 14),
-        inquiry_id=42,
-    )
-
-    assert OWNER_PUSH_FULL_HOUSE_PREFIX in out
-    assert "詢價編號:#42" in out
-    assert "入住:2026/05/12(二)" in out
-    assert "退房:2026/05/14(四)" in out
-
-
-def test_render_owner_push_full_house_without_inquiry_id() -> None:
-    # InquiryService renders before persistence, so inquiry_id is None at
-    # that point. The line is omitted entirely; PR8's mapper can re-render
-    # with the assigned ID later if it wants.
+def test_render_owner_push_full_house_no_name_is_friendly_and_id_free() -> None:
     out = render_owner_push_full_house(
         checkin_date=date(2026, 5, 12),
         checkout_date=date(2026, 5, 14),
     )
 
     assert OWNER_PUSH_FULL_HOUSE_PREFIX in out
-    assert "詢價編號" not in out
     assert "入住:2026/05/12(二)" in out
     assert "退房:2026/05/14(四)" in out
+    assert "客人:" not in out  # no name -> customer line omitted
 
 
-def test_render_owner_push_full_house_includes_guest_count_and_user_id() -> None:
+def test_render_owner_push_full_house_with_name_shows_customer_line() -> None:
     out = render_owner_push_full_house(
         checkin_date=date(2026, 5, 12),
         checkout_date=date(2026, 5, 14),
         guest_count=4,
-        platform_user_id="Uguest",
+        display_name="王小姐",
     )
 
+    assert "客人:王小姐" in out
     assert f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}4" in out
-    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in out
     assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN not in out
+
+
+def test_render_owner_push_full_house_never_prints_userid() -> None:
+    # KEY regression guard: a raw LINE userId must NEVER appear in an owner push.
+    user_id = "Udd1dffaa94e003982bcb9e011655d4de"
+    out = render_owner_push_full_house(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+        display_name=None,
+    )
+
+    assert user_id not in out
 
 
 def test_render_owner_push_full_house_marks_guest_count_unknown() -> None:
@@ -512,7 +507,7 @@ def test_render_owner_push_full_house_marks_guest_count_unknown() -> None:
     assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in out
 
 
-def test_render_owner_push_availability_unverified() -> None:
+def test_render_owner_push_availability_unverified_no_name_is_friendly() -> None:
     from app.domain.reply_templates import render_owner_push_availability_unverified
     from app.domain.reply_text import OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX
 
@@ -524,6 +519,19 @@ def test_render_owner_push_availability_unverified() -> None:
     assert OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX in out
     assert "入住:2026/05/12(二)" in out
     assert "退房:2026/05/14(四)" in out
+    assert "客人:" not in out
+
+
+def test_render_owner_push_availability_unverified_with_name_shows_customer_line() -> None:
+    from app.domain.reply_templates import render_owner_push_availability_unverified
+
+    out = render_owner_push_availability_unverified(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 14),
+        display_name="王小姐",
+    )
+
+    assert "客人:王小姐" in out
 
 
 def test_render_owner_push_urgent_no_name_is_friendly_and_id_free() -> None:
@@ -696,7 +704,6 @@ def test_no_render_function_outputs_guarantee_terms(zhen123_pricing) -> None:
         render_owner_push_full_house(
             checkin_date=date(2026, 5, 12),
             checkout_date=date(2026, 5, 14),
-            inquiry_id=1,
         ),
     ]
     for out in samples:

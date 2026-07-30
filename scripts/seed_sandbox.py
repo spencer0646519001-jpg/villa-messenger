@@ -25,11 +25,9 @@ import sys
 from app.repositories.sqlite import init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
+from app.settings import settings
 
-# NOTE: must match app.settings.database_path. Hardcoded for now; unify to
-# `from app.settings import settings` in a future tidy. If settings changes
-# the DB path, update this too or the seed writes to a file the app won't read.
-DATABASE_PATH = "data/homestay.db"
+DATABASE_PATH = settings.database_path
 
 TENANT_SLUG = "zhen123-house"
 TENANT_NAME = "枕123"

@@ -323,7 +323,7 @@ class ConversationReplyComposer:
         gate = self._availability_gate(kwargs)
         if gate.status == "blocked":
             return self._blocked_availability_reply(message, state, kwargs)
-        return self._quoted_reply(state, kwargs, pricing, gate)
+        return self._quoted_reply(message, state, kwargs, pricing, gate)
 
     def _early_availability_gate(
         self, message: InboundMessage, decision: InquiryDecision, state: dict
@@ -353,14 +353,19 @@ class ConversationReplyComposer:
         )
 
     def _quoted_reply(
-        self, state: dict, kwargs: dict, pricing: PricingResult, gate: AvailabilityGateResult
+        self,
+        message: InboundMessage,
+        state: dict,
+        kwargs: dict,
+        pricing: PricingResult,
+        gate: AvailabilityGateResult,
     ) -> ComposedReply:
         text = render_quote_message(pricing=pricing, **kwargs)
         if gate.status != "error":
             return ComposedReply(text=text, completed_state_id=state["id"])
         return ComposedReply(
             text=text,
-            owner_push_text=_availability_unverified_push(kwargs),
+            owner_push_text=_availability_unverified_push(message, kwargs),
             completed_state_id=state["id"],
         )
 
@@ -537,10 +542,11 @@ def _manual_review_push(message: InboundMessage) -> str:
     )
 
 
-def _availability_unverified_push(kwargs: dict) -> str:
+def _availability_unverified_push(message: InboundMessage, kwargs: dict) -> str:
     return render_owner_push_availability_unverified(
         checkin_date=kwargs["checkin_date"],
         checkout_date=kwargs["checkout_date"],
+        display_name=message.customer_display_name,
     )
 
 
@@ -551,7 +557,7 @@ def _full_house_push(
         checkin_date=kwargs["checkin_date"],
         checkout_date=kwargs["checkout_date"],
         guest_count=guest_count,
-        platform_user_id=message.platform_user_id,
+        display_name=message.customer_display_name,
     )
 
 

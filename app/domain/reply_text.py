@@ -82,10 +82,10 @@ DATE_RANGE_CLARIFICATION_MESSAGE: Final = (
     "例如「7/28 入住、7/29 退房」這樣的格式,系統可以幫您試算初步報價。"
 )
 
-OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "系統判定為客滿,請確認:"
+OWNER_PUSH_FULL_HOUSE_PREFIX: Final = "📩 客滿待確認"
 OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX: Final = "人數:"
 OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN: Final = "人數尚未提供"
-OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX: Final = "LINE userId:"
+OWNER_PUSH_FULL_HOUSE_CLOSE: Final = "(請確認是否仍有空房)"
 # Friendly owner-notification format (no-name baseline, PR: owner-push rewrite).
 # The header opens the push; the customer's name is OPTIONAL (rendered only when
 # a display name is available -- we deliberately NEVER print the raw U... userId).
@@ -101,9 +101,8 @@ OWNER_PUSH_URGENT_KEYWORDS_PREFIX: Final = "觸發關鍵字:"
 OWNER_PUSH_DEFER_CLOSE: Final = "(系統已回覆客人會請專人對接)"
 OWNER_PUSH_UNREPLIED_CLOSE: Final = "(尚未回覆客人,請您接手)"
 OWNER_PUSH_URGENT_CLOSE: Final = "(請盡快人工回覆)"
-OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = (
-    "系統無法驗證日期可用性,已照常報價,請人工確認空房:"
-)
+OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX: Final = "📩 空房未確認"
+OWNER_PUSH_AVAILABILITY_UNVERIFIED_CLOSE: Final = "(已照常報價,請人工確認空房)"
 
 OWNER_COMMAND_TURN_ON_MESSAGE: Final = "系統已開啟，將由系統自動回覆訪客訊息。"
 OWNER_COMMAND_TURN_OFF_MESSAGE: Final = "系統已關閉，訪客訊息將不自動回覆。"

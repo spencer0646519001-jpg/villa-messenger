@@ -493,7 +493,7 @@ class InquiryService:
         )
         push = render_owner_push_full_house(
             checkin_date=checkin, checkout_date=checkout, guest_count=_guest_count(inquiry),
-            platform_user_id=message.platform_user_id,
+            display_name=message.customer_display_name,
         )
         return InquiryDecision(
             action_type="reply_and_push",
@@ -596,7 +596,7 @@ class InquiryService:
             checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
             checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
             guest_count=_guest_count(inquiry),
-            platform_user_id=message.platform_user_id,
+            display_name=message.customer_display_name,
         )
 
     def _handle_quoted_unverified(
@@ -610,7 +610,7 @@ class InquiryService:
         return InquiryDecision(
             action_type="reply_and_push",
             customer_reply_text=render_quote_message(pricing=pricing, **self._stay_kwargs(inquiry)),
-            owner_push_text=self._render_unverified_push(inquiry),
+            owner_push_text=self._render_unverified_push(message, inquiry),
             log_payload=log,
             parsed_as_inquiry=True,
             could_quote=True,
@@ -632,10 +632,13 @@ class InquiryService:
         log["availability_error_reason"] = outcome.reason
         return log
 
-    def _render_unverified_push(self, inquiry: InquiryParseResult) -> str:
+    def _render_unverified_push(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> str:
         return render_owner_push_availability_unverified(
             checkin_date=date.fromisoformat(inquiry.dates.checkin_date),
             checkout_date=date.fromisoformat(inquiry.dates.checkout_date),
+            display_name=message.customer_display_name,
         )
 
 

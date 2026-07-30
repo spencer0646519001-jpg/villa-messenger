@@ -44,10 +44,11 @@ from app.domain.reply_text import (
     MISSING_PET_COUNT_LINE,
     MISSING_ROOM_COUNT_MESSAGE,
     OVER_CAPACITY_MESSAGE,
+    OWNER_PUSH_AVAILABILITY_UNVERIFIED_CLOSE,
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
     OWNER_PUSH_CUSTOMER_PREFIX,
     OWNER_PUSH_DEFER_CLOSE,
-    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
+    OWNER_PUSH_FULL_HOUSE_CLOSE,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
@@ -242,21 +243,22 @@ def render_owner_push_full_house(
     *,
     checkin_date: date,
     checkout_date: date,
-    inquiry_id: int | None = None,
     guest_count: int | None = None,
-    platform_user_id: str | None = None,
+    display_name: str | None = None,
 ) -> str:
+    """Friendly, id-free full-house owner push. `display_name` is OPTIONAL;
+    when provided a 客人:{name} line is shown, when None it is omitted and the
+    raw userId is NEVER printed (matches render_owner_push_urgent's contract)."""
     lines = [OWNER_PUSH_FULL_HOUSE_PREFIX]
-    if inquiry_id is not None:
-        lines.append(f"詢價編號:#{inquiry_id}")
+    if display_name:
+        lines.append(f"{OWNER_PUSH_CUSTOMER_PREFIX}{display_name}")
     lines.append(f"入住:{_format_date_with_weekday(checkin_date)}")
     lines.append(f"退房:{_format_date_with_weekday(checkout_date)}")
     if guest_count is None:
         lines.append(OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN)
     else:
         lines.append(f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}{guest_count}")
-    if platform_user_id:
-        lines.append(f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}{platform_user_id}")
+    lines.append(OWNER_PUSH_FULL_HOUSE_CLOSE)
     return "\n".join(lines)
 
 
@@ -264,14 +266,15 @@ def render_owner_push_availability_unverified(
     *,
     checkin_date: date,
     checkout_date: date,
+    display_name: str | None = None,
 ) -> str:
-    return "\n".join(
-        [
-            OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
-            f"入住:{_format_date_with_weekday(checkin_date)}",
-            f"退房:{_format_date_with_weekday(checkout_date)}",
-        ]
-    )
+    lines = [OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX]
+    if display_name:
+        lines.append(f"{OWNER_PUSH_CUSTOMER_PREFIX}{display_name}")
+    lines.append(f"入住:{_format_date_with_weekday(checkin_date)}")
+    lines.append(f"退房:{_format_date_with_weekday(checkout_date)}")
+    lines.append(OWNER_PUSH_AVAILABILITY_UNVERIFIED_CLOSE)
+    return "\n".join(lines)
 
 
 def render_owner_push_urgent(

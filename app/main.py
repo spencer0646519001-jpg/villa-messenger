@@ -22,6 +22,10 @@ from app.api.line_webhook_routes import (  # noqa: E402
 )
 from app.settings import settings  # noqa: E402
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 # Layer 3 of the 23:00-boot-interrupt fix: the first proactive (non-webhook-

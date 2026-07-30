@@ -35,7 +35,6 @@ from app.domain.reply_text import (
     FULL_HOUSE_MESSAGE,
     MISSING_ROOM_COUNT_MESSAGE,
     OWNER_PUSH_AVAILABILITY_UNVERIFIED_PREFIX,
-    OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX,
     OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN,
     OWNER_PUSH_FULL_HOUSE_PREFIX,
@@ -303,7 +302,7 @@ def test_early_date_range_blocked_stops_missing_prompt_and_notifies_owner() -> N
     assert result.owner_push_text is not None
     assert OWNER_PUSH_FULL_HOUSE_PREFIX in result.owner_push_text
     assert OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_UNKNOWN in result.owner_push_text
-    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in result.owner_push_text
+    assert "Uguest" not in result.owner_push_text  # raw userId never printed
     assert result.completed_state_id == 42
     assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
 
@@ -486,7 +485,7 @@ def test_complete_state_blocked_availability_returns_full_house_without_quote() 
     assert result.owner_push_text is not None
     assert OWNER_PUSH_FULL_HOUSE_PREFIX in result.owner_push_text
     assert f"{OWNER_PUSH_FULL_HOUSE_GUEST_COUNT_PREFIX}4" in result.owner_push_text
-    assert f"{OWNER_PUSH_FULL_HOUSE_CUSTOMER_ID_PREFIX}Uguest" in result.owner_push_text
+    assert "Uguest" not in result.owner_push_text  # raw userId never printed
     assert result.completed_state_id == 42
     assert service.calls == [(date(2026, 5, 12), date(2026, 5, 13))]
 
