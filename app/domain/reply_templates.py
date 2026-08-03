@@ -3,6 +3,7 @@ from datetime import date
 from app.domain.pricing_models import PricingResult
 from app.domain.reply_text import (
     ASSUMED_SINGLE_NIGHT_NOTICE_TEMPLATE,
+    BBQ_CONFIRMATION,
     CHILDREN_CONFIRMATION,
     DATE_RANGE_CLARIFICATION_MESSAGE,
     HANDOFF_AMBIGUOUS_CANDIDATE_TEMPLATE,
@@ -109,6 +110,7 @@ def render_quote_message(
     child_count: int = 0,
     infant_count: int = 0,
     pet_count: int = 0,
+    wants_bbq: bool = False,
     room_count: int | None = None,
 ) -> str:
     if not pricing.can_quote:
@@ -123,6 +125,8 @@ def render_quote_message(
     lines.append(f"住宿人數:{_format_guest_summary(adult_count, child_count, infant_count)}")
     if pet_count > 0:
         lines.append(f"寵物:{pet_count} 隻")
+    if wants_bbq:
+        lines.append("烤肉:是")
     room_count_used = room_count or pricing.room_count_used
     lines.append(_format_room_line(room_count_used))
     lines.append("")
@@ -138,6 +142,8 @@ def render_quote_message(
         lines.append(f"加人費:{_format_money(pricing.extra_person_fee)}")
     if pricing.pet_fee > 0:
         lines.append(f"寵物清潔費:{_format_money(pricing.pet_fee)}")
+    if pricing.bbq_fee > 0:
+        lines.append(f"烤肉清潔費:{_format_money(pricing.bbq_fee)}")
     lines.append(_COST_DETAIL_DIVIDER)
     lines.append(f"小計:{_format_money(pricing.total)}")
     lines.append("")
@@ -152,6 +158,9 @@ def render_quote_message(
     if "pets" in pricing.requires_owner_confirmation:
         lines.append("")
         lines.append(PETS_CONFIRMATION)
+    if "bbq" in pricing.requires_owner_confirmation:
+        lines.append("")
+        lines.append(BBQ_CONFIRMATION)
 
     return "\n".join(lines)
 

@@ -36,6 +36,7 @@ from app.domain.faq_matcher import (
     match_all_faq_topics,
     match_faq,
 )
+from app.domain.form_reply_detector import looks_like_structured_form_reply
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.pricing_models import PricingResult
@@ -160,9 +161,17 @@ class ConversationReplyComposer:
         has_booking_equivalent_match = any(
             is_booking_equivalent_topic(match.topic) for match in faq_matches
         )
+        # A structured multi-field form reply (e.g. answering a LINE OA
+        # auto-reply's "聯絡人/入住日期/是否有寵物/..." prompt) can contain an FAQ
+        # keyword as an *answered* field label ("是否有寵物:否"), not a question.
+        # None of the FAQ branches below should claim it.
+        is_form_reply = looks_like_structured_form_reply(
+            normalize_for_parsing(message.text)
+        )
         if (
             faq_match is not None
             and faq_match.topic in NON_PRICEABLE
+            and not is_form_reply
             and not _is_booking_equivalent_quote(
                 decision, has_booking_equivalent_match
             )
@@ -178,9 +187,11 @@ class ConversationReplyComposer:
         #              user's real request.  inquiry_intent read from log_payload, same
         #              as _is_faq, so the value is always present after the urgent/off
         #              early-returns above.
+        #   structured form reply — see is_form_reply above.
         if (
             faq_match is not None
             and faq_match.tier == 1
+            and not is_form_reply
             and _should_answer_gate3_faq(
                 faq_match,
                 decision,
@@ -189,8 +200,10 @@ class ConversationReplyComposer:
             )
         ):
             return self._compose_faq(message)
-        if _is_faq(decision) and not _is_checkout_slot_followup(
-            faq_match, decision, state
+        if (
+            _is_faq(decision)
+            and not is_form_reply
+            and not _is_checkout_slot_followup(faq_match, decision, state)
         ):
             return self._compose_faq(message)
         if state is None:
@@ -202,7 +215,7 @@ class ConversationReplyComposer:
             if (
                 decision.customer_reply_text is None
                 and decision.owner_push_text is not None
-                and faq_match is None
+                and (faq_match is None or is_form_reply)
             ):
                 return ComposedReply(owner_push_text=decision.owner_push_text)
             return ComposedReply(text=decision.customer_reply_text)
@@ -480,6 +493,7 @@ def _state_stay_kwargs(state: dict) -> dict:
         "child_count": state["child_count"] or 0,
         "infant_count": state["infant_count"] or 0,
         "pet_count": state["pet_count"] or 0,
+        "wants_bbq": bool(state.get("wants_bbq")),
         "room_count": state.get("room_count"),
     }
 

@@ -20,6 +20,11 @@ PETS_CONFIRMATION: Final = (
     "實際是否接受寵物入住,仍需民宿人員和您確認。"
 )
 
+BBQ_CONFIRMATION: Final = (
+    "烤肉清潔費為 NT$1,000。"
+    "實際烤肉場地與時段,仍需民宿人員和您確認。"
+)
+
 QUOTE_GREETING: Final = "您好,以下為系統依目前規則初步估算的報價:"
 
 FULL_HOUSE_MESSAGE: Final = (

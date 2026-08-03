@@ -6,7 +6,11 @@ from app.domain.parser_models import DateParseResult
 
 _DATE_PATTERN = re.compile(
     r"(?<![\d/])(?P<month>0?[1-9]|1[0-2])\s*(?:/|月)\s*"
-    r"(?P<day>0?[1-9]|[12]\d|3[01])\s*(?:日)?(?!\d)"
+    # [ \t]*, not \s*, before the optional 日 suffix: a bare \s* would swallow
+    # a trailing newline into the match itself, hiding it from
+    # _has_close_label_after's own newline check (it only sees text AFTER
+    # match.end()).
+    r"(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\d)"
 )
 _CHECKIN_LABELS = ("入住",)
 _CHECKOUT_LABELS = ("退房",)
@@ -83,7 +87,10 @@ def _classify_date_label(text: str, start: int, end: int) -> str | None:
 
 
 def _has_close_label_before(text: str, start: int, labels: tuple[str, ...]) -> bool:
-    search_start = max(0, start - 8)
+    # Don't cross a newline -- a label on a PRECEDING form field's line (e.g.
+    # "聯絡電話:0912345678\n入住日期:8/10-8/12") must not attach to this date.
+    line_start = text.rfind("\n", 0, start) + 1
+    search_start = max(0, start - 8, line_start)
     for label in labels:
         label_start = text.rfind(label, search_start, start)
         if label_start == -1:
@@ -105,7 +112,11 @@ def _has_close_label_before(text: str, start: int, labels: tuple[str, ...]) -> b
 
 
 def _has_close_label_after(text: str, end: int, labels: tuple[str, ...]) -> bool:
-    suffix = text[end : end + 6]
+    # Don't cross a newline -- e.g. "入住日期:8/10-8/12\n入住人數:8人" must not
+    # let the NEXT field's "入住人數" label attach to this date as "checkin".
+    newline_pos = text.find("\n", end, end + 6)
+    suffix_end = newline_pos if newline_pos != -1 else end + 6
+    suffix = text[end:suffix_end]
     compact_suffix = re.sub(r"\s+", "", suffix)
     return any(compact_suffix.startswith(label) for label in labels)
 

@@ -199,6 +199,7 @@ CREATE TABLE IF NOT EXISTS conversation_states (
     room_count INTEGER,
     pet_count INTEGER,
     has_pet INTEGER NOT NULL DEFAULT 0,
+    wants_bbq INTEGER NOT NULL DEFAULT 0,
     last_message_text TEXT,
     -- Set when a slot update happened while the tenant was off/paused (schedule
     -- off OR a per-customer handoff pause), so the reply composer can nudge the

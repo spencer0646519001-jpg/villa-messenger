@@ -16,6 +16,7 @@ def calculate_price(
     child_count: int = 0,
     infant_count: int = 0,
     pet_count: int = 0,
+    wants_bbq: bool = False,
     room_count: int,
     tenant_pricing: dict,
     room_policy: dict,
@@ -81,8 +82,9 @@ def calculate_price(
     nights = len(nightly_prices)
     room_subtotal = sum(n.amount for n in nightly_prices)
     pet_fee = 500 * pet_count if pet_count > 0 else 0
+    bbq_fee = _bbq_cleaning_fee(tenant_pricing) if wants_bbq else 0
     long_stay_discount = max(0, nights - 1) * 1000
-    total = room_subtotal + extra_person_fee + pet_fee - long_stay_discount
+    total = room_subtotal + extra_person_fee + pet_fee + bbq_fee - long_stay_discount
 
     requires_owner_confirmation: list[str] = []
     if child_count > 0:
@@ -91,6 +93,8 @@ def calculate_price(
         requires_owner_confirmation.append("infants")
     if pet_count > 0:
         requires_owner_confirmation.append("pets")
+    if wants_bbq:
+        requires_owner_confirmation.append("bbq")
 
     return PricingResult(
         can_quote=True,
@@ -102,6 +106,7 @@ def calculate_price(
         long_stay_discount=long_stay_discount,
         extra_person_fee=extra_person_fee,
         pet_fee=pet_fee,
+        bbq_fee=bbq_fee,
         total=total,
         requires_owner_confirmation=requires_owner_confirmation,
     )
@@ -115,6 +120,14 @@ def _extra_person_fee(room_count: int, guest_count: int, room_rule) -> int:
     if guest_count > room_rule.max_capacity:
         return 0
     return 1000 * (guest_count - room_rule.standard_capacity)
+
+
+def _bbq_cleaning_fee(tenant_pricing: dict) -> int:
+    bbq = tenant_pricing.get("bbq")
+    if not isinstance(bbq, dict):
+        return 0
+    fee = bbq.get("cleaning_fee_twd")
+    return fee if isinstance(fee, int) and not isinstance(fee, bool) and fee > 0 else 0
 
 
 def _room_policy_max_capacity(room_policy: dict) -> int | None:

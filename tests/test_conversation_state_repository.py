@@ -448,6 +448,42 @@ def test_no_pets_is_distinguishable_from_unasked(database_path: Path) -> None:
 
 
 # ============================================================
+# wants_bbq
+# ============================================================
+
+
+def test_wants_bbq_defaults_false_and_can_be_set_and_updated(database_path: Path) -> None:
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+
+    unasked_id = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uunasked_bbq",
+    )
+    wants_id = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uwants_bbq",
+        wants_bbq=True,
+    )
+    assert _row_by_id(database_path, unasked_id)["wants_bbq"] == 0
+    assert _row_by_id(database_path, wants_id)["wants_bbq"] == 1
+
+    repository.update_slots(tenant_id=tenant_id, state_id=unasked_id, wants_bbq=True)
+    assert _row_by_id(database_path, unasked_id)["wants_bbq"] == 1
+
+
+def test_update_slots_wants_bbq_none_leaves_it_unchanged(database_path: Path) -> None:
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+    state_id = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uguest_bbq",
+        wants_bbq=True,
+    )
+
+    repository.update_slots(tenant_id=tenant_id, state_id=state_id, adult_count=4)
+
+    assert _row_by_id(database_path, state_id)["wants_bbq"] == 1
+
+
+# ============================================================
 # STATUS ENUM VALIDATION
 # ============================================================
 

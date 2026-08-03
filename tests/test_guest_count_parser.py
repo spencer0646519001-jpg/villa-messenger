@@ -57,3 +57,23 @@ def test_missing_guest_count_is_low_confidence() -> None:
 
     assert result.guest_count is None
     assert result.confidence == "low"
+
+
+def test_number_wei_label_word_order() -> None:
+    # "N位大人/小孩/嬰兒" -- number-然後-"位"-然後-label, distinct from the
+    # already-covered "大人N位" / "N大人" orders.
+    result = parse_guest_counts("8位大人1位嬰兒")
+
+    assert result.adult_count == 8
+    assert result.infant_count == 1
+    assert result.guest_count == 8
+    assert result.needs_infant_confirmation is True
+    assert result.confidence == "high"
+
+
+def test_number_wei_child_word_order() -> None:
+    result = parse_guest_counts("2位大人3位小孩")
+
+    assert result.adult_count == 2
+    assert result.child_count == 3
+    assert result.guest_count == 5

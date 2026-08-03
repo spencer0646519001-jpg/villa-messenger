@@ -145,3 +145,15 @@ def test_parser_records_all_matched_faq_topics_in_stable_order() -> None:
 
     assert result.matched_faq_topics == ["pets", "whole_house"]
     assert result.intent.inquiry_type == "availability"
+
+
+def test_parse_complete_price_inquiry_with_bbq() -> None:
+    result = parse_inquiry("5/12入住 5/14退房 4大要烤肉多少錢", reference_year=2026)
+
+    assert result.bbq.wants_bbq is True
+
+
+def test_parse_inquiry_defaults_bbq_false_when_not_mentioned() -> None:
+    result = parse_inquiry("5/12入住 5/14退房 4大多少錢", reference_year=2026)
+
+    assert result.bbq.wants_bbq is False

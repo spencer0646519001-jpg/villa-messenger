@@ -28,5 +28,6 @@ class PricingResult(BaseModel):
     long_stay_discount: int = 0
     extra_person_fee: int = 0
     pet_fee: int = 0
+    bbq_fee: int = 0
     total: int = 0
     requires_owner_confirmation: list[str] = Field(default_factory=list)

@@ -18,6 +18,10 @@ class PetParseResult(BaseModel):
     needs_pet_count_confirmation: bool = False
 
 
+class BbqParseResult(BaseModel):
+    wants_bbq: bool = False
+
+
 class DateParseResult(BaseModel):
     checkin_date: str | None = None
     checkout_date: str | None = None
@@ -37,6 +41,7 @@ class InquiryParseResult(BaseModel):
     dates: DateParseResult
     guests: GuestCountParseResult
     pets: PetParseResult
+    bbq: BbqParseResult
     room_count: int | None = None
     missing_fields: list[str] = Field(default_factory=list)
     can_preliminarily_quote: bool = False

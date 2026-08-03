@@ -23,6 +23,7 @@ from app.domain.reply_templates import (
     render_room_capacity_suggestion_message,
 )
 from app.domain.reply_text import (
+    BBQ_CONFIRMATION,
     CHILDREN_CONFIRMATION,
     FULL_HOUSE_MESSAGE,
     INFANTS_CONFIRMATION,
@@ -233,6 +234,45 @@ def test_quote_with_pets(zhen123_pricing) -> None:
     assert "寵物:2 隻" in out
     assert "寵物清潔費:NT$1,000" in out
     assert PETS_CONFIRMATION in out
+
+
+def test_quote_with_bbq(zhen123_pricing) -> None:
+    pricing = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        wants_bbq=True,
+        tenant_pricing=zhen123_pricing,
+    )
+    out = render_quote_message(
+        pricing=pricing,
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        wants_bbq=True,
+    )
+
+    assert "烤肉:是" in out
+    assert "烤肉清潔費:NT$1,000" in out
+    assert BBQ_CONFIRMATION in out
+
+
+def test_quote_without_bbq_shows_no_bbq_lines(zhen123_pricing) -> None:
+    pricing = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        tenant_pricing=zhen123_pricing,
+    )
+    out = render_quote_message(
+        pricing=pricing,
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+    )
+
+    assert "烤肉" not in out
+    assert BBQ_CONFIRMATION not in out
 
 
 def test_quote_extra_person_fee(zhen123_pricing) -> None:

@@ -245,6 +245,79 @@ def test_room_count_answer_does_not_merge_before_room_count_gate(
     assert _row_count(repo) == 1
 
 
+def test_followup_pet_count_merges_into_active_state(repo: ConversationStateRepository) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 5/14 退房 4 大人 有養狗 多少錢"),
+        decision=_decision("5/12 入住 5/14 退房 4 大人 有養狗 多少錢"),
+    )
+    state = _active(repo)
+    assert bool(state["has_pet"]) is True
+    assert state["pet_count"] is None
+
+    service.record(message=_message("1隻"), decision=_decision("1隻"))
+
+    state = _active(repo)
+    assert state["pet_count"] == 1
+    assert state["adult_count"] == 4
+    assert _row_count(repo) == 1
+
+
+@pytest.mark.parametrize("text", ["2隻", "兩隻", "2"])
+def test_pet_count_answer_merges_only_when_waiting_for_pet_count(
+    repo: ConversationStateRepository, text: str
+) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 5/14 退房 4 大人 有養狗 多少錢"),
+        decision=_decision("5/12 入住 5/14 退房 4 大人 有養狗 多少錢"),
+    )
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    state = _active(repo)
+    assert state["pet_count"] == 2
+    assert _row_count(repo) == 1
+
+
+def test_pet_count_answer_does_not_merge_before_pet_count_gate(
+    repo: ConversationStateRepository,
+) -> None:
+    # No pet mentioned yet -- has_pet is still False, so a bare number must
+    # NOT be misread as a pet count answer.
+    service = ConversationStateService(repo)
+    service.record(message=_message("5/12 入住 多少錢"),
+                   decision=_decision("5/12 入住 多少錢"))
+
+    service.record(message=_message("2隻"), decision=_decision("2隻"))
+
+    state = _active(repo)
+    assert state["pet_count"] is None
+    assert _row_count(repo) == 1
+
+
+def test_followup_bbq_merges_into_active_state(repo: ConversationStateRepository) -> None:
+    service = ConversationStateService(repo)
+    service.record(
+        message=_message("5/12 入住 5/14 退房 4 大人 要烤肉 多少錢"),
+        decision=_decision("5/12 入住 5/14 退房 4 大人 要烤肉 多少錢"),
+    )
+
+    state = _active(repo)
+    assert bool(state["wants_bbq"]) is True
+    assert state["adult_count"] == 4
+    assert _row_count(repo) == 1
+
+
+def test_bbq_not_mentioned_leaves_wants_bbq_false(repo: ConversationStateRepository) -> None:
+    service = ConversationStateService(repo)
+    service.record(message=_message("5/12 入住 5/14 退房 多少錢?"),
+                   decision=_decision("5/12 入住 5/14 退房 多少錢?"))
+
+    state = _active(repo)
+    assert bool(state["wants_bbq"]) is False
+
+
 # ============================================================
 # NO-OP: non-inquiry chatter with no active state creates nothing
 # ============================================================

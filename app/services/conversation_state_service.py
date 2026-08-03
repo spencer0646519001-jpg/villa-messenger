@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
+from app.domain.pet_parser import parse_pet_count_answer
 from app.domain.room_count_parser import parse_room_count_answer
 from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
@@ -44,6 +45,8 @@ _SLOT_KEYS = (
     "infant_count",
     "room_count",
     "pet_count",
+    "has_pet",
+    "wants_bbq",
 )
 
 # Column template for a freshly-created row, so the in-hand merged row mirrors a
@@ -61,6 +64,7 @@ _EMPTY_STATE_ROW: dict = {
     "room_count": None,
     "pet_count": None,
     "has_pet": False,
+    "wants_bbq": False,
     "last_message_text": None,
     "accumulated_while_off": False,
     "last_off_mode_update_at": None,
@@ -87,6 +91,7 @@ class ConversationStateService:
 
     def _update_active(self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict) -> dict:
         self._fill_contextual_room_count(slots, active, message.text)
+        self._fill_contextual_pet_count(slots, active, message.text)
         if not self._has_slot(slots):
             return active
         self._repo.update_slots(
@@ -125,6 +130,11 @@ class ConversationStateService:
         if slots.get("room_count") is not None or not _is_waiting_for_room_count(active):
             return
         slots["room_count"] = parse_room_count_answer(normalize_for_parsing(text))
+
+    def _fill_contextual_pet_count(self, slots: dict, active: dict, text: str) -> None:
+        if slots.get("pet_count") is not None or not _is_waiting_for_pet_count(active):
+            return
+        slots["pet_count"] = parse_pet_count_answer(normalize_for_parsing(text))
 
 
 def _merge_row(base: dict, slots: dict) -> dict:
@@ -175,6 +185,18 @@ def _is_waiting_for_room_count(state: dict) -> bool:
         has_pet=bool(state["has_pet"]),
         pet_count=state["pet_count"],
     )
+
+
+def _is_waiting_for_pet_count(state: dict) -> bool:
+    if not state.get("has_pet") or state.get("pet_count") is not None:
+        return False
+    return compute_missing_fields(
+        checkin_date=state["checkin_date"],
+        checkout_date=state["checkout_date"],
+        guest_count=_state_guest_count(state),
+        has_pet=bool(state["has_pet"]),
+        pet_count=state["pet_count"],
+    ) == ["pet_count"]
 
 
 def _state_guest_count(state: dict) -> int | None:

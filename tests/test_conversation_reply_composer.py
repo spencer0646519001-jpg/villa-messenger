@@ -1064,6 +1064,59 @@ def test_product_topic_prevents_earlier_policy_topic_from_hijacking_quote() -> N
     assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
 
 
+_FORM_REPLY_TEXT = (
+    "哈囉,歡迎來枕123民宿😊\n"
+    "請告知您想詢問的問題,欲訂房請提供以下資訊,有專人為您服務,謝謝。\n"
+    "聯絡人:林小姐\n"
+    "聯絡電話:0912345678\n"
+    "入住日期:8/15\n"
+    "入住人數:8位大人1位嬰兒\n"
+    "是否有寵物(僅限小型寵物,每隻酌收NT500):否\n"
+    "是否烤肉(酌收清潔費NT1,000):是\n"
+    "幾台車:2-3台"
+)
+
+
+def test_structured_form_reply_not_hijacked_by_pets_faq() -> None:
+    """The real production bug: a filled-in LINE OA intake form contains the
+    "寵物"/"烤肉" FAQ keywords as answered field labels, not questions. It must
+    not be routed to the pets/bbq tier-1 FAQ answer."""
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text=SINGLE_MISSING_CHECKOUT_MESSAGE,
+        log_payload={"inquiry_intent": "booking_question"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message(_FORM_REPLY_TEXT), decision=decision, state=None,
+    )
+
+    assert result.text != render_faq_pets(
+        allowed_with_notice=True, small_dogs_only=True, fee_twd_per_pet=500
+    )
+    assert result.text != render_faq_bbq(cleaning_fee_twd=1000)
+    assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+
+
+def test_structured_form_reply_preserves_owner_push_when_no_customer_reply() -> None:
+    """Same message, but shaped like the push-owner-only decision inquiry_service
+    would produce when there's no immediate customer reply -- the raw booking
+    lead must still reach the owner instead of silently vanishing into a
+    tier-1 FAQ answer (which pushes nothing)."""
+    decision = InquiryDecision(
+        action_type="push_to_owner_only",
+        owner_push_text="(owner push)",
+        log_payload={"inquiry_intent": "booking_question"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message(_FORM_REPLY_TEXT), decision=decision, state=None,
+    )
+
+    assert result.owner_push_text == "(owner push)"
+    assert result.text is None
+
+
 def test_gate3_checkout_no_question_mark_answers_from_config() -> None:
     """「幾點退房」has no 嗎/? but is bare checkout FAQ, so gate3 answers."""
     result = _composer().compose(

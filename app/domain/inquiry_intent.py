@@ -5,6 +5,7 @@ from app.domain.faq_matcher import (
     match_all_faq_topics,
     match_faq,
 )
+from app.domain.form_reply_detector import looks_like_structured_form_reply
 from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.parser_models import InquiryIntentResult
 from app.domain.text_normalizer import normalize_for_parsing
@@ -27,6 +28,9 @@ def parse_inquiry_intent(text: str) -> InquiryIntentResult:
         return InquiryIntentResult(is_inquiry=True, inquiry_type="availability")
 
     if _contains_any(text, _BOOKING_TERMS):
+        return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
+
+    if looks_like_structured_form_reply(text):
         return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
 
     faq_matches = match_all_faq_topics(text)

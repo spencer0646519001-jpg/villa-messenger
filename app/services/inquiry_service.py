@@ -73,6 +73,8 @@ _OPTIONAL_LOG_FIELDS: tuple[str, ...] = (
     "parsed_infant_count",
     "parsed_room_count",
     "parsed_pet_count",
+    "parsed_has_pet",
+    "parsed_wants_bbq",
     "quoted_total",
     "missing_fields",
     "matched_faq_topics",
@@ -224,6 +226,8 @@ class InquiryService:
         log["parsed_infant_count"] = inquiry.guests.infant_count
         log["parsed_room_count"] = inquiry.room_count
         log["parsed_pet_count"] = inquiry.pets.pet_count
+        log["parsed_has_pet"] = inquiry.pets.has_pet
+        log["parsed_wants_bbq"] = inquiry.bbq.wants_bbq
         log["matched_faq_topics"] = list(inquiry.matched_faq_topics)
         log["llm_detected_intents"] = list(inquiry.llm_detected_intents)
         log["availability_probe_checkout"] = inquiry.availability_probe_checkout
@@ -338,6 +342,7 @@ class InquiryService:
             "child_count": inquiry.guests.child_count or 0,
             "infant_count": inquiry.guests.infant_count or 0,
             "pet_count": inquiry.pets.pet_count or 0,
+            "wants_bbq": inquiry.bbq.wants_bbq,
             "room_count": inquiry.room_count,
         }
 

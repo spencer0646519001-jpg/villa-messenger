@@ -86,3 +86,40 @@ def test_any_booking_equivalent_topic_wins_rule_fallback_collision() -> None:
     result = parse_inquiry_intent("8/15 包棟可以帶寵物嗎 9人")
 
     assert result.inquiry_type == "availability"
+
+
+def test_structured_form_reply_is_booking_question_not_faq() -> None:
+    text = (
+        "哈囉,歡迎來枕123民宿😊\n"
+        "請告知您想詢問的問題,欲訂房請提供以下資訊,有專人為您服務,謝謝。\n"
+        "聯絡人:林小姐\n"
+        "聯絡電話:0912345678\n"
+        "入住日期:8/15\n"
+        "入住人數:8位大人1位嬰兒\n"
+        "是否有寵物(僅限小型寵物,每隻酌收NT500):否\n"
+        "是否烤肉(酌收清潔費NT1,000):是\n"
+        "幾台車:2-3台"
+    )
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "booking_question"
+
+
+def test_structured_form_reply_without_booking_keyword_is_booking_question() -> None:
+    # Same shape as above but WITHOUT the "欲訂房" boilerplate line, so the
+    # _BOOKING_TERMS short-circuit can't fire -- only the field-line shape
+    # (label:value x3+ with a real date/guest-count signal) can catch this.
+    text = (
+        "聯絡人:林小姐\n"
+        "聯絡電話:0912345678\n"
+        "入住日期:8/15\n"
+        "入住人數:8位大人1位嬰兒\n"
+        "是否有寵物(僅限小型寵物,每隻酌收NT500):否\n"
+        "是否烤肉(酌收清潔費NT1,000):是\n"
+        "幾台車:2-3台"
+    )
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "booking_question"

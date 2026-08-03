@@ -346,6 +346,64 @@ def test_pet_fee_is_per_stay_not_per_night(zhen123_pricing) -> None:
     assert result.pet_fee == 500
 
 
+def test_adults_plus_bbq_weekday_night(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        wants_bbq=True,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert result.room_subtotal == 9000
+    assert result.bbq_fee == 1000
+    assert result.total == 10000
+    assert result.requires_owner_confirmation == ["bbq"]
+
+
+def test_bbq_fee_is_flat_not_per_night(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 11),
+        checkout_date=date(2026, 5, 14),
+        adult_count=4,
+        wants_bbq=True,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert len(result.nightly_prices) == 3
+    assert result.bbq_fee == 1000
+
+
+def test_no_bbq_fee_when_not_requested(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.bbq_fee == 0
+    assert "bbq" not in result.requires_owner_confirmation
+
+
+def test_all_confirmation_flags_including_bbq_in_order(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 12),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        child_count=1,
+        infant_count=1,
+        pet_count=1,
+        wants_bbq=True,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert result.requires_owner_confirmation == ["children", "infants", "pets", "bbq"]
+
+
 def test_sunday_uses_weekday_rate(zhen123_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 10),
