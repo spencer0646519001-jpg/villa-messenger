@@ -69,6 +69,8 @@ def test_no_pet_mention() -> None:
         "沒有帶寵物",
         "不帶寵物",
         "不需要寵物",
+        "不要寵物",
+        "不要帶狗",
     ],
 )
 def test_labeled_or_natural_pet_negation_is_no_pet(text: str) -> None:
@@ -77,6 +79,13 @@ def test_labeled_or_natural_pet_negation_is_no_pet(text: str) -> None:
     assert result.has_pet is False
     assert result.pet_count is None
     assert result.needs_pet_count_confirmation is False
+    assert result.mentioned is True
+
+
+def test_mentioned_false_when_no_pet_mention() -> None:
+    # Callers rely on mentioned=False to avoid clobbering an existing has_pet
+    # flag on a message that never brought up pets at all.
+    assert parse_pets("請問四個人多少錢").mentioned is False
 
 
 def test_pet_negation_yields_to_explicit_count() -> None:

@@ -83,12 +83,17 @@ def test_has_pet_true_even_when_pet_count_still_unknown() -> None:
     assert slots["pet_count"] is None
 
 
-def test_has_pet_omitted_when_explicitly_false() -> None:
-    # parsed_has_pet=False (e.g. a message with no pet mention at all) must
-    # NOT be written as False -- only a positive mention updates the flag.
+def test_has_pet_false_and_pet_count_cleared_when_explicitly_negated() -> None:
+    # parsed_has_pet=False is tri-state: it only appears when the message
+    # EXPLICITLY negated pets ("沒有寵物"), never for a message that just
+    # didn't mention pets (that case is parsed_has_pet=None, see above).
+    # An explicit negation must overwrite has_pet AND reset pet_count to 0,
+    # otherwise a stale pet_count from an earlier turn keeps charging the
+    # pet fee even after the customer took the pet back.
     slots = log_payload_to_state_slots(_payload(parsed_has_pet=False, parsed_pet_count=None))
 
-    assert "has_pet" not in slots
+    assert slots["has_pet"] is False
+    assert slots["pet_count"] == 0
 
 
 def test_wants_bbq_true_when_positively_mentioned() -> None:
@@ -103,7 +108,9 @@ def test_wants_bbq_omitted_when_message_says_nothing_about_bbq() -> None:
     assert "wants_bbq" not in slots
 
 
-def test_wants_bbq_omitted_when_explicitly_false() -> None:
+def test_wants_bbq_false_when_explicitly_negated() -> None:
+    # Same tri-state contract as has_pet: parsed_wants_bbq=False only occurs
+    # on an explicit negation ("不要烤肉") and must overwrite the slot.
     slots = log_payload_to_state_slots(_payload(parsed_wants_bbq=False))
 
-    assert "wants_bbq" not in slots
+    assert slots["wants_bbq"] is False

@@ -226,8 +226,13 @@ class InquiryService:
         log["parsed_infant_count"] = inquiry.guests.infant_count
         log["parsed_room_count"] = inquiry.room_count
         log["parsed_pet_count"] = inquiry.pets.pet_count
-        log["parsed_has_pet"] = inquiry.pets.has_pet
-        log["parsed_wants_bbq"] = inquiry.bbq.wants_bbq
+        # None (rather than a bare False) when this message never brought up
+        # pets/BBQ at all, so the mapper into conversation_states slots can
+        # tell "customer said no" from "customer didn't say anything" and
+        # only clear existing state on the former (see
+        # log_payload_to_state_slots).
+        log["parsed_has_pet"] = inquiry.pets.has_pet if inquiry.pets.mentioned else None
+        log["parsed_wants_bbq"] = inquiry.bbq.wants_bbq if inquiry.bbq.mentioned else None
         log["matched_faq_topics"] = list(inquiry.matched_faq_topics)
         log["llm_detected_intents"] = list(inquiry.llm_detected_intents)
         log["availability_probe_checkout"] = inquiry.availability_probe_checkout

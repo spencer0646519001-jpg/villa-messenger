@@ -410,14 +410,17 @@ def _parse_fixed_owner_command(text: str) -> str | None:
 _AMBIGUOUS_CANDIDATE_SUFFIX = re.compile(r"^(.*\S)\s+(\d+)$")
 
 
-def _parse_display_name_command(text: str) -> tuple[str, int | None] | None:
+def _parse_display_name_command(text: str) -> tuple[str, str, int | None] | None:
     """A '/<name>' that is not one of the fixed commands is a pause/resume
     toggle target for the named customer (Layer 1 handoff). Returns
-    (name, candidate_index) with the leading '/' stripped, or None when the
-    text is not that shape. A trailing "<space><digits>" (e.g. "/Wendy 1")
-    is the owner picking a numbered candidate from a prior ambiguous-name
-    reply, so it is split off as candidate_index instead of being part of
-    the name. Normalizes first (same as _parse_fixed_owner_command) so a
+    (raw_name, split_name, candidate_index) with the leading '/' stripped, or
+    None when the text is not that shape. A trailing "<space><digits>" (e.g.
+    "/Wendy 1") is the owner picking a numbered candidate from a prior
+    ambiguous-name reply, so it is ALSO split off as candidate_index --
+    raw_name keeps the full string (untouched) so the caller can try it as a
+    literal display name first, since a real display name can itself end in
+    digits (e.g. "Room 101"), which split_name/candidate_index alone cannot
+    represent. Normalizes first (same as _parse_fixed_owner_command) so a
     full-width '／' slash still matches, like the existing fixed commands."""
     stripped = normalize_for_parsing(text).strip()
     if not stripped.startswith("/"):
@@ -427,8 +430,8 @@ def _parse_display_name_command(text: str) -> tuple[str, int | None] | None:
         return None
     match = _AMBIGUOUS_CANDIDATE_SUFFIX.match(name)
     if match:
-        return match.group(1), int(match.group(2))
-    return name, None
+        return name, match.group(1), int(match.group(2))
+    return name, name, None
 
 
 def _is_active_owner_sender(database_path: str, message: InboundMessage) -> bool:
@@ -624,13 +627,33 @@ def _reply_owner_handoff_toggle(
     event: dict,
     message: InboundMessage,
     database_path: str,
+    raw_name: str,
     display_name: str,
     candidate_index: int | None,
 ) -> None:
     handoff_service = _build_handoff_service(database_path)
-    lookup = handoff_service.resolve_by_display_name(
-        tenant_id=message.tenant_id, platform=message.platform, display_name=display_name
-    )
+    if candidate_index is not None:
+        # The text had a trailing "<space><digits>" shape (e.g. "/Room 101"),
+        # which is ambiguous between "candidate #101 of a prior ambiguous
+        # list" and "a literal display name that itself ends in digits".
+        # Try the untouched raw string as an exact display name FIRST -- only
+        # fall back to treating the suffix as a candidate index when no
+        # customer is actually named that.
+        exact_lookup = handoff_service.resolve_by_display_name(
+            tenant_id=message.tenant_id, platform=message.platform, display_name=raw_name
+        )
+        if exact_lookup.status == "found":
+            display_name = raw_name
+            candidate_index = None
+            lookup = exact_lookup
+        else:
+            lookup = handoff_service.resolve_by_display_name(
+                tenant_id=message.tenant_id, platform=message.platform, display_name=display_name
+            )
+    else:
+        lookup = handoff_service.resolve_by_display_name(
+            tenant_id=message.tenant_id, platform=message.platform, display_name=display_name
+        )
     if lookup.status == "not_found":
         _send_reply(event, render_handoff_not_found_message(display_name=display_name))
         return
@@ -682,11 +705,12 @@ def _handle_owner_command(*, event: dict, message: InboundMessage, database_path
         return True
     parsed_display_name = _parse_display_name_command(message.text)
     if parsed_display_name:
-        display_name, candidate_index = parsed_display_name
+        raw_name, display_name, candidate_index = parsed_display_name
         _reply_owner_handoff_toggle(
             event=event,
             message=message,
             database_path=database_path,
+            raw_name=raw_name,
             display_name=display_name,
             candidate_index=candidate_index,
         )
@@ -950,7 +974,11 @@ def _check_and_send_digest_for_tenant(
     if not _send_owner_push(database_path=database_path, tenant_id=tenant_id, text=text):
         return
     state_repo.mark_digest_sent(tenant_id=tenant_id, date_str=window_start_date)
-    _close_pending_rows(database_path=database_path, tenant_id=tenant_id, rows=rows)
+    # Do NOT close the rows here: the digest only pushes a COUNT ("共 N 則,
+    # 請輸入 /待回覆 查看"), never the actual message content. Closing them now
+    # would make them vanish before the owner ever sees them via /待回覆 --
+    # only _reply_owner_pending (which actually shows the content) may close
+    # backlog rows.
 
 
 def run_nightly_digest_check(database_path: str) -> None:

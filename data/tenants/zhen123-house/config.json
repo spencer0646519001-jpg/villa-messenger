@@ -183,7 +183,7 @@
       "requires_advance_notice": true,
       "cleaning_fee_twd": 1000,
       "v1_5_owner_confirmation_needed": true,
-      "auto_add_fee_in_v1_5": false
+      "auto_add_fee_in_v1_5": true
     },
     "deposits": {
       "booking_deposit_percent_of_total_room_price": 30,

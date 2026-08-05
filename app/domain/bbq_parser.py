@@ -14,8 +14,8 @@ _AFFIRM_TERMS = ("是", "要", "需要", "有")
 # "否" are only safe in the colon-anchored _BBQ_LABEL_* patterns below, where
 # they can only match right after the "label:" separator, never inside the
 # "是否" question wording that precedes it.
-_LABEL_NEGATION_TERMS = ("否", "不用", "不需要", "沒有", "無")
-_NATURAL_NEGATION_TERMS = ("不用", "不需要", "沒有", "無")
+_LABEL_NEGATION_TERMS = ("否", "不要", "不用", "不需要", "沒有", "無")
+_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無")
 _NATURAL_AFFIRM_TERMS = ("要", "需要", "有")
 
 # Gap between the "label:" separator and its answer: same line (just
@@ -44,11 +44,16 @@ _BBQ_PREFIX_AFFIRM_PATTERN = re.compile(
 
 def parse_bbq(text: str) -> BbqParseResult:
     if _BBQ_LABEL_NEGATION_PATTERN.search(text) is not None:
-        return BbqParseResult(wants_bbq=False)
+        return BbqParseResult(wants_bbq=False, mentioned=True)
     if _BBQ_LABEL_AFFIRM_PATTERN.search(text) is not None:
-        return BbqParseResult(wants_bbq=True)
+        return BbqParseResult(wants_bbq=True, mentioned=True)
     if _BBQ_PREFIX_NEGATION_PATTERN.search(text) is not None:
-        return BbqParseResult(wants_bbq=False)
+        return BbqParseResult(wants_bbq=False, mentioned=True)
     if _BBQ_PREFIX_AFFIRM_PATTERN.search(text) is not None:
-        return BbqParseResult(wants_bbq=True)
-    return BbqParseResult(wants_bbq=False)
+        return BbqParseResult(wants_bbq=True, mentioned=True)
+    # No recognizable affirm/negation pattern matched -- e.g. the bare form
+    # question "是否烤肉(...)" with no answer filled in yet, or an unrelated
+    # sentence that happens to contain "烤肉". Neither is an explicit answer,
+    # so mentioned stays False: this turn must NOT clear an existing wants_bbq
+    # flag just because the BBQ term appears somewhere in the text.
+    return BbqParseResult(wants_bbq=False, mentioned=False)

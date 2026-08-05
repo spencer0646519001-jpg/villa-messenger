@@ -2065,6 +2065,31 @@ def test_handoff_toggle_numbered_selection_out_of_range_relists_candidates(
     assert _rows(database_path, "conversation_manual_holds") == []
 
 
+def test_handoff_toggle_display_name_ending_in_digits_resolves_literally(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A display name that itself ends in digits (e.g. "Room 101") used to
+    always be misparsed as name="Room" + candidate_index=101 (nobody had ever
+    shown the owner a numbered list), which always failed with "查無". The
+    exact full string must be tried as a literal display name first."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
+    replies, _ = _capture_sends(monkeypatch, owner_id=None)
+    _set_display_name(monkeypatch, "Room 101")
+    guest_body = _payload_bytes([_text_event("你好", user_id="Uguest-1")])
+    _post(client, guest_body, _sign(guest_body))
+    replies.clear()
+
+    toggle_body = _payload_bytes(
+        [_text_event_with_reply_token("/Room 101", "rt-1", user_id="Uowner-a")]
+    )
+    response = _post(client, toggle_body, _sign(toggle_body))
+
+    assert response.status_code == 200
+    assert "已暫停" in replies[0]["text"]
+
+
 def test_urgent_message_from_paused_customer_still_pushes_owner(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2214,9 +2239,14 @@ def test_pending_command_closes_shown_rows(
     assert OWNER_PENDING_EMPTY_MESSAGE in replies[0]["text"]
 
 
-def test_nightly_digest_closes_rows_after_successful_push(
+def test_nightly_digest_leaves_rows_pending_after_successful_push(
     database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The digest only pushes a COUNT ("共 N 則,請輸入 /待回覆 查看"), never the
+    actual message content -- so a successful digest push must NOT close the
+    rows. Only /待回覆 (which actually shows the content) may close them,
+    otherwise the owner follows the digest's own instruction and finds an
+    empty list."""
     tenant_id = _seed_channel(database_path)
     _set_system_on(database_path, tenant_id)
     _seed_tenant_owner(database_path, tenant_id, "Uowner-a")
@@ -2231,7 +2261,7 @@ def test_nightly_digest_closes_rows_after_successful_push(
     line_webhook_routes.run_nightly_digest_check(database_path)
 
     messages = _rows(database_path, "messages")
-    assert messages[0]["handled"] == 1  # shown once via digest -> closed, not recounted tomorrow
+    assert messages[0]["handled"] == 0  # still pending -> visible via /待回覆
 
 
 def test_nightly_digest_push_failure_leaves_rows_pending(

@@ -99,7 +99,9 @@ National holidays in V1.5 map to the `summer_saturday_or_holiday` price key.
 
 If guests mention BBQ, note that BBQ requires advance notice and the cleaning fee is NT$1,000.
 
-V1.5 may mark BBQ as owner-confirmation-needed rather than automatically adding it unless explicitly designed later.
+BBQ follows the same mechanism as the pet fee: the NT$1,000 cleaning fee is
+added to the quoted total automatically, and BBQ is also flagged in
+`requires_owner_confirmation` so the owner still confirms it manually.
 
 ## Deposits
 

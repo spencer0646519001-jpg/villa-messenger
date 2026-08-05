@@ -77,3 +77,15 @@ def test_number_wei_child_word_order() -> None:
     assert result.adult_count == 2
     assert result.child_count == 3
     assert result.guest_count == 5
+
+
+def test_label_theft_guard_survives_whitespace_gap() -> None:
+    # Regression: a space between 大人's own "2位" and the following 小孩
+    # label used to break the label-theft guard (it only matched labels
+    # directly adjacent to the stolen number), letting 小孩 steal the "2"
+    # that already belongs to 大人 instead of reading its own "1位".
+    result = parse_guest_counts("大人 2位小孩 1位")
+
+    assert result.adult_count == 2
+    assert result.child_count == 1
+    assert result.guest_count == 3

@@ -9,13 +9,16 @@ targets the conversation_states table rather than messages/inquiries, so the
 two mappers can evolve independently.
 
 None slots stay None so update_slots' COALESCE leaves those columns untouched.
-has_pet/wants_bbq are included ONLY when this message positively mentioned
-them (parsed_has_pet / parsed_wants_bbq is True), so a message that says
-nothing about pets/bbq never clobbers an existing flag (omitting the key
-leaves it to create()'s default / update_slots' COALESCE). has_pet is
-deliberately NOT derived from pet_count alone: "有養狗" (has a dog, no count
-given) must still set has_pet so the state asks for the count, instead of
-silently staying pet-free because pet_count happens to be unresolved.
+parsed_has_pet / parsed_wants_bbq are tri-state (True / False / None) coming
+out of inquiry_service: None means this message never brought up pets/BBQ at
+all (mentioned=False in the parser result) and must NOT clobber an existing
+flag, while True/False are an explicit statement THIS turn ("有養狗" / "沒有
+寵物") and must overwrite -- including clearing a stale pet_count back to 0
+when the customer takes back a pet they mentioned earlier, otherwise the old
+count would still be COALESCE'd through and keep charging the pet fee. has_pet
+is deliberately NOT derived from pet_count alone: "有養狗" (has a dog, no
+count given) must still set has_pet so the state asks for the count, instead
+of silently staying pet-free because pet_count happens to be unresolved.
 """
 
 
@@ -32,8 +35,15 @@ def log_payload_to_state_slots(payload: dict) -> dict:
         "pet_count": payload.get("parsed_pet_count"),
         "last_message_text": payload.get("raw_text"),
     }
-    if payload.get("parsed_has_pet"):
+    has_pet = payload.get("parsed_has_pet")
+    if has_pet is True:
         slots["has_pet"] = True
-    if payload.get("parsed_wants_bbq"):
+    elif has_pet is False:
+        slots["has_pet"] = False
+        slots["pet_count"] = 0
+    wants_bbq = payload.get("parsed_wants_bbq")
+    if wants_bbq is True:
         slots["wants_bbq"] = True
+    elif wants_bbq is False:
+        slots["wants_bbq"] = False
     return slots

@@ -16,10 +16,17 @@ class PetParseResult(BaseModel):
     pet_count: int | None = None
     pet_type: str | None = None
     needs_pet_count_confirmation: bool = False
+    # True iff this message said ANYTHING about pets (affirm or explicit
+    # negation) -- lets callers tell "customer said no pet" (has_pet=False,
+    # mentioned=True) apart from "this message never brought up pets"
+    # (has_pet=False, mentioned=False), which a bare has_pet=False cannot.
+    mentioned: bool = False
 
 
 class BbqParseResult(BaseModel):
     wants_bbq: bool = False
+    # Same tri-state purpose as PetParseResult.mentioned, for BBQ.
+    mentioned: bool = False
 
 
 class DateParseResult(BaseModel):

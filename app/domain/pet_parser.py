@@ -16,13 +16,13 @@ _PET_COUNT_PATTERN = re.compile(
 # mirrors room_count_parser.parse_room_count_answer's anchored-answer style.
 _PET_COUNT_ANSWER_PATTERN = re.compile(rf"^(?P<count>{_NUMBER_PATTERN})\s*(?:隻|只|個)?$")
 
-_LABEL_NEGATION_TERMS = ("否", "沒有", "沒帶", "不需要", "不用", "不帶", "無")
+_LABEL_NEGATION_TERMS = ("否", "沒有", "沒帶", "不需要", "不用", "不要", "不帶", "無")
 # Bare "否" is deliberately EXCLUDED here (unlike _LABEL_NEGATION_TERMS above):
 # a lot of form-field questions are phrased "是否有寵物" ("是否" = "whether"),
 # which itself contains "否" right before "有寵物" -- using the same term list
 # for this prefix-style check would misread the QUESTION as a "no pet" ANSWER,
 # regardless of what the customer actually filled in after it.
-_NATURAL_NEGATION_TERMS = ("沒有", "沒帶", "不需要", "不用", "不帶", "無")
+_NATURAL_NEGATION_TERMS = ("沒有", "沒帶", "不需要", "不用", "不要", "不帶", "無")
 # Gap between the "label:" separator and its answer: same line (just
 # horizontal whitespace), OR the answer wrapped to the very next line (one
 # newline). NOT bare \s* -- that would let the match skip past several blank
@@ -59,6 +59,7 @@ def parse_pets(text: str) -> PetParseResult:
             pet_count=None,
             pet_type=None,
             needs_pet_count_confirmation=False,
+            mentioned=True,
         )
 
     mentioned_pet_terms = [term for term in _PET_TERMS if term in text]
@@ -71,6 +72,7 @@ def parse_pets(text: str) -> PetParseResult:
         pet_count=pet_count,
         pet_type="dog" if matched_pet_term in _DOG_TERMS else None,
         needs_pet_count_confirmation=has_pet and pet_count is None,
+        mentioned=has_pet,
     )
 
 

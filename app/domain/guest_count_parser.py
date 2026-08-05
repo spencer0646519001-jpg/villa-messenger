@@ -19,10 +19,11 @@ _INFANT_BEFORE_NUMBER = re.compile(rf"(?:嬰兒|嬰|幼兒|寶寶)\s*(?P<count>{
 
 _TOTAL_GUESTS = re.compile(rf"(?:總共|一共|共)?\s*(?P<count>{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)")
 
-# "NUMBER位?" ending right where a label starts -- i.e. that label already got
-# its own count in label-before-number order, so it will not also claim the
-# number that follows it (see _has_label_theft below).
-_TRAILING_NUMBER = re.compile(rf"(?:{_NUMBER_PATTERN})位?$")
+# "NUMBER位?" ending right where a label starts (allowing a whitespace gap,
+# e.g. "10 大人") -- i.e. that label already got its own count in
+# label-before-number order, so it will not also claim the number that
+# follows it (see _has_label_theft below).
+_TRAILING_NUMBER = re.compile(rf"(?:{_NUMBER_PATTERN})位?\s*$")
 
 
 def parse_guest_counts(text: str) -> GuestCountParseResult:
@@ -90,8 +91,14 @@ def _first_unstolen_match(
 def _has_label_theft(text: str, number_start: int, other_category_labels: tuple[str, ...]) -> bool:
     prefix = text[:number_start]
     for label in other_category_labels:
-        if prefix.endswith(label):
-            label_start = number_start - len(label)
+        # Allow whitespace between the OTHER category's label and the number
+        # it already claimed (e.g. "大人 2位小孩 1位" -- 大人's own "2位" is
+        # separated from 小孩 by a space, not adjacent to it), otherwise a
+        # bare endswith(label) misses the gap and lets 小孩 steal the "2"
+        # that already belongs to 大人.
+        match = re.search(rf"(?:{re.escape(label)})\s*$", prefix)
+        if match is not None:
+            label_start = match.start()
             return _TRAILING_NUMBER.search(text[:label_start]) is None
     return False
 

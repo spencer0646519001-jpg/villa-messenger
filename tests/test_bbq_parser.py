@@ -28,10 +28,39 @@ def test_affirmative_bbq_answers(text: str) -> None:
         "不用烤肉",
         "不需要BBQ",
         "沒有要烤肉",
+        "不要烤肉",
+        "不要BBQ",
     ],
 )
 def test_negative_bbq_answers(text: str) -> None:
     assert parse_bbq(text).wants_bbq is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "是否烤肉 (酌收清潔費 NT1,000)：是",
+        "不用烤肉",
+        "不要烤肉",
+    ],
+)
+def test_mentioned_true_when_answer_is_explicit(text: str) -> None:
+    assert parse_bbq(text).mentioned is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "入住日期:8/4-8/6",
+        "是否烤肉 (酌收清潔費 NT1,000)",
+    ],
+)
+def test_mentioned_false_when_no_explicit_answer(text: str) -> None:
+    # A bare form question with no answer filled in (or no BBQ mention at
+    # all) must not be treated as an explicit statement -- callers rely on
+    # mentioned=False to avoid clobbering an existing wants_bbq flag just
+    # because the BBQ term appears somewhere in the text.
+    assert parse_bbq(text).mentioned is False
 
 
 def test_no_bbq_mention_defaults_false() -> None:
