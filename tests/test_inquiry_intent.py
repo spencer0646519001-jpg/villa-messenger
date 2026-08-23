@@ -123,3 +123,16 @@ def test_structured_form_reply_without_booking_keyword_is_booking_question() -> 
 
     assert result.is_inquiry is True
     assert result.inquiry_type == "booking_question"
+
+
+def test_unlabeled_form_reply_is_booking_question_not_pets_faq() -> None:
+    # eval candidate_25/26 regression: no field labels at all (name/phone/dates/
+    # headcount/pet-status each on its own bare line). Before the unlabeled-line
+    # detector, "無寵物" hit the "pets" FAQ topic (not booking-equivalent) and
+    # the whole turn -- despite carrying a full date range -- got locked into
+    # inquiry_type="faq", so conversation_states never opened for it.
+    text = "彭璟蕙\n[PHONE]\n8/8-8/9\n6位\n無寵物"
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "booking_question"
