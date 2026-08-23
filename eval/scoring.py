@@ -93,8 +93,8 @@ def derive_actual_fields(result: CaseResult, case: dict) -> dict:
     checkout = state.get("checkout_date")
     adult = state.get("adult_count")
     child = state.get("child_count")
-    has_pet = state.get("has_pet")
-    wants_bbq = state.get("wants_bbq")
+    has_pet = _ever_mentioned(case, result, lambda p: (p.pets.mentioned, p.pets.has_pet))
+    wants_bbq = _ever_mentioned(case, result, lambda p: (p.bbq.mentioned, p.bbq.wants_bbq))
 
     final_parse = _final_turn_parse(case, result)
 
@@ -106,10 +106,10 @@ def derive_actual_fields(result: CaseResult, case: dict) -> dict:
         "child_count": child,
         "infant_count": state.get("infant_count"),
         "guest_count": _guest_count(adult, child),
-        "has_pet": bool(has_pet) if has_pet is not None else None,
+        "has_pet": has_pet,
         "pet_count": state.get("pet_count"),
         "room_count": state.get("room_count"),
-        "wants_bbq": bool(wants_bbq) if wants_bbq is not None else None,
+        "wants_bbq": wants_bbq,
         # KNOWN EVALUATOR LIMITATION: this is the FINAL message's own per-message
         # inquiry_intent (app.domain.inquiry_intent.parse_inquiry_intent), read
         # straight off the decision log. A "is_inquiry=False -> non_inquiry" mapping
@@ -127,6 +127,31 @@ def derive_actual_fields(result: CaseResult, case: dict) -> dict:
 def _final_turn_parse(case: dict, result: CaseResult):
     reference_year = result.final_message.timestamp.year
     return parse_inquiry(case["input"], reference_year=reference_year)
+
+
+def _history_texts(case: dict) -> list[str]:
+    history = case.get("history") or []
+    return [h["content"] for h in history] + [case["input"]]
+
+
+def _ever_mentioned(case: dict, result: CaseResult, extract) -> bool | None:
+    """Tri-state reconstruction for has_pet/wants_bbq: conversation_states.has_pet
+    and .wants_bbq are `INTEGER NOT NULL DEFAULT 0` (schema.sql) -- the persisted
+    state can only ever be True/False, never "customer never brought this up",
+    even though the per-turn parser (and the log_payload tri-state it feeds) can
+    tell the difference. Re-parses every turn's OWN text (no accumulated state,
+    matching the eval's no-LLM/no-persistence-shortcuts design) and keeps the
+    LAST turn that explicitly mentioned the field -- mirroring the COALESCE
+    overwrite ConversationStateService actually applies turn over turn. Returns
+    None only when NO turn ever mentioned it: a true "never discussed"."""
+    reference_year = result.final_message.timestamp.year
+    last_value: bool | None = None
+    for text in _history_texts(case):
+        parse = parse_inquiry(text, reference_year=reference_year)
+        mentioned, value = extract(parse)
+        if mentioned:
+            last_value = value
+    return last_value
 
 
 def _single_turn_only_fields(case: dict, result: CaseResult) -> dict:
