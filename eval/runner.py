@@ -1,13 +1,16 @@
 """
-CLI entry point for Villa Messenger Eval v1.
+CLI entry point for Villa Messenger Eval v1.1.
 
     python -m eval.runner \\
-        --gold ../villa_eval_private/eval_v1/expanded_gold_50.jsonl \\
-        --out eval/results/baseline_v1
+        --gold ../villa_eval_private/eval_v1/expanded_gold_50_v1_1.jsonl \\
+        --out eval/results/baseline_v1_1
 
 Verifies the gold file's SHA-256 against the frozen hash before touching anything
 else, and ABORTS (nonzero exit, no results written) on any mismatch -- the dataset is
 frozen and this run must refuse to silently score a different file (task section 1).
+
+To score the original v1 gold set instead, pass --gold pointing at
+expanded_gold_50.jsonl and --expected-sha256 31ad2d77539a2250a1b9d04021373feca3496baed7e368d7ed04a32f93765688.
 """
 
 from __future__ import annotations
@@ -21,14 +24,14 @@ from pathlib import Path
 
 from eval import report, replay, scoring
 
-FROZEN_GOLD_SHA256 = "31ad2d77539a2250a1b9d04021373feca3496baed7e368d7ed04a32f93765688"
+FROZEN_GOLD_SHA256 = "df6e9f4570a9edacba9796787601fe84acbf50580d8b11445db0152615291d94"
 
 _DEFAULT_GOLD_PATH = (
     Path(__file__).resolve().parents[1]
     / ".."
     / "villa_eval_private"
     / "eval_v1"
-    / "expanded_gold_50.jsonl"
+    / "expanded_gold_50_v1_1.jsonl"
 )
 
 
@@ -86,13 +89,13 @@ def run(cases: list[dict]) -> list[scoring.CaseScore]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Villa Messenger Eval v1 runner")
-    parser.add_argument("--gold", default=str(_DEFAULT_GOLD_PATH), help="Path to expanded_gold_50.jsonl")
-    parser.add_argument("--out", default="eval/results/baseline_v1", help="Output directory")
+    parser = argparse.ArgumentParser(description="Villa Messenger Eval v1.1 runner")
+    parser.add_argument("--gold", default=str(_DEFAULT_GOLD_PATH), help="Path to expanded_gold_50_v1_1.jsonl")
+    parser.add_argument("--out", default="eval/results/baseline_v1_1", help="Output directory")
     parser.add_argument(
         "--expected-sha256",
         default=FROZEN_GOLD_SHA256,
-        help="Frozen gold SHA-256 to verify against (default: Eval v1 frozen hash)",
+        help="Frozen gold SHA-256 to verify against (default: Eval v1.1 frozen hash)",
     )
     args = parser.parse_args(argv)
 
