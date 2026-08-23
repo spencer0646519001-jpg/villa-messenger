@@ -1,0 +1,120 @@
+{
+  "total_cases": 50,
+  "case_level_pass_rate": {
+    "passed": 20,
+    "total": 50,
+    "rate": 0.4
+  },
+  "state_extraction": {
+    "overall": {
+      "passed": 428,
+      "total": 502,
+      "accuracy": 0.8526
+    },
+    "date_accuracy": {
+      "passed": 127,
+      "total": 150,
+      "accuracy": 0.8467
+    },
+    "guest_count_accuracy": {
+      "passed": 183,
+      "total": 200,
+      "accuracy": 0.915
+    },
+    "room_count_accuracy": {
+      "passed": 49,
+      "total": 50,
+      "accuracy": 0.98
+    },
+    "pet_accuracy": {
+      "passed": 24,
+      "total": 34,
+      "accuracy": 0.7059
+    },
+    "bbq_accuracy": {
+      "passed": 8,
+      "total": 18,
+      "accuracy": 0.4444
+    }
+  },
+  "multi_turn_state_retention": {
+    "passed": 45,
+    "total": 90,
+    "accuracy": 0.5
+  },
+  "action_routing_accuracy": {
+    "passed": 41,
+    "total": 50,
+    "accuracy": 0.82
+  },
+  "response_policy": {
+    "must_include": {
+      "passed": 18,
+      "total": 30,
+      "not_deterministic": 0,
+      "pass_rate": 0.6
+    },
+    "must_not_claim": {
+      "passed": 55,
+      "total": 55,
+      "not_deterministic": 0,
+      "pass_rate": 1.0
+    }
+  },
+  "known_production_regressions": {
+    "all_confirmed_failures": {
+      "passed": 0,
+      "total": 10
+    },
+    "parser_miss": {
+      "passed": 0,
+      "total": 6
+    },
+    "context_miss": {
+      "passed": 0,
+      "total": 4
+    }
+  },
+  "by_source_label": {
+    "CONTEXT_MISS": {
+      "passed": 0,
+      "total": 4
+    },
+    "LINKED_INQUIRY": {
+      "passed": 8,
+      "total": 8
+    },
+    "MULTI_TURN": {
+      "passed": 5,
+      "total": 10
+    },
+    "NON_INQUIRY": {
+      "passed": 1,
+      "total": 6
+    },
+    "OFF_MODE_NATURAL_TRAFFIC": {
+      "passed": 2,
+      "total": 2
+    },
+    "PARSER_MISS": {
+      "passed": 0,
+      "total": 6
+    },
+    "TRUE_MISSING": {
+      "passed": 2,
+      "total": 6
+    },
+    "TRUE_MISSING_ROOM_COUNT": {
+      "passed": 0,
+      "total": 4
+    },
+    "full_house": {
+      "passed": 2,
+      "total": 3
+    },
+    "urgent": {
+      "passed": 0,
+      "total": 1
+    }
+  }
+}
