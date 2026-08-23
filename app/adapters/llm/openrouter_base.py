@@ -259,6 +259,21 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
 - intents 可列出所有看見的意圖,例如 ["availability", "faq:pets"];
   intent 欄位仍放主要意圖。
 """
+    state_continuation_instruction = ""
+    if trigger == "type_4_state_continuation_judgment":
+        state_continuation_instruction = """
+
+本次情境是客人先前已經在詢問訂房,對話還缺著某些欄位,系統原本要繼續追問缺
+的部分。輸入的第一行會用中括號列出已知資訊與還缺什麼,第二行是客人剛剛講的
+新的一句話。你只負責判斷:
+- 客人是不是還在配合回答/延續這個訂房對話(即使只是簡短回應、或內容跟還缺
+  的欄位有關)=> is_booking_intent true。
+- 客人已經在講別的事、跟訂房無關(閒聊、道謝、問別的問題、話題轉走)
+  => is_booking_intent false。
+- 不確定的話,傾向 true(避免漏接真正還在訂房的客人)。
+- 不要判斷實際空房、不要計價、不要產生客人回覆。
+- 本 trigger 不做欄位抽取;日期、人數、房數、寵物欄位全部填 null。
+"""
     return f"""
 你是民宿訂房訊息的欄位抽取器。只輸出 JSON,不要解釋,不要產生給客人的回覆文字。
 
@@ -269,7 +284,7 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
 - tenant_id 不在 prompt 中使用,也不可輸出。
 
 trigger: {trigger}
-{collision_instruction}
+{collision_instruction}{state_continuation_instruction}
 
 簡寫日期範例:
 - "7/28-29" => checkin_date "2026-07-28", checkout_date "2026-07-29"

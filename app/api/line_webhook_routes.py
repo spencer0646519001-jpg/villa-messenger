@@ -48,6 +48,9 @@ from app.config_loader import (
     load_tenant_config,
 )
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.llm_fallback import judge_state_continuation
+from app.domain.llm_provider import LLMProvider
+from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
 from app.domain.operation_mode_resolver import compute_most_recent_schedule_window
 from app.domain.reply_templates import (
     render_handoff_ambiguous_message,
@@ -55,6 +58,7 @@ from app.domain.reply_templates import (
     render_handoff_paused_message,
     render_handoff_resumed_message,
     render_owner_pending_digest_message,
+    render_owner_push_uncategorized,
 )
 from app.domain.reply_text import (
     OWNER_PENDING_EMPTY_HEADER,
@@ -93,7 +97,9 @@ from app.services.conversation_reply_composer import (
     ComposedReply,
     ConversationReplyComposer,
 )
+from app.services.conversation_state_service import _SLOT_KEYS
 from app.services.conversation_state_service import ConversationStateService
+from app.services.inquiry_service import _QUOTE_RELEVANT_INTENTS
 from app.services.inquiry_service import InquiryService
 from app.services.message_persistence_service import MessagePersistenceService
 from app.services.operation_mode_service import OperationModeService
@@ -147,6 +153,7 @@ class _PipelineContext:
     persistence: MessagePersistenceService
     state_service: ConversationStateService
     composer: ConversationReplyComposer
+    llm_provider: LLMProvider | None
 
 
 def _reject(category: str, channel_id: str | None) -> NoReturn:
@@ -244,6 +251,7 @@ def _build_pipeline_context(database_path: str, tenant: dict) -> _PipelineContex
         persistence=MessagePersistenceService(database_path=database_path),
         state_service=ConversationStateService(ConversationStateRepository(database_path)),
         composer=_build_reply_composer(database_path, availability_service),
+        llm_provider=build_llm_provider_from_env(),
     )
 
 
@@ -792,6 +800,60 @@ def _compose_reply(
         return ComposedReply(text=decision.customer_reply_text)
 
 
+def _looks_off_topic_against_open_state(decision: InquiryDecision, state: dict | None) -> bool:
+    """Rule-based pre-filter for the STAGE C off-topic gate: True only when this
+    message contributed nothing to an already-open booking state AND does not
+    itself classify as quote-relevant. This is the narrow, ambiguous slice
+    rules can't resolve -- everything else (a bare slot answer like "2房", or
+    a message that's quote-relevant on its own) is left alone."""
+    if state is None or decision.completes_conversation_state:
+        return False
+    if decision.log_payload.get("inquiry_intent") in _QUOTE_RELEVANT_INTENTS:
+        return False
+    slots = log_payload_to_state_slots(decision.log_payload)
+    return not any(slots.get(key) is not None for key in _SLOT_KEYS)
+
+
+def _maybe_override_for_off_topic(
+    *,
+    llm_provider: LLMProvider | None,
+    message: InboundMessage,
+    decision: InquiryDecision,
+    state: dict | None,
+) -> ComposedReply | None:
+    """Best-effort: when the rule-based pre-filter above flags this message as a
+    candidate, ask the LLM whether the customer is still continuing the open
+    booking conversation before letting STAGE C re-issue the same missing-info
+    prompt. False means "not continuing" -> stop nagging, notify the owner
+    instead (no customer reply, so the reply-composer's own text is never
+    double-sent). True or None (LLM off/unavailable/timeout/bad output) ->
+    return None so the caller runs the composer unchanged -- this judgment
+    only ever narrows today's behavior, never widens it."""
+    if not _looks_off_topic_against_open_state(decision, state):
+        return None
+    reference_year = (message.timestamp or datetime.now(timezone.utc)).year
+    try:
+        still_continuing = judge_state_continuation(
+            state=state,
+            raw_text=message.text,
+            reference_year=reference_year,
+            tenant_id=message.tenant_id,
+            provider=llm_provider,
+        )
+    except Exception:  # noqa: BLE001 -- this judgment must NEVER break receiving
+        logger.warning("LINE state-continuation judgment failed", exc_info=True)
+        return None
+    if still_continuing is not False:
+        return None
+    return ComposedReply(
+        owner_push_text=render_owner_push_uncategorized(
+            original_text=message.text,
+            display_name=message.customer_display_name,
+            customer_was_replied=False,
+        )
+    )
+
+
 def _mark_if_complete(
     state_service: ConversationStateService, tenant_id: int, composed: ComposedReply
 ) -> None:
@@ -880,7 +942,12 @@ def _process_pipeline_event(
     persisted = context.persistence.persist(decision=decision)
     message_id = persisted["message_id"]
     state = _record_state(context.state_service, message, decision)
-    composed = _compose_reply(context.composer, message, decision, state)
+    composed = _maybe_override_for_off_topic(
+        llm_provider=context.llm_provider,
+        message=message,
+        decision=decision,
+        state=state,
+    ) or _compose_reply(context.composer, message, decision, state)
     customer_text, owner_push_ok = _resolve_customer_text(
         composed, database_path, message.tenant_id
     )

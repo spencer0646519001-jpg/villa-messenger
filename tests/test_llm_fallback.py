@@ -6,6 +6,8 @@ from app.adapters.llm import openrouter_base
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.llm_fallback import (
     TYPE_3_FAQ_BOOKING_COLLISION,
+    TYPE_4_STATE_CONTINUATION_JUDGMENT,
+    judge_state_continuation,
     llm_fallback_parse,
 )
 from app.domain.llm_provider import LLMOutput
@@ -316,3 +318,87 @@ def test_collision_prompt_forbids_availability_pricing_reply_and_slot_extraction
     assert "不要計價" in prompt
     assert "不要產生客人回覆" in prompt
     assert "欄位全部填 null" in prompt
+
+
+_STATE = {
+    "id": 1,
+    "status": "in_progress",
+    "checkin_date": "2026-08-08",
+    "checkout_date": "2026-08-09",
+    "adult_count": 6,
+    "child_count": None,
+    "infant_count": None,
+    "room_count": None,
+    "pet_count": None,
+    "has_pet": False,
+    "wants_bbq": False,
+}
+
+
+def test_judge_state_continuation_returns_llm_verdict() -> None:
+    provider = FakeProvider(_out(is_booking_intent=False))
+
+    verdict = judge_state_continuation(
+        state=_STATE,
+        raw_text="謝謝你喔",
+        reference_year=2026,
+        tenant_id=1,
+        provider=provider,
+    )
+
+    assert verdict is False
+    assert provider.calls[0]["trigger"] == TYPE_4_STATE_CONTINUATION_JUDGMENT
+    assert "還缺" in provider.calls[0]["raw_text"]
+    assert "謝謝你喔" in provider.calls[0]["raw_text"]
+
+
+def test_judge_state_continuation_returns_none_when_provider_missing() -> None:
+    verdict = judge_state_continuation(
+        state=_STATE,
+        raw_text="謝謝你喔",
+        reference_year=2026,
+        tenant_id=1,
+        provider=None,
+    )
+
+    assert verdict is None
+
+
+def test_judge_state_continuation_returns_none_on_provider_failure() -> None:
+    verdict = judge_state_continuation(
+        state=_STATE,
+        raw_text="謝謝你喔",
+        reference_year=2026,
+        tenant_id=1,
+        provider=FakeProvider(None),
+    )
+
+    assert verdict is None
+
+
+def test_judge_state_continuation_returns_none_when_llm_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    provider = FakeProvider(_out(is_booking_intent=False))
+
+    verdict = judge_state_continuation(
+        state=_STATE,
+        raw_text="謝謝你喔",
+        reference_year=2026,
+        tenant_id=1,
+        provider=provider,
+    )
+
+    assert verdict is None
+    assert provider.calls == []
+
+
+def test_state_continuation_prompt_forbids_reply_and_slot_extraction_and_defaults_true() -> None:
+    prompt = openrouter_base._build_system_prompt(  # noqa: SLF001
+        2026, TYPE_4_STATE_CONTINUATION_JUDGMENT
+    )
+
+    assert "不要判斷實際空房" in prompt
+    assert "不要計價" in prompt
+    assert "不要產生客人回覆" in prompt
+    assert "欄位全部填 null" in prompt
+    assert "傾向 true" in prompt

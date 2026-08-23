@@ -16,9 +16,12 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.adapters.llm.fake_provider import FakeProvider
 from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
 from app.domain.availability_models import AvailabilityResult, BlockedNight
+from app.domain.llm_fallback import TYPE_4_STATE_CONTINUATION_JUDGMENT
+from app.domain.llm_provider import LLMOutput
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
 from app.domain.reply_text import (
@@ -824,6 +827,121 @@ def test_two_message_incomplete_prompts_for_missing_slot(
     assert calls[-1]["text"] == SINGLE_MISSING_CHECKOUT_MESSAGE
     states = _rows(database_path, "conversation_states")
     assert states[0]["status"] == "in_progress"  # not completed -- still missing
+
+
+def _fake_state_continuation_provider(is_booking_intent: bool | None) -> FakeProvider:
+    return FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=is_booking_intent,
+            needs_clarification=False,
+            clarification_reason=None,
+        )
+    )
+
+
+_OFF_TOPIC_FOLLOWUP = "今天天氣真好呢"
+
+
+def test_off_topic_followup_against_open_state_llm_says_not_continuing_silences_and_pushes(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = _fake_state_continuation_provider(is_booking_intent=False)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Uowner")
+
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    assert replies[-1]["text"] == SINGLE_MISSING_GUEST_COUNT_MESSAGE
+
+    body2 = _payload_bytes([_text_event_with_reply_token(_OFF_TOPIC_FOLLOWUP)])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    # No second customer reply -- the missing-guest-count nag was NOT reissued.
+    assert len(replies) == 1
+    assert len(pushes) == 1
+    assert _OFF_TOPIC_FOLLOWUP in pushes[0]["text"]
+    assert provider.calls[-1]["trigger"] == TYPE_4_STATE_CONTINUATION_JUDGMENT
+    # The state stays open (not completed) -- info from turn 1 is not thrown away.
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "in_progress"
+    assert states[0]["checkin_date"] == "2026-05-12"
+
+
+def test_off_topic_followup_against_open_state_llm_says_still_continuing_keeps_nagging(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = _fake_state_continuation_provider(is_booking_intent=True)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Uowner")
+
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token(_OFF_TOPIC_FOLLOWUP)])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    # LLM says the customer is still engaged -> today's behavior is unchanged.
+    assert [call["text"] for call in replies] == [
+        SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+        SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+    ]
+    assert pushes == []
+
+
+def test_off_topic_followup_against_open_state_llm_unavailable_keeps_nagging(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moat guarantee: LLM disabled/unavailable must fall back to today's
+    rule-based behavior unchanged, never to a false "customer went silent"."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: None)
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Uowner")
+
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token(_OFF_TOPIC_FOLLOWUP)])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert [call["text"] for call in replies] == [
+        SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+        SINGLE_MISSING_GUEST_COUNT_MESSAGE,
+    ]
+    assert pushes == []
+
+
+def test_bare_slot_followup_against_open_state_never_consults_the_llm_gate(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A genuine slot-filling reply (e.g. a bare guest count) must keep working
+    exactly as before -- the off-topic gate is a rule-based pre-filter and
+    should never even call the LLM for a message that fills a missing slot."""
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = _fake_state_continuation_provider(is_booking_intent=False)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    replies, pushes = _capture_sends(monkeypatch, owner_id="Uowner")
+
+    body1 = _payload_bytes([_text_event_with_reply_token(_DATES_PRICE_NO_GUESTS)])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    body2 = _payload_bytes([_text_event_with_reply_token("4 大人")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    assert replies[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    assert pushes == []
+    assert provider.calls == []
 
 
 def test_off_mode_complete_state_stays_silent_but_accumulates(

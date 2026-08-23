@@ -31,6 +31,7 @@ from app.domain.text_normalizer import normalize_for_parsing
 TYPE_1_DATE_TRANSLATION = "type_1_date_translation"
 TYPE_2_INTENT_JUDGMENT = "type_2_intent_judgment"
 TYPE_3_FAQ_BOOKING_COLLISION = "type_3_faq_booking_collision"
+TYPE_4_STATE_CONTINUATION_JUDGMENT = "type_4_state_continuation_judgment"
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -341,4 +342,65 @@ def _can_preliminarily_quote(inquiry: InquiryParseResult, quote_relevant: bool) 
         and inquiry.dates.nights > 0
         and inquiry.guests.guest_count is not None
         and (not inquiry.pets.has_pet or inquiry.pets.pet_count is not None)
+    )
+
+
+def judge_state_continuation(
+    *,
+    state: dict,
+    raw_text: str,
+    reference_year: int,
+    tenant_id: int,
+    provider: LLMProvider | None,
+    enabled: bool | None = None,
+) -> bool | None:
+    """Single-purpose judgment for an open (in_progress) conversation_states row:
+    given what's already known and still missing, is this new message still
+    trying to continue that booking conversation, or has the customer moved on
+    to something else? Returns None (never a guess) when the LLM is disabled,
+    unavailable, or fails -- callers must treat None as "keep today's
+    rule-based behavior unchanged", never as a false negative.
+
+    Does NOT extract slots and does not touch reply text, pricing, or the
+    state machine itself -- the caller alone decides what to do with the
+    True/False/None verdict."""
+    if not _llm_enabled(enabled) or provider is None:
+        return None
+    try:
+        llm_out = provider.parse(
+            raw_text=_state_continuation_context_text(state, raw_text),
+            reference_year=reference_year,
+            trigger=TYPE_4_STATE_CONTINUATION_JUDGMENT,
+            tenant_id=tenant_id,
+        )
+    except LLMFallbackExhaustedError:
+        return None
+    if llm_out is None:
+        return None
+    return llm_out.is_booking_intent
+
+
+def _state_continuation_context_text(state: dict, raw_text: str) -> str:
+    guest_count = (state.get("adult_count") or 0) + (state.get("child_count") or 0)
+    known_parts = []
+    if state.get("checkin_date"):
+        known_parts.append(f"入住 {state['checkin_date']}")
+    if state.get("checkout_date"):
+        known_parts.append(f"退房 {state['checkout_date']}")
+    if guest_count:
+        known_parts.append(f"人數 {guest_count}")
+    if state.get("has_pet"):
+        known_parts.append("有寵物")
+    missing_parts = []
+    if not state.get("checkin_date") or not state.get("checkout_date"):
+        missing_parts.append("入住/退房日期")
+    if not guest_count:
+        missing_parts.append("人數")
+    if state.get("room_count") is None:
+        missing_parts.append("房數")
+    known_summary = "、".join(known_parts) if known_parts else "尚無"
+    missing_summary = "、".join(missing_parts) if missing_parts else "無"
+    return (
+        f"[訂房對話已知資訊:{known_summary};還缺:{missing_summary}]\n"
+        f"客人最新一句話:{raw_text}"
     )
