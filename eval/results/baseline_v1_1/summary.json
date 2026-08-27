@@ -1,15 +1,15 @@
 {
   "total_cases": 50,
   "case_level_pass_rate": {
-    "passed": 29,
+    "passed": 30,
     "total": 50,
-    "rate": 0.58
+    "rate": 0.6
   },
   "state_extraction": {
     "overall": {
-      "passed": 459,
+      "passed": 465,
       "total": 502,
-      "accuracy": 0.9143
+      "accuracy": 0.9263
     },
     "date_accuracy": {
       "passed": 136,
@@ -17,9 +17,9 @@
       "accuracy": 0.9067
     },
     "guest_count_accuracy": {
-      "passed": 190,
+      "passed": 196,
       "total": 200,
-      "accuracy": 0.95
+      "accuracy": 0.98
     },
     "room_count_accuracy": {
       "passed": 49,
@@ -43,16 +43,16 @@
     "accuracy": 0.759
   },
   "action_routing_accuracy": {
-    "passed": 43,
+    "passed": 45,
     "total": 50,
-    "accuracy": 0.86
+    "accuracy": 0.9
   },
   "response_policy": {
     "must_include": {
-      "passed": 21,
+      "passed": 23,
       "total": 30,
       "not_deterministic": 0,
-      "pass_rate": 0.7
+      "pass_rate": 0.7667
     },
     "must_not_claim": {
       "passed": 55,
@@ -63,7 +63,7 @@
   },
   "known_production_regressions": {
     "all_confirmed_failures": {
-      "passed": 1,
+      "passed": 2,
       "total": 10
     },
     "parser_miss": {
@@ -71,13 +71,13 @@
       "total": 6
     },
     "context_miss": {
-      "passed": 0,
+      "passed": 1,
       "total": 4
     }
   },
   "by_source_label": {
     "CONTEXT_MISS": {
-      "passed": 0,
+      "passed": 1,
       "total": 4
     },
     "LINKED_INQUIRY": {

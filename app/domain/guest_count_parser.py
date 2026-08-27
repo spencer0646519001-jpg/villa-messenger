@@ -19,6 +19,18 @@ _INFANT_BEFORE_NUMBER = re.compile(rf"(?:嬰兒|嬰|幼兒|寶寶)\s*(?P<count>{
 
 _TOTAL_GUESTS = re.compile(rf"(?:總共|一共|共)?\s*(?P<count>{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)")
 
+# A ranged ("8~12人") or approximate ("20人左右") total guest count is not a
+# firm number -- eval failure_681/failure_682/failure_558 regression: these
+# used to silently resolve to one end of the range / the approximate figure
+# instead of staying unresolved so the reply can ask for a firm count.
+_RANGE_TOTAL_GUESTS = re.compile(
+    rf"(?:{_NUMBER_PATTERN})\s*[~～\-到]\s*(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)"
+)
+_APPROX_TOTAL_GUESTS = re.compile(
+    rf"(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)\s*(?:左右|上下|大概|差不多)"
+    rf"|(?:大概|差不多|大約)\s*(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)"
+)
+
 # "NUMBER位?" ending right where a label starts (allowing a whitespace gap,
 # e.g. "10 大人") -- i.e. that label already got its own count in
 # label-before-number order, so it will not also claim the number that
@@ -40,7 +52,7 @@ def parse_guest_counts(text: str) -> GuestCountParseResult:
     guest_count = None
     if adult_count is not None or child_count is not None:
         guest_count = (adult_count or 0) + (child_count or 0)
-    else:
+    elif not _is_vague_total_guest_count(text):
         guest_count = _first_count(text, (_TOTAL_GUESTS,))
         # conversation_states has no guest_count column; total-only counts are
         # treated as adults so multi-turn pricing can retain the value.
@@ -101,6 +113,10 @@ def _has_label_theft(text: str, number_start: int, other_category_labels: tuple[
             label_start = match.start()
             return _TRAILING_NUMBER.search(text[:label_start]) is None
     return False
+
+
+def _is_vague_total_guest_count(text: str) -> bool:
+    return bool(_RANGE_TOTAL_GUESTS.search(text)) or bool(_APPROX_TOTAL_GUESTS.search(text))
 
 
 def _first_count(text: str, patterns: tuple[re.Pattern[str], ...]) -> int | None:

@@ -23,6 +23,21 @@ def test_parse_total_guest_count(text: str, expected_count: int) -> None:
 
 
 @pytest.mark.parametrize(
+    "text",
+    ["8～12人", "8-12人", "8到12人", "8~12位", "20人左右", "20人上下", "大概20人", "差不多20人"],
+)
+def test_ranged_or_approximate_total_guest_count_stays_unresolved(text: str) -> None:
+    # eval failure_681/failure_682/failure_558 regression: a ranged or
+    # approximate total count used to silently resolve to one end of the
+    # range / the approximate figure instead of staying unresolved so the
+    # reply can ask for a firm number.
+    result = parse_guest_counts(text)
+
+    assert result.guest_count is None
+    assert result.adult_count is None
+
+
+@pytest.mark.parametrize(
     ("text", "adults", "children", "total"),
     [
         ("2大2小", 2, 2, 4),
