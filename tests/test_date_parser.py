@@ -70,6 +70,47 @@ def test_full_dates_on_both_sides_of_separator_are_not_double_counted() -> None:
     assert result.checkout_date == "2026-08-12"
 
 
+@pytest.mark.parametrize(
+    "text,expected_checkin,expected_checkout",
+    [
+        ("7/17-18退房", "2026-07-17", "2026-07-18"),
+        ("入住7/17-18", "2026-07-17", "2026-07-18"),
+    ],
+)
+def test_bare_day_range_shorthand_keeps_both_ends_when_one_side_is_labeled(
+    text: str, expected_checkin: str, expected_checkout: str
+) -> None:
+    # Codex review of commit eec20a8 (P2): classifying the shorthand's two
+    # matches independently left the unlabeled side stranded once the OTHER
+    # side picked up a label -- "7/17-18退房" used to return checkout=7/18
+    # with checkin dropped entirely, since the "exactly two unlabeled dates"
+    # fallback only fires when BOTH sides are still unlabeled.
+    result = parse_stay_dates(text, reference_year=2026)
+
+    assert result.checkin_date == expected_checkin
+    assert result.checkout_date == expected_checkout
+
+
+def test_hyphenated_clock_time_is_not_read_as_a_second_date() -> None:
+    # Codex review of commit eec20a8 (P1): "7/17-18:00" (5pm) used to be
+    # read as a 7/17-7/18 stay instead of a single date with a clock time.
+    result = parse_stay_dates("7/17-18:00", reference_year=2026)
+
+    assert result.checkin_date == "2026-07-17"
+    assert result.checkout_date is None
+
+
+def test_hyphenated_clock_time_does_not_break_a_real_range_before_it() -> None:
+    # Codex review of commit eec20a8 (P1): the spurious "14" match from
+    # "-14:00" pushed unlabeled_dates to 3 entries, which broke the "exactly
+    # two unlabeled dates" pairing fallback and silently discarded BOTH real
+    # stay dates (8/10, 8/12), not just the bogus one.
+    result = parse_stay_dates("8/10-8/12-14:00", reference_year=2026)
+
+    assert result.checkin_date == "2026-08-10"
+    assert result.checkout_date == "2026-08-12"
+
+
 def test_single_explicit_date_is_treated_as_checkin_only() -> None:
     result = parse_stay_dates("5/12 2大1嬰兒多少錢", reference_year=2026)
 

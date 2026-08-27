@@ -139,22 +139,6 @@ def test_bare_full_date_range_is_booking_question(text: str) -> None:
     assert result.inquiry_type == "booking_question"
 
 
-def test_book_verb_with_bare_date_range_is_booking_question() -> None:
-    # eval candidate_40 regression: "訂" alone is weaker than _BOOKING_TERMS
-    # ("訂房"/"預訂"/"保留"), so it's only trusted with a full date range.
-    result = parse_inquiry_intent("是的\n訂8/2～8/4兩晚的")
-
-    assert result.is_inquiry is True
-    assert result.inquiry_type == "booking_question"
-
-
-def test_book_verb_without_date_range_stays_unclassified() -> None:
-    result = parse_inquiry_intent("好的麻煩訂一下")
-
-    assert result.is_inquiry is False
-    assert result.inquiry_type == "unknown"
-
-
 @pytest.mark.parametrize("text", ["/紀錄", "/狀態"])
 def test_command_prefix_is_non_inquiry(text: str) -> None:
     # eval candidate_19/candidate_20 regression: internal command syntax

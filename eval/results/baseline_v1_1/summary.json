@@ -1,20 +1,20 @@
 {
   "total_cases": 50,
   "case_level_pass_rate": {
-    "passed": 30,
+    "passed": 29,
     "total": 50,
-    "rate": 0.6
+    "rate": 0.58
   },
   "state_extraction": {
     "overall": {
-      "passed": 464,
+      "passed": 459,
       "total": 502,
-      "accuracy": 0.9243
+      "accuracy": 0.9143
     },
     "date_accuracy": {
-      "passed": 142,
+      "passed": 136,
       "total": 150,
-      "accuracy": 0.9467
+      "accuracy": 0.9067
     },
     "guest_count_accuracy": {
       "passed": 190,
@@ -38,9 +38,9 @@
     }
   },
   "multi_turn_state_retention": {
-    "passed": 66,
-    "total": 84,
-    "accuracy": 0.7857
+    "passed": 63,
+    "total": 83,
+    "accuracy": 0.759
   },
   "action_routing_accuracy": {
     "passed": 43,
@@ -85,7 +85,7 @@
       "total": 8
     },
     "MULTI_TURN": {
-      "passed": 6,
+      "passed": 5,
       "total": 10
     },
     "NON_INQUIRY": {
