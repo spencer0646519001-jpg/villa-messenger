@@ -23,8 +23,13 @@ _TOTAL_GUESTS = re.compile(rf"(?:總共|一共|共)?\s*(?P<count>{_NUMBER_PATTER
 # firm number -- eval failure_681/failure_682/failure_558 regression: these
 # used to silently resolve to one end of the range / the approximate figure
 # instead of staying unresolved so the reply can ask for a firm count.
+# The lower bound's unit is optional (both "8~12人" and "8人~12人" are
+# ranges) and 至 is accepted alongside ~/～/-/到 -- Codex review of commit
+# 115c28b (P2): without these, "8人~12人"/"8位到12位"/"8至12人" resolved to
+# a firm 8 or 12 instead of staying unresolved.
 _RANGE_TOTAL_GUESTS = re.compile(
-    rf"(?:{_NUMBER_PATTERN})\s*[~～\-到]\s*(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)"
+    rf"(?:{_NUMBER_PATTERN})\s*(?:(?:個)?\s*(?:人|位))?\s*[~～\-到至]\s*"
+    rf"(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)"
 )
 _APPROX_TOTAL_GUESTS = re.compile(
     rf"(?:{_NUMBER_PATTERN})\s*(?:個)?\s*(?:人|位)\s*(?:左右|上下|大概|差不多)"

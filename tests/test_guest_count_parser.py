@@ -24,7 +24,13 @@ def test_parse_total_guest_count(text: str, expected_count: int) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["8～12人", "8-12人", "8到12人", "8~12位", "20人左右", "20人上下", "大概20人", "差不多20人"],
+    [
+        "8～12人", "8-12人", "8到12人", "8~12位", "20人左右", "20人上下",
+        "大概20人", "差不多20人",
+        # Codex review of commit 115c28b (P2): unit-bearing lower bound and
+        # 至 as a separator used to fall through to a firm 8 or 12.
+        "8人～12人", "8位到12位", "8至12人",
+    ],
 )
 def test_ranged_or_approximate_total_guest_count_stays_unresolved(text: str) -> None:
     # eval failure_681/failure_682/failure_558 regression: a ranged or
