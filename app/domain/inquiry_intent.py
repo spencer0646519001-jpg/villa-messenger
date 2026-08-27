@@ -67,6 +67,13 @@ def parse_inquiry_intent(text: str) -> InquiryIntentResult:
     if _has_labeled_full_date_range(text):
         return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
 
+    # "訂" (book/reserve) is a weaker, more generic signal than the explicit
+    # _BOOKING_TERMS ("訂房"/"預訂"/"保留"), so it's only trusted alongside a
+    # full date range -- e.g. "是的\n訂8/2～8/4兩晚的" -- eval candidate_40
+    # regression. Bare "訂" with no date range stays unclassified.
+    if "訂" in text and _has_full_date_range(text):
+        return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
+
     return InquiryIntentResult(is_inquiry=False, inquiry_type="unknown")
 
 
@@ -83,11 +90,15 @@ def _has_date_signal(text: str) -> bool:
     return dates.checkin_date is not None or dates.checkout_date is not None
 
 
+def _has_full_date_range(text: str) -> bool:
+    dates = parse_stay_dates(text)
+    return dates.checkin_date is not None and dates.checkout_date is not None
+
+
 def _has_labeled_full_date_range(text: str) -> bool:
     if "入住" not in text or "退房" not in text:
         return False
-    dates = parse_stay_dates(text)
-    return dates.checkin_date is not None and dates.checkout_date is not None
+    return _has_full_date_range(text)
 
 
 def _is_checkout_date_label(faq_match: FaqMatch, text: str) -> bool:

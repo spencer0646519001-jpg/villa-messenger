@@ -14,6 +14,13 @@ _DATE_PATTERN = re.compile(
 )
 _CHECKIN_LABELS = ("入住",)
 _CHECKOUT_LABELS = ("退房",)
+# "7/17-18" shorthand: a bare day sharing the month of the date just matched
+# (as opposed to "7/17-8/12", where the second side is already a full M/D
+# date and matches _DATE_PATTERN on its own). The negative lookaheads mirror
+# _DATE_PATTERN's so a full M/D date on the far side is never double-counted.
+_RANGE_SEPARATOR_DAY_PATTERN = re.compile(
+    r"[-~～至到]\s*(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\s*(?:/|月))(?!\d)"
+)
 
 
 def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseResult:
@@ -71,7 +78,21 @@ def _valid_date_matches(text: str, year: int) -> list[tuple[date, int, int]]:
         except ValueError:
             continue
         matches.append((parsed_date, match.start(), match.end()))
+        matches.extend(_range_suffix_match(text, match.end(), year, month))
     return matches
+
+
+def _range_suffix_match(
+    text: str, after: int, year: int, month: int
+) -> list[tuple[date, int, int]]:
+    suffix = _RANGE_SEPARATOR_DAY_PATTERN.match(text, after)
+    if suffix is None:
+        return []
+    try:
+        parsed_date = date(year, month, int(suffix.group("day")))
+    except ValueError:
+        return []
+    return [(parsed_date, suffix.start("day"), suffix.end("day"))]
 
 
 def _classify_date_label(text: str, start: int, end: int) -> str | None:

@@ -81,12 +81,15 @@ def test_gate_does_not_call_provider_for_non_fallback_inputs() -> None:
 
 
 def test_type_1_date_translation_fills_short_range_dates() -> None:
+    # "下週五到下週日" (relative dates) still needs LLM translation, unlike
+    # "7/28-29", which inquiry_intent's own date_parser now resolves directly
+    # (see the M/D-D shorthand fix -- eval control_16 etc regression).
     provider = FakeProvider(
         outputs_by_text={
-            "7/28-29多少錢": _out(
+            "下週五到下週日多少錢": _out(
                 intent="price",
-                checkin_date="2026-07-28",
-                checkout_date="2026-07-29",
+                checkin_date="2026-05-08",
+                checkout_date="2026-05-10",
             ),
             "28入住29退房多少錢": _out(
                 intent="price",
@@ -96,11 +99,11 @@ def test_type_1_date_translation_fills_short_range_dates() -> None:
         }
     )
 
-    first = _fallback("7/28-29多少錢", provider)
+    first = _fallback("下週五到下週日多少錢", provider)
     second = _fallback("28入住29退房多少錢", provider)
 
-    assert first.dates.checkin_date == "2026-07-28"
-    assert first.dates.checkout_date == "2026-07-29"
+    assert first.dates.checkin_date == "2026-05-08"
+    assert first.dates.checkout_date == "2026-05-10"
     assert second.dates.checkin_date == "2026-05-28"
     assert second.dates.checkout_date == "2026-05-29"
     assert [call["trigger"] for call in provider.calls] == [
@@ -157,11 +160,11 @@ def test_case_2_service_returns_local_date_range_clarification_template() -> Non
 
 def test_case_3_provider_failure_returns_rule_result_unchanged() -> None:
     provider = FakeProvider(None)
-    inquiry = parse_inquiry("7/28-29多少錢", reference_year=2026)
+    inquiry = parse_inquiry("下週五到下週日多少錢", reference_year=2026)
 
     result = llm_fallback_parse(
         inquiry,
-        "7/28-29多少錢",
+        "下週五到下週日多少錢",
         reference_year=2026,
         is_quote_relevant=_quote_relevant(inquiry),
         tenant_id=1,
@@ -238,9 +241,9 @@ def test_type_3_llm_disabled_uses_product_policy_rule_fallback(monkeypatch) -> N
 
 def test_llm_enabled_false_short_circuits_provider(monkeypatch) -> None:
     monkeypatch.setenv("LLM_ENABLED", "false")
-    provider = FakeProvider(_out(checkin_date="2026-07-28", checkout_date="2026-07-29"))
+    provider = FakeProvider(_out(checkin_date="2026-05-08", checkout_date="2026-05-10"))
 
-    result = _fallback("7/28-29多少錢", provider)
+    result = _fallback("下週五到下週日多少錢", provider)
 
     assert provider.calls == []
     assert result.dates.checkout_date is None

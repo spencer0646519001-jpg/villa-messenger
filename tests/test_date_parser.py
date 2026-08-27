@@ -39,6 +39,37 @@ def test_parse_two_unlabeled_explicit_dates_in_order() -> None:
     assert result.confidence == "high"
 
 
+@pytest.mark.parametrize(
+    "text,expected_checkin,expected_checkout",
+    [
+        ("7/17-18", "2026-07-17", "2026-07-18"),
+        ("8/21-23", "2026-08-21", "2026-08-23"),
+        ("7/11-12", "2026-07-11", "2026-07-12"),
+        ("7/17~18", "2026-07-17", "2026-07-18"),
+        ("7/17到18", "2026-07-17", "2026-07-18"),
+    ],
+)
+def test_bare_day_range_shorthand_shares_the_month(
+    text: str, expected_checkin: str, expected_checkout: str
+) -> None:
+    # eval control_16/candidate_17/candidate_18/control_193/control_11
+    # regression: "7/17-18" means "7/17 to 7/18", not just checkin=7/17 with
+    # the "-18" silently dropped.
+    result = parse_stay_dates(text, reference_year=2026)
+
+    assert result.checkin_date == expected_checkin
+    assert result.checkout_date == expected_checkout
+
+
+def test_full_dates_on_both_sides_of_separator_are_not_double_counted() -> None:
+    # "8/10-8/12": the second side is already a full M/D date, so the
+    # range-suffix shorthand must NOT also treat "8" as a bare day.
+    result = parse_stay_dates("入住日期:8/10-8/12", reference_year=2026)
+
+    assert result.checkin_date == "2026-08-10"
+    assert result.checkout_date == "2026-08-12"
+
+
 def test_single_explicit_date_is_treated_as_checkin_only() -> None:
     result = parse_stay_dates("5/12 2大1嬰兒多少錢", reference_year=2026)
 

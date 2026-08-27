@@ -1,20 +1,20 @@
 {
   "total_cases": 50,
   "case_level_pass_rate": {
-    "passed": 26,
+    "passed": 30,
     "total": 50,
-    "rate": 0.52
+    "rate": 0.6
   },
   "state_extraction": {
     "overall": {
-      "passed": 457,
+      "passed": 464,
       "total": 502,
-      "accuracy": 0.9104
+      "accuracy": 0.9243
     },
     "date_accuracy": {
-      "passed": 134,
+      "passed": 142,
       "total": 150,
-      "accuracy": 0.8933
+      "accuracy": 0.9467
     },
     "guest_count_accuracy": {
       "passed": 190,
@@ -38,21 +38,21 @@
     }
   },
   "multi_turn_state_retention": {
-    "passed": 59,
-    "total": 85,
-    "accuracy": 0.6941
+    "passed": 66,
+    "total": 84,
+    "accuracy": 0.7857
   },
   "action_routing_accuracy": {
-    "passed": 41,
+    "passed": 43,
     "total": 50,
-    "accuracy": 0.82
+    "accuracy": 0.86
   },
   "response_policy": {
     "must_include": {
-      "passed": 18,
+      "passed": 21,
       "total": 30,
       "not_deterministic": 0,
-      "pass_rate": 0.6
+      "pass_rate": 0.7
     },
     "must_not_claim": {
       "passed": 55,
@@ -85,11 +85,11 @@
       "total": 8
     },
     "MULTI_TURN": {
-      "passed": 5,
+      "passed": 6,
       "total": 10
     },
     "NON_INQUIRY": {
-      "passed": 3,
+      "passed": 4,
       "total": 6
     },
     "OFF_MODE_NATURAL_TRAFFIC": {
@@ -105,7 +105,7 @@
       "total": 6
     },
     "TRUE_MISSING_ROOM_COUNT": {
-      "passed": 0,
+      "passed": 2,
       "total": 4
     },
     "full_house": {
