@@ -111,6 +111,27 @@ def test_hyphenated_clock_time_does_not_break_a_real_range_before_it() -> None:
     assert result.checkout_date == "2026-08-12"
 
 
+def test_hyphenated_clock_hour_word_is_not_read_as_a_second_date() -> None:
+    # Codex review of commit ac8f084 (P1): the colon/點 guard didn't cover
+    # 時, so "入住7/17-18時" (checking in around 6pm on 7/17) was promoted
+    # to a false 7/17-7/18 checkout.
+    result = parse_stay_dates("入住7/17-18時", reference_year=2026)
+
+    assert result.checkin_date == "2026-07-17"
+    assert result.checkout_date is None
+
+
+def test_colon_field_separator_does_not_block_a_real_range() -> None:
+    # Codex review of commit ac8f084 (P2): the colon guard rejected ANY
+    # colon after the day, so "7/17-18: 2人" (colon as a field separator,
+    # not a clock time) lost the range entirely. Only an unspaced two-digit
+    # minute ("18:00") should count as a clock time.
+    result = parse_stay_dates("7/17-18: 2人", reference_year=2026)
+
+    assert result.checkin_date == "2026-07-17"
+    assert result.checkout_date == "2026-07-18"
+
+
 def test_single_explicit_date_is_treated_as_checkin_only() -> None:
     result = parse_stay_dates("5/12 2大1嬰兒多少錢", reference_year=2026)
 

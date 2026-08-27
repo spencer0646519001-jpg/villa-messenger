@@ -18,13 +18,18 @@ _CHECKOUT_LABELS = ("退房",)
 # (as opposed to "7/17-8/12", where the second side is already a full M/D
 # date and matches _DATE_PATTERN on its own). The negative lookaheads mirror
 # _DATE_PATTERN's so a full M/D date on the far side is never double-counted,
-# plus a guard against a following colon/點 so a hyphenated clock time (e.g.
-# "7/17-18:00") is never read as a second date -- flagged by Codex review of
-# commit eec20a8 (P1): without it, "8/10-8/12-14:00" produced three date
-# matches and silently discarded BOTH real stay dates (the ==2 pairing
-# fallback below requires exactly two unlabeled dates).
+# plus a guard against a following clock time so a hyphenated time (e.g.
+# "7/17-18:00" or "入住7/17-18時") is never read as a second date -- flagged
+# by Codex review of commit eec20a8 (P1): without it, "8/10-8/12-14:00"
+# produced three date matches and silently discarded BOTH real stay dates
+# (the ==2 pairing fallback below requires exactly two unlabeled dates).
+# The colon check requires an unspaced two-digit minute (":00", not ": 2")
+# so a field separator like "7/17-18: 2人" isn't mistaken for a clock time
+# and doesn't lose the range -- flagged by Codex review of commit ac8f084
+# (P1 缺 時, P2 冒號規則過寬).
 _RANGE_SEPARATOR_DAY_PATTERN = re.compile(
-    r"[-~～至到]\s*(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\s*(?:/|月|[:：]|點))(?!\d)"
+    r"[-~～至到]\s*(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?"
+    r"(?!\s*(?:/|月|點|時))(?![:：]\d{2}(?!\d))(?!\d)"
 )
 
 
