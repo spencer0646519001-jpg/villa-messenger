@@ -119,7 +119,11 @@ def test_type_2_intent_judgment_upgrades_booking_intent() -> None:
         )
     )
 
-    result = _fallback("3/15入住3/17退房", provider)
+    # No 入住/退房 labels: stays ambiguous at the rule layer (unlike
+    # "3/15入住3/17退房", now resolved directly to booking_question by
+    # inquiry_intent's labeled-date-range rule -- see eval failure_161 etc.)
+    # so TYPE_2_INTENT_JUDGMENT is still the one to disambiguate it.
+    result = _fallback("3/15到3/17", provider)
 
     assert provider.calls[0]["trigger"] == "type_2_intent_judgment"
     assert result.intent.is_inquiry is True
@@ -178,7 +182,8 @@ def test_type_2_non_booking_does_not_upgrade_or_mutate_slots() -> None:
         )
     )
 
-    result = _fallback("3/15入住3/17退房", provider)
+    # No 入住/退房 labels -- see comment in the sibling TYPE_2 test above.
+    result = _fallback("3/15到3/17", provider)
 
     assert result.intent.is_inquiry is False
     assert result.intent.inquiry_type == "unknown"

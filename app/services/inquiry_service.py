@@ -250,14 +250,14 @@ class InquiryService:
             matched_keywords=urgency.matched_keywords,
             display_name=message.customer_display_name,
         )
-        # "unknown" is intentional: test invariant forbids calling is_system_active
-        # on the urgent path (it has side effects). Future option: add a side-
-        # effect-free peek method to OperationModeService if log fidelity matters.
+        # system_state="unknown" is intentional: test invariant forbids calling
+        # is_system_active on the urgent path (it has side effects).
         log = self._build_base_log_payload(
             message,
             system_state="unknown",
             action_taken="urgent",
         )
+        self._add_parsed_fields_to_log(log, self._parse_urgent_inquiry(message))
         log["urgency_category"] = urgency.category
         log["urgency_matched_keywords"] = list(urgency.matched_keywords)
         return InquiryDecision(
@@ -266,6 +266,11 @@ class InquiryService:
             was_urgent=True,
             log_payload=log,
         )
+
+    def _parse_urgent_inquiry(self, message: InboundMessage) -> InquiryParseResult:
+        # eval candidate_711 regression: log_payload left inquiry_intent as
+        # None instead of the parser's "unknown" for the urgent path.
+        return parse_inquiry(message.text, reference_year=self._reference_year())
 
     def _handle_off_mode(
         self,

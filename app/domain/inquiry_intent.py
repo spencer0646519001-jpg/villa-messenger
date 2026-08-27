@@ -16,10 +16,16 @@ _AVAILABILITY_TERMS = ("還有房", "有房", "空房", "可訂", "有空")
 _BOOKING_TERMS = ("訂房", "預訂", "保留")
 _FAQ_TERMS = ("可不可以", "能不能", "可以嗎", "能嗎", "嗎", "?", "？")
 _OTHER_INQUIRY_TERMS = ("請問", "想問", "詢問", "問一下")
+# A leading "/" marks internal command syntax (e.g. "/紀錄", "/狀態") rather
+# than customer text -- eval candidate_19/candidate_20 regression.
+_COMMAND_PREFIX = "/"
 
 
 def parse_inquiry_intent(text: str) -> InquiryIntentResult:
     text = normalize_for_parsing(text)
+
+    if text.startswith(_COMMAND_PREFIX):
+        return InquiryIntentResult(is_inquiry=False, inquiry_type="non_inquiry")
 
     if _contains_any(text, _PRICE_TERMS):
         return InquiryIntentResult(is_inquiry=True, inquiry_type="price")
@@ -51,6 +57,16 @@ def parse_inquiry_intent(text: str) -> InquiryIntentResult:
     if _contains_any(text, _OTHER_INQUIRY_TERMS):
         return InquiryIntentResult(is_inquiry=True, inquiry_type="unknown")
 
+    # A bare, EXPLICITLY-LABELED full date range ("8/10入住 8/11退房") with no
+    # other keyword still states real booking-relevant content -- eval
+    # failure_161/control_427/failure_404/failure_682 regression: this used
+    # to fall all the way through to the unknown/not-an-inquiry fallback
+    # below. Requiring the literal 入住/退房 labels (not just two bare dates)
+    # keeps this narrow: an unlabeled two-date message stays ambiguous and is
+    # still left for the LLM's TYPE_2_INTENT_JUDGMENT fallback to judge.
+    if _has_labeled_full_date_range(text):
+        return InquiryIntentResult(is_inquiry=True, inquiry_type="booking_question")
+
     return InquiryIntentResult(is_inquiry=False, inquiry_type="unknown")
 
 
@@ -65,6 +81,13 @@ def _has_booking_signal(text: str) -> bool:
 def _has_date_signal(text: str) -> bool:
     dates = parse_stay_dates(text)
     return dates.checkin_date is not None or dates.checkout_date is not None
+
+
+def _has_labeled_full_date_range(text: str) -> bool:
+    if "入住" not in text or "退房" not in text:
+        return False
+    dates = parse_stay_dates(text)
+    return dates.checkin_date is not None and dates.checkout_date is not None
 
 
 def _is_checkout_date_label(faq_match: FaqMatch, text: str) -> bool:

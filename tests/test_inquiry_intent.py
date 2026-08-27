@@ -125,6 +125,30 @@ def test_structured_form_reply_without_booking_keyword_is_booking_question() -> 
     assert result.inquiry_type == "booking_question"
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["「8/10入住 8/11退房」", "8/8入住 8/9退房", "8/10入住8/12退房", "10/24入住10/26退房"],
+)
+def test_bare_full_date_range_is_booking_question(text: str) -> None:
+    # eval failure_161/control_427/failure_404/failure_682 regression: a
+    # message that states both checkin and checkout dates with no other
+    # keyword used to fall all the way through to is_inquiry=False/"unknown".
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is True
+    assert result.inquiry_type == "booking_question"
+
+
+@pytest.mark.parametrize("text", ["/紀錄", "/狀態"])
+def test_command_prefix_is_non_inquiry(text: str) -> None:
+    # eval candidate_19/candidate_20 regression: internal command syntax
+    # leaking into the guest channel is not customer content at all.
+    result = parse_inquiry_intent(text)
+
+    assert result.is_inquiry is False
+    assert result.inquiry_type == "non_inquiry"
+
+
 def test_unlabeled_form_reply_is_booking_question_not_pets_faq() -> None:
     # eval candidate_25/26 regression: no field labels at all (name/phone/dates/
     # headcount/pet-status each on its own bare line). Before the unlabeled-line

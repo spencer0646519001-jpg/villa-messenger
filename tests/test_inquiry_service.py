@@ -149,6 +149,17 @@ def test_urgent_log_payload_contains_category_and_keywords() -> None:
     assert "瓦斯漏" in decision.log_payload["urgency_matched_keywords"]
 
 
+def test_urgent_log_payload_has_parsed_inquiry_intent_not_none() -> None:
+    # eval candidate_711 regression: the urgent path never called
+    # _add_parsed_fields_to_log, so inquiry_intent stayed None instead of
+    # the rule-parser's "unknown" for non-inquiry urgent text.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(message=_build_message("沒有人受傷"))
+
+    assert decision.log_payload["inquiry_intent"] == "unknown"
+
+
 def test_urgent_owner_push_text_uses_template() -> None:
     service, _ = _build_service(system_on=True)
 
