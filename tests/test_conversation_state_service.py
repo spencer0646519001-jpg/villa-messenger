@@ -161,6 +161,34 @@ def test_full_date_range_opens_state_even_when_intent_stays_ambiguous(
     assert state["intent"] == "unknown"
 
 
+def test_full_date_range_does_not_open_state_when_confidently_classified_elsewhere(
+    repo: ConversationStateRepository,
+) -> None:
+    # Codex review of commit 3409642 (P2): the date-range bypass must not
+    # fire for a message the pipeline confidently routed elsewhere (here,
+    # faq) just because it also happens to contain two dates -- only a
+    # genuinely UNCLASSIFIED (intent=="unknown") message qualifies.
+    service = ConversationStateService(repo)
+    text = "8/2到8/4有Wi-Fi嗎"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    assert _active(repo) is None
+
+
+def test_full_date_range_does_not_open_state_on_an_urgent_message(
+    repo: ConversationStateRepository,
+) -> None:
+    # Codex review of commit 3409642 (P2): an urgent safety message that
+    # happens to mention dates in passing must not open a booking state.
+    service = ConversationStateService(repo)
+    text = "8/2到8/4瓦斯漏氣"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    assert _active(repo) is None
+
+
 def test_single_bare_date_does_not_open_state_on_its_own(
     repo: ConversationStateRepository,
 ) -> None:
