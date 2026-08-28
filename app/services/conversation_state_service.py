@@ -7,8 +7,13 @@ active conversation state so memory accumulates across turns. STAGE B records
 state ONLY — it does not change what the bot replies (that is STAGE C).
 
 Two-tier policy (the goldfish-memory fix):
-  - OPEN (create) a state only when the message is a quote-relevant inquiry, so
-    pure chatter ("hi") never creates a state.
+  - OPEN (create) a state when the message is a quote-relevant inquiry, OR when
+    it states a full checkin+checkout date range on its own -- a date range is
+    strong enough booking-slot evidence to start tracking even when the
+    message's own intent classification stays ambiguous (e.g. a reply like "是
+    的\n訂8/2～8/4兩晚的" mid-conversation), so those dates aren't silently
+    discarded for lack of anywhere to land. Pure chatter ("hi") still never
+    creates a state.
   - UPDATE an existing active state from ANY slot-bearing follow-up, regardless
     of whether that message independently classifies as an inquiry — so a bare
     "4 adults" reply still fills the open state.
@@ -112,7 +117,8 @@ class ConversationStateService:
         self, message: InboundMessage, decision: InquiryDecision, slots: dict, off_kwargs: dict
     ) -> dict | None:
         intent = decision.log_payload.get("inquiry_intent")
-        if not (decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS):
+        is_quote_relevant = decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS
+        if not (is_quote_relevant or _has_full_date_range(slots)):
             return None
         create_kwargs = {**slots, **_drop_none(off_kwargs)}
         state_id = self._repo.create(
@@ -135,6 +141,10 @@ class ConversationStateService:
         if slots.get("pet_count") is not None or not _is_waiting_for_pet_count(active):
             return
         slots["pet_count"] = parse_pet_count_answer(normalize_for_parsing(text))
+
+
+def _has_full_date_range(slots: dict) -> bool:
+    return slots.get("checkin_date") is not None and slots.get("checkout_date") is not None
 
 
 def _merge_row(base: dict, slots: dict) -> dict:

@@ -141,6 +141,40 @@ def test_quote_relevant_inquiry_opens_state(repo: ConversationStateRepository) -
     assert state["intent"] == "price"
 
 
+def test_full_date_range_opens_state_even_when_intent_stays_ambiguous(
+    repo: ConversationStateRepository,
+) -> None:
+    # eval candidate_40 regression: this message's own inquiry_type correctly
+    # stays "unknown" (no booking keyword, no active state yet to continue),
+    # but it states a complete checkin+checkout range -- strong enough
+    # booking-slot evidence to open a state, so the dates aren't silently
+    # discarded for lack of anywhere to land.
+    service = ConversationStateService(repo)
+    text = "是的\n訂8/2～8/4兩晚的"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    state = _active(repo)
+    assert state is not None
+    assert state["checkin_date"] == "2026-08-02"
+    assert state["checkout_date"] == "2026-08-04"
+    assert state["intent"] == "unknown"
+
+
+def test_single_bare_date_does_not_open_state_on_its_own(
+    repo: ConversationStateRepository,
+) -> None:
+    # A single date alone is weaker evidence than a full range -- stays
+    # unopened, same as before, so this doesn't get more permissive than the
+    # one case that actually needs it.
+    service = ConversationStateService(repo)
+    text = "5/12"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    assert _active(repo) is None
+
+
 def test_stale_in_progress_for_same_user_expires_before_opening_new_state(
     repo: ConversationStateRepository,
 ) -> None:
