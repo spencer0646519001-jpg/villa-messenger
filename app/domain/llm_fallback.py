@@ -124,17 +124,7 @@ def _merge_llm_into_inquiry(
     if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
         return _merge_collision_judgment(inquiry, llm_out)
     if llm_out.is_booking_intent is False:
-        # Applies regardless of trigger -- TYPE_1_DATE_TRANSLATION can also
-        # return resolved dates alongside an explicit is_booking_intent=False
-        # (e.g. "會議安排下週五到下週日", a business meeting, not a stay), and
-        # trusting those dates as booking slots would be exactly as wrong as
-        # trusting a TYPE_2 rejection's slots. Deliberately does NOT touch
-        # inquiry_type/is_inquiry/dates (still "unknown"/False/unresolved,
-        # per test_type_2_non_booking_does_not_upgrade_or_mutate_slots) --
-        # only records that this was a CONFIRMED rejection, not an unjudged
-        # case, so callers like ConversationStateService can tell the two
-        # apart. Codex review of commits 0027fec and fceb69e (both P2).
-        return inquiry.model_copy(update={"llm_rejected_booking_intent": True})
+        return _reject_booking_intent(inquiry)
     if llm_out.needs_clarification:
         clarified = _maybe_upgrade_intent(inquiry, llm_out)
         clarified = clarified.model_copy(
@@ -148,6 +138,27 @@ def _merge_llm_into_inquiry(
     merged = _merge_slots(inquiry, llm_out)
     merged = _maybe_upgrade_intent(merged, llm_out)
     return _recompute_flags(merged)
+
+
+def _reject_booking_intent(inquiry: InquiryParseResult) -> InquiryParseResult:
+    """Applies regardless of trigger -- TYPE_1_DATE_TRANSLATION can also
+    return resolved dates alongside an explicit is_booking_intent=False (e.g.
+    "會議安排下週五到下週日", a business meeting, not a stay), and trusting
+    those dates as booking slots would be exactly as wrong as trusting a
+    TYPE_2 rejection's slots. Never touches dates/guests/pets -- only
+    downgrades intent, and only when the RULE parser had already called this
+    quote-relevant (e.g. TYPE_1 firing on an already-"price"-classified
+    message with incomplete dates): a rule intent that was already
+    non-quote-relevant (unknown, faq, ...) is left exactly as the rule parser
+    set it, never forced to "unknown". Always records the rejection so
+    callers like ConversationStateService can tell a CONFIRMED rejection
+    apart from a genuinely unjudged "unknown". Codex review of commits
+    0027fec, fceb69e, and fd603d6 (all P2)."""
+    updates: dict = {"llm_rejected_booking_intent": True}
+    was_quote_relevant = inquiry.intent.is_inquiry and inquiry.intent.inquiry_type in _QUOTE_RELEVANT_INTENTS
+    if was_quote_relevant:
+        updates["intent"] = InquiryIntentResult(is_inquiry=False, inquiry_type="unknown")
+    return inquiry.model_copy(update=updates)
 
 
 def _merge_collision_judgment(

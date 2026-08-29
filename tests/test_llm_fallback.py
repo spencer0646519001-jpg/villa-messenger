@@ -134,6 +134,26 @@ def test_type_1_date_translation_with_explicit_rejection_keeps_dates_unresolved(
     assert result.llm_rejected_booking_intent is True
 
 
+def test_type_1_rejection_downgrades_an_already_quote_relevant_rule_intent() -> None:
+    # Codex review of commit fd603d6 (P2): TYPE_1 can fire even when the rule
+    # parser ALREADY classified the message as quote-relevant (dates just
+    # aren't complete yet), e.g. "下週股票多少錢" (a stock-price question,
+    # not lodging) rule-classifies as "price" via the 多少錢 keyword. Without
+    # downgrading intent here too, the message would still sail into the
+    # booking flow and open conversation state despite the LLM's explicit
+    # rejection -- setting the flag alone (as commits 0027fec/fceb69e did)
+    # isn't enough when the rule intent was already quote-relevant.
+    provider = FakeProvider(
+        _out(intent="other", is_booking_intent=False)
+    )
+
+    result = _fallback("下週股票多少錢", provider)
+
+    assert result.intent.is_inquiry is False
+    assert result.intent.inquiry_type == "unknown"
+    assert result.llm_rejected_booking_intent is True
+
+
 def test_type_2_intent_judgment_upgrades_booking_intent() -> None:
     provider = FakeProvider(
         _out(
