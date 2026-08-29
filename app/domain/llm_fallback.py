@@ -123,6 +123,18 @@ def _merge_llm_into_inquiry(
 ) -> InquiryParseResult:
     if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
         return _merge_collision_judgment(inquiry, llm_out)
+    if llm_out.is_booking_intent is False:
+        # Applies regardless of trigger -- TYPE_1_DATE_TRANSLATION can also
+        # return resolved dates alongside an explicit is_booking_intent=False
+        # (e.g. "會議安排下週五到下週日", a business meeting, not a stay), and
+        # trusting those dates as booking slots would be exactly as wrong as
+        # trusting a TYPE_2 rejection's slots. Deliberately does NOT touch
+        # inquiry_type/is_inquiry/dates (still "unknown"/False/unresolved,
+        # per test_type_2_non_booking_does_not_upgrade_or_mutate_slots) --
+        # only records that this was a CONFIRMED rejection, not an unjudged
+        # case, so callers like ConversationStateService can tell the two
+        # apart. Codex review of commits 0027fec and fceb69e (both P2).
+        return inquiry.model_copy(update={"llm_rejected_booking_intent": True})
     if llm_out.needs_clarification:
         clarified = _maybe_upgrade_intent(inquiry, llm_out)
         clarified = clarified.model_copy(
@@ -132,14 +144,6 @@ def _merge_llm_into_inquiry(
             }
         )
         return _recompute_flags(clarified)
-
-    if trigger == TYPE_2_INTENT_JUDGMENT and llm_out.is_booking_intent is False:
-        # Deliberately does NOT touch inquiry_type/is_inquiry (still
-        # "unknown"/False, per test_type_2_non_booking_does_not_upgrade_or_
-        # mutate_slots) -- only records that this was a CONFIRMED rejection,
-        # not an unjudged case, so callers like ConversationStateService can
-        # tell the two apart. Codex review of commit 0027fec (P2).
-        return inquiry.model_copy(update={"llm_rejected_booking_intent": True})
 
     merged = _merge_slots(inquiry, llm_out)
     merged = _maybe_upgrade_intent(merged, llm_out)

@@ -112,6 +112,28 @@ def test_type_1_date_translation_fills_short_range_dates() -> None:
     ]
 
 
+def test_type_1_date_translation_with_explicit_rejection_keeps_dates_unresolved() -> None:
+    # Codex review of commit fceb69e (P2): TYPE_1 can also return resolved
+    # dates alongside an explicit is_booking_intent=False (e.g. a business
+    # meeting, not a stay) -- trusting those dates as booking slots would be
+    # exactly as wrong as trusting a TYPE_2 rejection's slots.
+    provider = FakeProvider(
+        _out(
+            intent="other",
+            checkin_date="2026-05-08",
+            checkout_date="2026-05-10",
+            is_booking_intent=False,
+        )
+    )
+
+    result = _fallback("會議安排下週五到下週日", provider)
+
+    assert result.dates.checkin_date is None
+    assert result.dates.checkout_date is None
+    assert result.intent.inquiry_type == "unknown"
+    assert result.llm_rejected_booking_intent is True
+
+
 def test_type_2_intent_judgment_upgrades_booking_intent() -> None:
     provider = FakeProvider(
         _out(
