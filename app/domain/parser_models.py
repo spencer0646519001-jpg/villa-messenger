@@ -58,3 +58,9 @@ class InquiryParseResult(BaseModel):
     llm_detected_intents: list[str] = Field(default_factory=list)
     availability_probe_checkout: str | None = None
     availability_probe_checkout_was_inferred: bool = False
+    # True only when TYPE_2_INTENT_JUDGMENT explicitly asked the LLM and it
+    # said this is NOT a booking intent -- distinct from intent staying
+    # "unknown" because no judgment was ever made (e.g. eval's rule-only
+    # mode). Lets downstream state-open gates tell "confidently rejected"
+    # apart from "genuinely unclassified".
+    llm_rejected_booking_intent: bool = False

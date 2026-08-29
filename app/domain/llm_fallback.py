@@ -134,7 +134,12 @@ def _merge_llm_into_inquiry(
         return _recompute_flags(clarified)
 
     if trigger == TYPE_2_INTENT_JUDGMENT and llm_out.is_booking_intent is False:
-        return inquiry
+        # Deliberately does NOT touch inquiry_type/is_inquiry (still
+        # "unknown"/False, per test_type_2_non_booking_does_not_upgrade_or_
+        # mutate_slots) -- only records that this was a CONFIRMED rejection,
+        # not an unjudged case, so callers like ConversationStateService can
+        # tell the two apart. Codex review of commit 0027fec (P2).
+        return inquiry.model_copy(update={"llm_rejected_booking_intent": True})
 
     merged = _merge_slots(inquiry, llm_out)
     merged = _maybe_upgrade_intent(merged, llm_out)

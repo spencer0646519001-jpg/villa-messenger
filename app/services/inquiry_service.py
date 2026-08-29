@@ -81,6 +81,7 @@ _OPTIONAL_LOG_FIELDS: tuple[str, ...] = (
     "llm_detected_intents",
     "availability_probe_checkout",
     "availability_probe_checkout_was_inferred",
+    "llm_rejected_booking_intent",
 )
 
 
@@ -236,9 +237,8 @@ class InquiryService:
         log["matched_faq_topics"] = list(inquiry.matched_faq_topics)
         log["llm_detected_intents"] = list(inquiry.llm_detected_intents)
         log["availability_probe_checkout"] = inquiry.availability_probe_checkout
-        log["availability_probe_checkout_was_inferred"] = (
-            inquiry.availability_probe_checkout_was_inferred
-        )
+        log["availability_probe_checkout_was_inferred"] = inquiry.availability_probe_checkout_was_inferred
+        log["llm_rejected_booking_intent"] = inquiry.llm_rejected_booking_intent
 
     def _handle_urgent(
         self,

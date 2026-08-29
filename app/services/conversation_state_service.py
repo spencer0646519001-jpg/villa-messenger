@@ -148,14 +148,23 @@ def _has_full_date_range(slots: dict) -> bool:
 def _should_open(decision: InquiryDecision, slots: dict) -> bool:
     intent = decision.log_payload.get("inquiry_intent")
     is_quote_relevant = decision.parsed_as_inquiry and intent in _QUOTE_RELEVANT_INTENTS
-    # Only a genuinely UNCLASSIFIED message (intent=="unknown") gets the
-    # date-range bypass -- a message the pipeline confidently routed
-    # elsewhere (faq, urgent, non_inquiry, ...) must not be reopened into
-    # quote state just because it happens to also contain two dates, e.g.
-    # "8/2到8/4有Wi-Fi嗎" (faq) or an urgent safety message that mentions
-    # dates in passing. Flagged by Codex review of commit 3409642 (P2).
+    # Only a genuinely UNCLASSIFIED message (intent=="unknown" AND the LLM
+    # never explicitly rejected it) gets the date-range bypass -- a message
+    # the pipeline confidently routed elsewhere (faq, urgent, non_inquiry,
+    # ...) must not be reopened into quote state just because it happens to
+    # also contain two dates, e.g. "8/2到8/4有Wi-Fi嗎" (faq) or an urgent
+    # safety message that mentions dates in passing. "unknown" alone isn't
+    # enough either: TYPE_2_INTENT_JUDGMENT leaves intent as "unknown" even
+    # when the LLM explicitly said this ISN'T a booking intent (deliberately,
+    # so as not to disturb that path's own slot/intent invariants) --
+    # llm_rejected_booking_intent is what distinguishes that confirmed
+    # rejection from a genuinely unjudged case. Flagged by Codex review of
+    # commits 3409642 and 0027fec (both P2).
     is_ambiguous_with_dates = (
-        intent == "unknown" and not decision.was_urgent and _has_full_date_range(slots)
+        intent == "unknown"
+        and not decision.was_urgent
+        and not decision.log_payload.get("llm_rejected_booking_intent")
+        and _has_full_date_range(slots)
     )
     return is_quote_relevant or is_ambiguous_with_dates
 

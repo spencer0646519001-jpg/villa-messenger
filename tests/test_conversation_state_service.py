@@ -189,6 +189,34 @@ def test_full_date_range_does_not_open_state_on_an_urgent_message(
     assert _active(repo) is None
 
 
+def test_full_date_range_does_not_open_state_after_llm_rejects_booking_intent(
+    repo: ConversationStateRepository,
+) -> None:
+    # Codex review of commit 0027fec (P2): TYPE_2_INTENT_JUDGMENT leaves
+    # intent as "unknown" even when the LLM explicitly said this ISN'T a
+    # booking intent (by design -- see test_llm_fallback.py::
+    # test_type_2_non_booking_does_not_upgrade_or_mutate_slots). Hand-built
+    # decision because this trigger only fires with an LLM provider wired
+    # up, which this file's real-InquiryService _decision() helper doesn't
+    # configure -- llm_fallback.py's own tests cover setting the flag itself.
+    service = ConversationStateService(repo)
+    decision = InquiryDecision(
+        action_type="push_to_owner_only",
+        owner_push_text="(owner)",
+        log_payload={
+            "inquiry_intent": "unknown",
+            "parsed_checkin": "2026-03-15",
+            "parsed_checkout": "2026-03-17",
+            "llm_rejected_booking_intent": True,
+        },
+        parsed_as_inquiry=False,
+    )
+
+    service.record(message=_message("3/15到3/17"), decision=decision)
+
+    assert _active(repo) is None
+
+
 def test_single_bare_date_does_not_open_state_on_its_own(
     repo: ConversationStateRepository,
 ) -> None:

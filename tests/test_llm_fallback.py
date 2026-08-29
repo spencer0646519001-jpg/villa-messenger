@@ -192,6 +192,10 @@ def test_type_2_non_booking_does_not_upgrade_or_mutate_slots() -> None:
     assert result.intent.inquiry_type == "unknown"
     assert result.dates.checkin_date == "2026-03-15"
     assert result.dates.checkout_date == "2026-03-17"
+    # Codex review of commit 0027fec (P2): intent staying "unknown" here is
+    # indistinguishable from an unjudged case unless this flag is set --
+    # ConversationStateService's date-range OPEN bypass relies on it.
+    assert result.llm_rejected_booking_intent is True
 
 
 def test_type_3_collision_trigger_only_runs_for_topic_plus_booking_signal() -> None:
