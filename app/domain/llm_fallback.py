@@ -158,7 +158,10 @@ def _reject_booking_intent(inquiry: InquiryParseResult) -> InquiryParseResult:
     was_quote_relevant = inquiry.intent.is_inquiry and inquiry.intent.inquiry_type in _QUOTE_RELEVANT_INTENTS
     if was_quote_relevant:
         updates["intent"] = InquiryIntentResult(is_inquiry=False, inquiry_type="unknown")
-    return inquiry.model_copy(update=updates)
+    # Recompute missing_fields/can_preliminarily_quote too -- otherwise a
+    # downgraded intent keeps the stale quote-only missing_fields list from
+    # when it was still quote-relevant. Codex review of commit 5565677 (P2).
+    return _recompute_flags(inquiry.model_copy(update=updates))
 
 
 def _merge_collision_judgment(

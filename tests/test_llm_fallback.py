@@ -152,6 +152,11 @@ def test_type_1_rejection_downgrades_an_already_quote_relevant_rule_intent() -> 
     assert result.intent.is_inquiry is False
     assert result.intent.inquiry_type == "unknown"
     assert result.llm_rejected_booking_intent is True
+    # Codex review of commit 5565677 (P2): missing_fields/can_preliminarily_
+    # quote are quote-only concepts -- must not keep the rule parser's stale
+    # quote-relevant values after intent is downgraded to non-inquiry.
+    assert result.missing_fields == []
+    assert result.can_preliminarily_quote is False
 
 
 def test_type_2_intent_judgment_upgrades_booking_intent() -> None:
