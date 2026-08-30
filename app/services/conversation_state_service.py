@@ -120,8 +120,15 @@ class ConversationStateService:
     def _supersede_with_fresh_state(
         self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict
     ) -> dict:
-        self._repo.mark_expired(tenant_id=message.tenant_id, state_id=active["id"])
-        return self._create_state(message, slots, off_kwargs)
+        create_kwargs = {**slots, **_drop_none(off_kwargs)}
+        state_id = self._repo.supersede(
+            tenant_id=message.tenant_id,
+            platform=message.platform,
+            platform_user_id=message.platform_user_id,
+            old_state_id=active["id"],
+            **create_kwargs,
+        )
+        return _merge_row({**_EMPTY_STATE_ROW, "id": state_id}, create_kwargs)
 
     def mark_completed(self, *, tenant_id: int, state_id: int) -> None:
         """Flip a state to completed (STAGE C, after a quote is sent)."""
@@ -187,6 +194,15 @@ def _is_fresh_full_date_range(slots: dict, active: dict) -> bool:
     # child_count alone (adult_count restated the same) is treated as a
     # correction to the same booking, not a different party.
     if not _has_full_date_range(slots):
+        return False
+    # active must ALREADY have a complete range and a known adult_count of
+    # its own before this can be a "restatement" at all -- otherwise a
+    # message that's simply FILLING IN previously-missing info (e.g. active
+    # has "10人、3房、有1隻狗、要烤肉" with no dates yet, and this message
+    # gives the first dates) compares unequal to None and wrongly looks like
+    # a different party, superseding away the room/pet/bbq info that was
+    # never actually contradicted. Codex review of commit 28f67f7 (P1).
+    if not _has_full_date_range(active) or active["adult_count"] is None:
         return False
     if (
         slots["checkin_date"] == active["checkin_date"]

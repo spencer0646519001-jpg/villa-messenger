@@ -442,6 +442,37 @@ def test_new_date_range_with_different_guest_count_supersedes_old_state(
     assert active["room_count"] is None
 
 
+def test_first_time_full_date_range_fills_in_place_even_with_new_adult_count(
+    repo: ConversationStateRepository,
+) -> None:
+    # Codex review of commit 28f67f7 (P1): active never had a complete date
+    # range of its own yet ("10人、3房、有1隻狗、要烤肉" -- no dates given
+    # yet), so a message finally providing dates AND clarifying the headcount
+    # is FILLING IN missing info, not restating a different party. Comparing
+    # slots["adult_count"] (8) against active["adult_count"] (10, unequal)
+    # must NOT supersede here -- that would wipe out room_count/pet/bbq that
+    # were never actually contradicted.
+    service = ConversationStateService(repo)
+    old_id = repo.create(
+        tenant_id=1, platform="line", platform_user_id="Uguest",
+        adult_count=10, room_count=3, has_pet=True, pet_count=1, wants_bbq=True,
+    )
+    text = "8/2入住 8/4退房 8大2小"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    active = _active(repo)
+    assert active["id"] == old_id
+    assert active["checkin_date"] == "2026-08-02"
+    assert active["checkout_date"] == "2026-08-04"
+    assert active["adult_count"] == 8
+    assert active["child_count"] == 2
+    assert active["room_count"] == 3
+    assert bool(active["has_pet"]) is True
+    assert active["pet_count"] == 1
+    assert bool(active["wants_bbq"]) is True
+
+
 def test_new_date_range_alone_updates_in_place_without_a_guest_count(
     repo: ConversationStateRepository,
 ) -> None:

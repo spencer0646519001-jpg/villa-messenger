@@ -417,6 +417,71 @@ def test_expire_stale_for_user_uses_same_boundary_as_active_lookup(
 
 
 # ============================================================
+# SUPERSEDE: atomic expire-old + insert-new (Codex review of 28f67f7, P2)
+# ============================================================
+
+
+def test_supersede_expires_old_state_and_creates_fresh_active_one(
+    database_path: Path,
+) -> None:
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+    old_id = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001",
+        checkin_date="2026-08-01", checkout_date="2026-08-03", adult_count=10,
+        room_count=3, has_pet=True, pet_count=1, wants_bbq=True,
+    )
+
+    new_id = repository.supersede(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001",
+        old_state_id=old_id, checkin_date="2026-08-05", checkout_date="2026-08-07",
+        adult_count=4,
+    )
+
+    assert new_id != old_id
+    assert _row_by_id(database_path, old_id)["status"] == "expired"
+    new_row = _row_by_id(database_path, new_id)
+    assert new_row["status"] == "in_progress"
+    assert new_row["checkin_date"] == "2026-08-05"
+    assert new_row["checkout_date"] == "2026-08-07"
+    assert new_row["adult_count"] == 4
+    # supersede() only expires + inserts; it never reads old_id's other
+    # slots -- the caller (ConversationStateService) decides what carries
+    # forward into the new row.
+    assert new_row["room_count"] is None
+
+    active = repository.get_active_for_user(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001"
+    )
+    assert active["id"] == new_id
+
+
+def test_supersede_rolls_back_expiry_when_insert_fails(
+    database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _create_tenant(database_path)
+    repository = ConversationStateRepository(database_path)
+    old_id = repository.create(
+        tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001",
+        checkin_date="2026-08-01", checkout_date="2026-08-03", adult_count=10,
+    )
+
+    def _boom(self, connection, params):
+        raise sqlite3.OperationalError("simulated insert failure")
+
+    monkeypatch.setattr(ConversationStateRepository, "_insert_state", _boom)
+
+    with pytest.raises(sqlite3.OperationalError):
+        repository.supersede(
+            tenant_id=tenant_id, platform="line", platform_user_id="Uguest0001",
+            old_state_id=old_id, checkin_date="2026-08-05", checkout_date="2026-08-07",
+            adult_count=4,
+        )
+
+    assert _row_by_id(database_path, old_id)["status"] == "in_progress"
+
+
+# ============================================================
 # has_pet VS pet_count: "no pets" DISTINCT FROM "unasked"
 # ============================================================
 
@@ -532,6 +597,7 @@ def _body_line_count(func) -> int:
         ConversationStateRepository.mark_expired,
         ConversationStateRepository.expire_stale,
         ConversationStateRepository.expire_stale_for_user,
+        ConversationStateRepository.supersede,
     ],
 )
 def test_public_methods_under_15_body_lines(func) -> None:

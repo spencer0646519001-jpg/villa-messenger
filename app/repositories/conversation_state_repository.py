@@ -161,6 +161,47 @@ class ConversationStateRepository:
             own_connection.commit()
             return row_id
 
+    def supersede(
+        self,
+        *,
+        tenant_id: int,
+        platform: str,
+        platform_user_id: str,
+        old_state_id: int,
+        intent: str | None = None,
+        checkin_date: str | None = None,
+        checkout_date: str | None = None,
+        adult_count: int | None = None,
+        child_count: int | None = None,
+        infant_count: int | None = None,
+        room_count: int | None = None,
+        has_pet: bool = False,
+        pet_count: int | None = None,
+        wants_bbq: bool = False,
+        last_message_text: str | None = None,
+        accumulated_while_off: bool = False,
+        last_off_mode_update_at: str | None = None,
+        ttl_hours: int = 24,
+    ) -> int:
+        """Expire old_state_id and insert a fresh row in ONE transaction, so
+        a failure on either half leaves old_state_id's status unchanged
+        instead of losing the customer's accumulated data with nothing to
+        replace it. Codex review of commit 28f67f7 (P2)."""
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        expires_at = (now_dt + timedelta(hours=ttl_hours)).isoformat()
+        params = (
+            tenant_id, platform, platform_user_id, intent,
+            checkin_date, checkout_date, adult_count, child_count, infant_count,
+            room_count, pet_count, int(has_pet), int(wants_bbq), last_message_text,
+            int(accumulated_while_off), last_off_mode_update_at, expires_at, now, now,
+        )
+        with closing(get_connection(self.database_path)) as connection:
+            connection.execute(_SET_STATUS_SQL, ("expired", now, old_state_id, tenant_id))
+            new_id = self._insert_state(connection, params)
+            connection.commit()
+            return new_id
+
     def _insert_state(
         self,
         connection: sqlite3.Connection,
