@@ -17,6 +17,17 @@ Two-tier policy (the goldfish-memory fix):
   - UPDATE an existing active state from ANY slot-bearing follow-up, regardless
     of whether that message independently classifies as an inquiry — so a bare
     "4 adults" reply still fills the open state.
+  - SUPERSEDE (expire the old row, open a fresh one) instead of merging when a
+    message restates a full checkin+checkout range that differs from the
+    stored one AND a guest count that differs from the stored one -- two
+    independent slots changing together is the signal that this is a
+    different booking, not a correction to the same one (e.g. "另一組日期
+    7/11-12 10人可以嗎" after an 8-adult/2-child state was already open for a
+    different date). A date-only correction, or a restatement whose guest
+    count still matches what's already stored, updates in place like normal
+    -- so "還是同一群人,只是想確認另一組日期行不行" never loses room_count/
+    pet info it never re-stated. Never edits a row in place to CLEAR a slot;
+    old state is preserved (status=expired), not deleted.
   - A message with no booking slots and no active state is a no-op (and a
     no-slot message against an active state does NOT refresh its TTL).
 
@@ -95,6 +106,8 @@ class ConversationStateService:
         return self._update_active(message, active, slots, off_kwargs)
 
     def _update_active(self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict) -> dict:
+        if _is_fresh_full_date_range(slots, active):
+            return self._supersede_with_fresh_state(message, active, slots, off_kwargs)
         self._fill_contextual_room_count(slots, active, message.text)
         self._fill_contextual_pet_count(slots, active, message.text)
         if not self._has_slot(slots):
@@ -103,6 +116,12 @@ class ConversationStateService:
             tenant_id=message.tenant_id, state_id=active["id"], **slots, **off_kwargs
         )
         return _merge_row(active, {**slots, **off_kwargs})
+
+    def _supersede_with_fresh_state(
+        self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict
+    ) -> dict:
+        self._repo.mark_expired(tenant_id=message.tenant_id, state_id=active["id"])
+        return self._create_state(message, slots, off_kwargs)
 
     def mark_completed(self, *, tenant_id: int, state_id: int) -> None:
         """Flip a state to completed (STAGE C, after a quote is sent)."""
@@ -118,6 +137,9 @@ class ConversationStateService:
     ) -> dict | None:
         if not _should_open(decision, slots):
             return None
+        return self._create_state(message, slots, off_kwargs)
+
+    def _create_state(self, message: InboundMessage, slots: dict, off_kwargs: dict) -> dict:
         create_kwargs = {**slots, **_drop_none(off_kwargs)}
         state_id = self._repo.create(
             tenant_id=message.tenant_id,
@@ -143,6 +165,36 @@ class ConversationStateService:
 
 def _has_full_date_range(slots: dict) -> bool:
     return slots.get("checkin_date") is not None and slots.get("checkout_date") is not None
+
+
+def _is_fresh_full_date_range(slots: dict, active: dict) -> bool:
+    # Deliberately does NOT require the message to independently classify as
+    # quote-relevant -- verified against real phrasings ("10人 另一組日期
+    # 7/11-12", "改一下 7/11-12入住 10人") that a customer casually switching
+    # dates mid-conversation often doesn't repeat a full question shape, so
+    # gating on intent would make this rarely fire in practice. The two
+    # independent slot changes (full date range AND adult_count, both
+    # differing from what's stored) are strong enough structural evidence on
+    # their own -- same philosophy as _should_open's date-range bypass.
+    #
+    # Compares adult_count specifically, NOT the adult+child total: control_11
+    # is exactly "8大2小" (total 10) superseded by a later "10人" (parsed as
+    # adult_count=10, child_count=None -- guest_count_parser's own convention
+    # for a bare "N人"), and both total 10. A total-based comparison would
+    # have MISSED that real case (10 == 10) despite being a genuinely
+    # different party. adult_count is the field guest_count_parser always
+    # resolves a bare headcount into, so it's the stable anchor; a change to
+    # child_count alone (adult_count restated the same) is treated as a
+    # correction to the same booking, not a different party.
+    if not _has_full_date_range(slots):
+        return False
+    if (
+        slots["checkin_date"] == active["checkin_date"]
+        and slots["checkout_date"] == active["checkout_date"]
+    ):
+        return False
+    new_adult_count = slots.get("adult_count")
+    return new_adult_count is not None and new_adult_count != active["adult_count"]
 
 
 def _should_open(decision: InquiryDecision, slots: dict) -> bool:

@@ -409,6 +409,109 @@ def test_bbq_not_mentioned_leaves_wants_bbq_false(repo: ConversationStateReposit
 
 
 # ============================================================
+# SUPERSEDE: a full new date range + a DIFFERENT guest count expires the old
+# state and opens a fresh one, instead of merging (eval control_11 fix)
+# ============================================================
+
+
+def test_new_date_range_with_different_guest_count_supersedes_old_state(
+    repo: ConversationStateRepository,
+) -> None:
+    # control_11: an 8-adult/2-child state for one date, then a same-user
+    # message with a full DIFFERENT date range and a DIFFERENT guest count
+    # (10) -- gold: "全新詢問(不同日期),忽略先前不相關雜訊". The old
+    # child_count must not bleed into the new inquiry's guest_count.
+    service = ConversationStateService(repo)
+    old_id = repo.create(
+        tenant_id=1, platform="line", platform_user_id="Uguest",
+        checkin_date="2026-07-25", checkout_date="2026-07-26",
+        adult_count=8, child_count=2, room_count=3,
+    )
+    text = "你好請問7/11-12 10人有房嗎"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    rows = _state_rows(repo)
+    active = _active(repo)
+    assert next(row for row in rows if row["id"] == old_id)["status"] == "expired"
+    assert active is not None and active["id"] != old_id
+    assert active["checkin_date"] == "2026-07-11"
+    assert active["checkout_date"] == "2026-07-12"
+    assert active["adult_count"] == 10
+    assert active["child_count"] is None
+    assert active["room_count"] is None
+
+
+def test_new_date_range_alone_updates_in_place_without_a_guest_count(
+    repo: ConversationStateRepository,
+) -> None:
+    # Spencer's scenario: customer only corrects/asks about another date and
+    # doesn't repeat guest count -- must stay the SAME state (in place),
+    # keeping room_count/child_count, not supersede.
+    service = ConversationStateService(repo)
+    old_id = repo.create(
+        tenant_id=1, platform="line", platform_user_id="Uguest",
+        checkin_date="2026-07-25", checkout_date="2026-07-26",
+        adult_count=8, child_count=2, room_count=3,
+    )
+    text = "等一下,另一組日期7/11-12可以嗎"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    active = _active(repo)
+    assert active["id"] == old_id
+    assert active["checkin_date"] == "2026-07-11"
+    assert active["checkout_date"] == "2026-07-12"
+    assert active["child_count"] == 2
+    assert active["room_count"] == 3
+
+
+def test_new_date_range_with_same_guest_count_updates_in_place(
+    repo: ConversationStateRepository,
+) -> None:
+    # Spencer's scenario: customer repeats the SAME guest count while asking
+    # about a different date ("還是同一群人,只是想確認另一組日期行不行") --
+    # still the same group, so this must stay the SAME state, not supersede.
+    service = ConversationStateService(repo)
+    old_id = repo.create(
+        tenant_id=1, platform="line", platform_user_id="Uguest",
+        checkin_date="2026-07-25", checkout_date="2026-07-26",
+        adult_count=10, room_count=3,
+    )
+    text = "等一下,另一組日期7/11-12 10人可以嗎"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    active = _active(repo)
+    assert active["id"] == old_id
+    assert active["checkin_date"] == "2026-07-11"
+    assert active["checkout_date"] == "2026-07-12"
+    assert active["adult_count"] == 10
+    assert active["room_count"] == 3
+
+
+def test_single_date_with_different_guest_count_does_not_supersede(
+    repo: ConversationStateRepository,
+) -> None:
+    # Only one side of the range given -- weaker evidence than a full range,
+    # same bar as the OPEN bypass, so this stays an in-place update.
+    service = ConversationStateService(repo)
+    old_id = repo.create(
+        tenant_id=1, platform="line", platform_user_id="Uguest",
+        checkin_date="2026-07-25", checkout_date="2026-07-26",
+        adult_count=8, child_count=2, room_count=3,
+    )
+    text = "7/11 10人"
+
+    service.record(message=_message(text), decision=_decision(text))
+
+    active = _active(repo)
+    assert active["id"] == old_id
+    assert active["child_count"] == 2
+    assert active["room_count"] == 3
+
+
+# ============================================================
 # NO-OP: non-inquiry chatter with no active state creates nothing
 # ============================================================
 

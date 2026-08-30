@@ -1,12 +1,12 @@
 # Villa Messenger Eval v1 — BASELINE V1
 
 Total cases: 50
-Case-level pass rate: 32/50 (64.0%)
+Case-level pass rate: 33/50 (66.0%)
 
 ## State extraction accuracy
-- Overall: 471/502 (93.8%)
+- Overall: 473/502 (94.2%)
 - Date fields: 142/150 (94.7%)
-- Guest-count fields: 196/200 (98.0%)
+- Guest-count fields: 198/200 (99.0%)
 - Room-count field: 49/50 (98.0%)
 - Pet fields: 26/34 (76.5%)
 - BBQ field: 14/18 (77.8%)
@@ -34,7 +34,7 @@ Case-level pass rate: 32/50 (64.0%)
 - OFF_MODE_NATURAL_TRAFFIC: 2/2
 - PARSER_MISS: 1/6
 - TRUE_MISSING: 4/6
-- TRUE_MISSING_ROOM_COUNT: 2/4
+- TRUE_MISSING_ROOM_COUNT: 3/4
 - full_house: 2/3
 - urgent: 1/1
 
@@ -64,8 +64,7 @@ Case-level pass rate: 32/50 (64.0%)
 - **control_500**: field:inquiry_type expected='non_inquiry' actual='booking_question'; action expected='non_inquiry_uncategorized' actual='missing_info'
 - **control_708**: field:inquiry_type expected='non_inquiry' actual='price'; action expected='non_inquiry_uncategorized' actual='missing_info'
 
-### TRUE_MISSING_ROOM_COUNT (2 failing)
-- **control_11**: field:child_count expected=None actual=2; field:guest_count expected=10 actual=12
+### TRUE_MISSING_ROOM_COUNT (1 failing)
 - **control_32**: must_include:guest_count_aware_minimum_room_suggestion(at_least_4_rooms_for_14) missing from reply
 
 ### full_house (1 failing)

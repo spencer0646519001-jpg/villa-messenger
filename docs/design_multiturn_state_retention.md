@@ -1,12 +1,13 @@
 # 設計提案:多輪對話狀態保留缺口
 
-> 狀態:**提案階段,尚未定案,不要實作**。這是護城河核心(狀態機)的改動,依 CLAUDE.md
-> 工作流程,需要 Spencer 先看過、做決定,才能動手。
+> 狀態:**3-A、3-B 已定案並實作完成;3-C 經 Spencer 決定跳過**(pet_type/月齡
+> 細節不值得追,has_pet 已經夠用)。這是護城河核心(狀態機)的改動,依
+> CLAUDE.md 工作流程,先設計討論、Spencer 拍板,才動手實作。
 > 起源:eval v1.1 跑分 22/50 → 30/50 的過程中,發現剩下的失敗案例裡有 6 個
 > (candidate_40、candidate_41、failure_403、failure_404、failure_326、control_11)
 > 表面上分屬不同 cluster,但深入追查後,根因其實只有三種,而且都在同一層:
 > `ConversationStateService`(STAGE B,狀態合併)。
-> 最後更新:2026-08-28。
+> 最後更新:2026-08-30(3-B 實作定案 + 完成)。
 
 ---
 
@@ -122,36 +123,45 @@ def _open_if_inquiry(self, message, decision, slots, off_kwargs):
 個人傾向保守版,理由是:目前唯一有真實證據(gold 案例)支持要放寬的情境就是「完整
 日期範圍」,寬鬆版是在沒有案例驗證的情況下擴大護城河的行為面,風險/收益不對等。
 
-### 3-B. 「完整新日期範圍」觸發部分欄位重置
+### 3-B. 一組新的「完整日期+人數」換一塊全新白板(已實作,非原提案的原地清空)
 
-在 `_update_active` 合併前,偵測「這輪同時給出 checkin_date + checkout_date,且跟
-現存的不同」,視為客人在講一個新的詢問,清掉**這輪沒有一併重新提供**的
-房數/人數/寵物/BBQ 欄位,而不是照舊 COALESCE 過去。
+**設計在提案討論階段整個換了方向**——原本打算在 `_update_active` 原地清空舊欄位,
+後來 pre-flight 發現這條路要碰 repository 的 COALESCE SQL、要讓 `update_slots`
+多一種「明確清空」的語意,風險偏高。改成利用 repository 已經有的
+`create()` / `mark_expired()`:**把舊狀態標記過期、直接開一塊全新的白板**,新白板
+只帶這一輪自己解析出的欄位。「一塊狀態的生命週期內只增不減」這個不變量完全沒被
+打破,只是多了「一塊狀態何時結束、換下一塊」的邏輯。
 
-```python
-def _update_active(self, message, active, slots, off_kwargs):
-    self._fill_contextual_room_count(slots, active, message.text)
-    self._fill_contextual_pet_count(slots, active, message.text)
-    if _is_fresh_full_date_range(slots, active):
-        slots = _reset_unrestated_fields(slots)
-    if not self._has_slot(slots):
-        return active
-    ...
-```
+觸發條件(`_is_fresh_full_date_range`,兩個條件同時成立才換):
 
-`_is_fresh_full_date_range`:`slots["checkin_date"] and slots["checkout_date"] and
-(slots["checkin_date"] != active["checkin_date"] or
- slots["checkout_date"] != active["checkout_date"])`
+1. 這輪**同時**給出 `checkin_date` + `checkout_date`,且跟白板上現存的**不一樣**。
+2. 這輪給出的 `adult_count`,跟白板上現存的 `adult_count` **不一樣**。
 
-`_reset_unrestated_fields`:把 `room_count`/`adult_count`/`child_count`/
-`infant_count`/`pet_count`/`has_pet`/`wants_bbq` 裡「這輪沒有重新給值」的欄位,從
-「COALESCE 保留舊值」改成「明確設回未設定」——這需要 repository 層的
-`update_slots` 能接受「清空」而不是「不更新」的語意(目前 COALESCE 沒有這個能力,
-需要一併確認/調整 `ConversationStateRepository.update_slots`)。
+Spencer 討論時抓到兩個原提案沒想到的真實情境,都已經反映進最終設計:
 
-**這是三個根因裡風險最高的一個**,因為它改變了「狀態只會累積、不會倒退」這個目前
-整個 STAGE B/C 隱含依賴的不變量。需要盤點 `ConversationReplyComposer` 跟其他讀
-`conversation_states` 的地方有沒有假設欄位只增不減。
+- **只改日期、沒重講人數**(「等一下,另一組日期7/11-12可以嗎」)→ 條件 2 不成立
+  (這輪 `adult_count` 是 `None`)→ **不換白板**,原地更新日期,房數/寵物照舊保留。
+- **順口把人數也重講一次、但是同一群人**(「另一組日期7/11-12 **10人**可以嗎」,
+  白板上本來就是 10 人)→ 條件 2 不成立(10==10)→ **不換白板**。
+- 原本設計用「人數加總」(大人+小孩)比對,寫測試時才發現一個真實的碰撞:
+  control_11 舊狀態是「8大2小」(加總10),新訊息「10人」被解析成
+  `adult_count=10, child_count=None`(加總也是10)——**加總比對會判斷成同一群人,
+  完全漏掉 control_11 這個目標案例本身**。改成直接比 `adult_count`(而非加總),
+  因為 `guest_count_parser` 對「N人」這種裸人數的既定慣例就是解成 `adult_count`,
+  是比較穩定的錨點;只有 `child_count` 變動、`adult_count` 沒變,視為對同一筆訂房
+  的修正,不換白板。
+- 特意**不要求**這輪訊息自己的意圖分類是 quote-relevant——實測「10人 另一組日期
+  7/11-12」「改一下 7/11-12入住 10人」這類真實講法,意圖分類常常是 `unknown`
+  (沒有訂房關鍵字),硬性要求會讓這個機制在真實情境幾乎不會觸發。改成跟
+  `_should_open` 的日期範圍旁路同一套哲學:兩個獨立欄位(完整日期+人數)同時改變,
+  本身就是夠強的結構證據。
+
+判斷錯的代價分析(說服自己這個門檻夠安全):錯誤地換了白板,最壞結果是重問一次
+房數/寵物(客人多回一句話);錯誤地沒換,最壞結果是保留了不相關的房數偏好。**兩種
+錯法都不會算出錯誤報價**,這是可以接受這個門檻的關鍵。
+
+舊白板標記成 `expired`(不是 `completed`——`completed` 原意是「已經報價完成」,標
+成這個會讓稽核時誤以為真的報價過)。
 
 ### 3-C. 補上 `pet_type` / `needs_pet_count_confirmation` 的多輪追蹤
 
@@ -170,21 +180,19 @@ def _update_active(self, message, active, slots, off_kwargs):
 
 ## 4. 建議順序與驗證方式
 
-1. **3-C** 先做(風險最低,建立信心、也練一次「加欄位」的完整流程)。
-2. **3-A**(保守版)接著做,直接解 candidate_40/41,順便驗證 failure_326 是否也
-   跟著修好(如果是,代表根因確實是 A 的變形;如果不是,再另外查
-   `looks_like_structured_form_reply` 是否認得 7 行版本)。
-3. **3-B** 最後做,且獨立跑一次 `python -m pytest tests/test_conversation_state_service.py tests/test_conversation_reply_composer.py -q` 加全套 regression,並手動檢查
-   `ConversationReplyComposer`/`decision_to_db_mapper.py` 有沒有依賴「欄位只增不減」
-   的假設。
+**最終結果(依序完成):**
+
+1. **3-C**:Spencer 決定跳過。pet_type/月齡細節不值得追蹤,has_pet 已經夠回答
+   「該不該問寵物費」這個實際問題。
+2. **3-A**(保守版,只認完整日期範圍,不吃寬鬆版的任意單一 slot):實作
+   commit `3409642`,經過 6 輪 Codex review 陸續補上邊界案例(FAQ/urgent 誤觸發、
+   LLM 明確拒絕的兩種觸發路徑、意圖降級後 `missing_fields` 沒重算),最後一輪乾淨
+   過關。candidate_40/41 通過。failure_326 沒有跟著修好,驗證後確認是
+   `looks_like_structured_form_reply` 認不出 7 行版的無標籤表單回覆(見根因 A 後的
+   附註),留待日後另外處理。
+3. **3-B**:採用「換一塊新白板」而非原提案的「原地清空」(理由見 3-B 節)。
+   Spencer 討論時抓到「順口重講同樣人數」跟「只改日期沒重講人數」兩個真實情境,
+   都已經反映進最終的觸發條件。control_11 通過。
 
 每一步都各自 commit、各自跑一次 `python -m eval.runner` 確認案例真的轉為通過,
-不要合併成一次大改動。
-
-## 5. 需要 Spencer 決定的兩件事
-
-1. **3-A 的 `_has_strong_slot_evidence` 要選寬鬆版還是保守版?**(個人建議保守版,
-   見第 3-A 節)
-2. **3-B 值不值得做?** 它是三者中唯一會讓「狀態機欄位可以被清空」這件事第一次
-   發生在這個系統裡,如果您覺得目前 1 個案例(control_11)的優先度不足以承擔這個
-   風險,可以先跳過,只做 3-C + 3-A。
+commit 後都跑過 Codex 獨立 review、依回饋修正到過關為止,沒有合併成一次大改動。
