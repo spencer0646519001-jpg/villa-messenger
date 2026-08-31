@@ -113,6 +113,18 @@ def test_trailing_checkin_label_after_a_full_range_scopes_the_whole_range(
     assert result.checkout_date == expected_checkout
 
 
+def test_full_date_range_pairs_across_a_spaced_separator() -> None:
+    # Codex review (P2): a Chinese-style date match ("8月20日") ends right
+    # after "日" with no trailing-space consumption of its own, so a spaced
+    # separator left a leading space in the pair-detection gap that an
+    # earlier version of the fix (which dropped horizontal tolerance BEFORE
+    # the separator while fixing tolerance AFTER it) no longer accepted.
+    result = parse_stay_dates("入住8月20日 - 8月22日", reference_year=2026)
+
+    assert result.checkin_date == "2026-08-20"
+    assert result.checkout_date == "2026-08-22"
+
+
 def test_bare_day_range_shorthand_pairs_across_a_line_wrap() -> None:
     # Codex review of the range-pair generalization (P2): the pair-detection
     # gap must tolerate a newline between the separator and the day digits,

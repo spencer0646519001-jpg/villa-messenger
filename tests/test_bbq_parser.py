@@ -22,6 +22,11 @@ from app.domain.bbq_parser import parse_bbq
         "8/20-8/22入住,8大2小,想加烤肉",
         "想加烤肉",
         "想烤肉",
+        # Codex review: "不"/"沒" appearing nearby but NOT actually negating
+        # the BBQ request (a discourse marker, or negating something else
+        # entirely) must not be misread as a decline.
+        "沒問題，想加烤肉",
+        "不過想加烤肉",
     ],
 )
 def test_affirmative_bbq_answers(text: str) -> None:
@@ -40,13 +45,15 @@ def test_affirmative_bbq_answers(text: str) -> None:
         "沒有要烤肉",
         "不要烤肉",
         "不要BBQ",
-        # "想...烤肉" (tight gap) must stay a negation when a negation marker
-        # precedes "想", including a MODIFIED negation like "不太想" where
-        # "不想" isn't a contiguous substring -- Codex review flagged this
-        # exact gap in the first version of the fix.
+        # "不想"/"不太想" are literal negation terms (see bbq_parser.py) so
+        # they share the same 4-char gap to the BBQ term as every other
+        # negation term -- wide enough to still catch a decline with an
+        # extra verb in between ("不想要參加烤肉"), which a tighter gap
+        # tied specifically to "想" missed in an earlier version of the fix.
         "不想烤肉",
         "不想要烤肉",
         "不太想烤肉",
+        "不想要參加烤肉",
     ],
 )
 def test_negative_bbq_answers(text: str) -> None:

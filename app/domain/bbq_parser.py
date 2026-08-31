@@ -15,24 +15,25 @@ _AFFIRM_TERMS = ("是", "要", "需要", "有")
 # they can only match right after the "label:" separator, never inside the
 # "是否" question wording that precedes it.
 _LABEL_NEGATION_TERMS = ("否", "不要", "不用", "不需要", "沒有", "無")
-_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無")
+# "不想"/"不太想" are literal terms here (not a generic "negation marker +
+# arbitrary gap + 想" scan) -- Codex review of an earlier version of this
+# fix found that a marker-proximity heuristic cuts both ways wrong: too
+# TIGHT a post-想 gap misses a real decline with an extra verb ("不想要參加
+# 烤肉"), while a wide-enough gap to catch that also false-positives on
+# discourse markers that have nothing to do with negating the request
+# ("沒問題，想加烤肉", "不過想加烤肉" are both AFFIRMATIVE). Literal terms
+# reuse the same proven gap-based BBQ-term matching as every other term in
+# this list, with no separate mechanism to keep in sync.
+_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無", "不想", "不太想")
 _NATURAL_AFFIRM_TERMS = ("要", "需要", "有")
-# "想" (real customer phrasing: "想加烤肉" / "想烤肉") is deliberately its OWN
-# pair with a much tighter gap than the _NATURAL_* terms above, not just
-# added to that list -- Codex review of the first version of this fix (P1):
-# with the shared 4-char gap, "想問一下烤肉費用" (asking about the FEE, not
-# requesting BBQ) also matched and got wrongly persisted as wants_bbq=True,
-# and "不太想烤肉" (a modified negation -- "不想" isn't a contiguous
-# substring, so it slipped past _NATURAL_NEGATION_TERMS entirely) then hit
-# the affirm side. A 2-char gap still covers every real reported phrasing
-# ("想加烤肉", "想烤肉", "想要烤肉") while excluding "問一下"-style detours,
-# and the negation pattern independently re-checks for a negation marker
-# ahead of "想" within a small window so modifiers like "不太想" are caught
-# without having to enumerate every possible modifier word.
-_BBQ_WANT_NEGATION_MARKERS = ("不", "沒", "別", "無")
-_BBQ_WANT_NEGATION_PATTERN = re.compile(
-    rf"(?:{'|'.join(_BBQ_WANT_NEGATION_MARKERS)})[^\n]{{0,3}}想[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})"
-)
+# Bare "想" (real customer phrasing: "想加烤肉" / "想烤肉") stays its OWN
+# pair with a much tighter gap than _NATURAL_AFFIRM_TERMS -- with the shared
+# 4-char gap, "想問一下烤肉費用" (asking about the FEE, not requesting BBQ)
+# also matched and got wrongly persisted as wants_bbq=True. A 2-char gap
+# still covers every real reported phrasing ("想加烤肉", "想烤肉", "想要烤肉")
+# while excluding "問一下"-style detours. No separate negation pattern is
+# needed for it: an actual decline is always caught by _NATURAL_NEGATION_TERMS
+# above (checked first) via the literal "不想"/"不太想" terms.
 _BBQ_WANT_AFFIRM_PATTERN = re.compile(rf"想[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})")
 
 # Gap between the "label:" separator and its answer: same line (just
@@ -64,13 +65,7 @@ def parse_bbq(text: str) -> BbqParseResult:
         return BbqParseResult(wants_bbq=False, mentioned=True)
     if _BBQ_LABEL_AFFIRM_PATTERN.search(text) is not None:
         return BbqParseResult(wants_bbq=True, mentioned=True)
-    # Both negation checks (natural order + the tighter "想" form) run before
-    # either affirm check: "不想要烤肉" contains "要烤肉" as a bare substring,
-    # which would otherwise let the generic PREFIX_AFFIRM check fire first
-    # and misread an explicit decline as a request.
     if _BBQ_PREFIX_NEGATION_PATTERN.search(text) is not None:
-        return BbqParseResult(wants_bbq=False, mentioned=True)
-    if _BBQ_WANT_NEGATION_PATTERN.search(text) is not None:
         return BbqParseResult(wants_bbq=False, mentioned=True)
     if _BBQ_PREFIX_AFFIRM_PATTERN.search(text) is not None:
         return BbqParseResult(wants_bbq=True, mentioned=True)
