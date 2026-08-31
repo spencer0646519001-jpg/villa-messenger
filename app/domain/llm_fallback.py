@@ -174,9 +174,15 @@ def _merge_llm_into_inquiry(
         # is_booking_intent left null, not the far more likely case where
         # the LLM explicitly confirms it isn't a booking.
         merged = _merge_slots(inquiry, llm_out)
-        merged = merged.model_copy(
-            update={"intent": InquiryIntentResult(is_inquiry=True, inquiry_type="faq")}
-        )
+        updates: dict = {"intent": InquiryIntentResult(is_inquiry=True, inquiry_type="faq")}
+        if llm_out.is_booking_intent is False:
+            # The flag's contract (see _reject_booking_intent) is "the LLM
+            # explicitly said this isn't a booking", independent of what we
+            # then do with the intent classification -- still record it,
+            # or InquiryService's log payload reports no rejection even
+            # though the provider gave one. Codex review (P2, third pass).
+            updates["llm_rejected_booking_intent"] = True
+        merged = merged.model_copy(update=updates)
         return _recompute_flags(merged)
     if llm_out.is_booking_intent is False:
         return _reject_booking_intent(inquiry)

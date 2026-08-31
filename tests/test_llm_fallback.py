@@ -392,6 +392,24 @@ def test_type_6_faq_classification_survives_an_explicit_non_booking_verdict() ->
 
     assert result.intent.inquiry_type == "faq"
     assert result.intent.is_inquiry is True
+    # Codex review (P2, third pass): the flag's contract is "the LLM
+    # explicitly said this isn't a booking", independent of the intent
+    # classification we then apply -- must still be recorded here, or
+    # InquiryService's log payload reports no rejection despite the
+    # provider giving one.
+    assert result.llm_rejected_booking_intent is True
+
+
+def test_type_6_faq_without_explicit_rejection_does_not_set_the_flag() -> None:
+    # Companion to the test above -- the flag must reflect what the LLM
+    # actually said, not just "TYPE_6 resulted in faq". A null
+    # is_booking_intent means the LLM never made that judgment at all.
+    provider = FakeProvider(_out(intent="faq"))
+
+    result = _fallback("請問你們家在哪裡", provider)
+
+    assert result.intent.inquiry_type == "faq"
+    assert result.llm_rejected_booking_intent is False
 
 
 def test_type_6_does_not_trigger_for_non_inquiry_chitchat() -> None:
