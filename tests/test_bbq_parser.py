@@ -27,6 +27,11 @@ from app.domain.bbq_parser import parse_bbq
         # entirely) must not be misread as a decline.
         "沒問題，想加烤肉",
         "不過想加烤肉",
+        # Codex review: negating something ELSE ("加床" = an extra bed) in
+        # the same message must not consume a separate, later, genuinely
+        # affirmative BBQ clause just because both fall within the
+        # negation term's gap to the BBQ term.
+        "不想加床，要烤肉",
     ],
 )
 def test_affirmative_bbq_answers(text: str) -> None:
@@ -54,6 +59,8 @@ def test_affirmative_bbq_answers(text: str) -> None:
         "不想要烤肉",
         "不太想烤肉",
         "不想要參加烤肉",
+        # "沒想" alongside "不想" -- same decline, different negation word.
+        "沒想要烤肉",
     ],
 )
 def test_negative_bbq_answers(text: str) -> None:
