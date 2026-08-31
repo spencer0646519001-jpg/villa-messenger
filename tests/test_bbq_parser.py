@@ -32,6 +32,10 @@ from app.domain.bbq_parser import parse_bbq
         # affirmative BBQ clause just because both fall within the
         # negation term's gap to the BBQ term.
         "不想加床，要烤肉",
+        # Codex review: a "想到" clause ("didn't expect you can't BBQ") must
+        # not suppress a genuinely separate, later affirmative statement in
+        # the SAME message -- the redaction is bounded to that one clause.
+        "沒想到你們不能烤肉，我還是想要烤肉",
     ],
 )
 def test_affirmative_bbq_answers(text: str) -> None:
@@ -45,6 +49,17 @@ def test_want_negation_terms_do_not_cross_a_list_separator() -> None:
     # clause boundary) broke declining multiple listed items at once.
     result = parse_bbq("不要加床、烤肉")
     assert result.wants_bbq is False
+    assert result.mentioned is True
+
+
+def test_negation_gap_stops_at_a_new_predicate_after_list_separator() -> None:
+    # Codex review: "、" can ALSO introduce a genuinely separate predicate
+    # with its own verb ("不要加床、要烤肉" = don't want a bed, [but do]
+    # want BBQ) -- allowing negation to cross "、" unconditionally (the fix
+    # for the test above) let it reach past a fresh "要" and wrongly claim
+    # the BBQ term for the wrong clause.
+    result = parse_bbq("不要加床、要烤肉")
+    assert result.wants_bbq is True
     assert result.mentioned is True
 
 
@@ -116,6 +131,12 @@ def test_mentioned_true_when_answer_is_explicit(text: str) -> None:
         # not be misread as the "沒想" negation term just because "沒想" is
         # a literal substring of it.
         "沒想到原來烤肉要收費",
+        # Codex review (P2 of the same finding): guarding the NEGATION side
+        # against "想到" isn't enough on its own -- an unrelated trigger word
+        # elsewhere in the SAME "想到" clause ("要" in "要收烤肉費") must not
+        # fall through to the AFFIRM pattern either. The whole clause is
+        # scoped out, not just the negation check.
+        "沒想到要收烤肉費",
     ],
 )
 def test_mentioned_false_when_no_explicit_answer(text: str) -> None:

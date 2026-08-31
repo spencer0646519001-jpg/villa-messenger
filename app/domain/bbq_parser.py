@@ -47,6 +47,19 @@ _WANT_TERM_PATTERN = "|".join(_WANT_NEGATION_TERMS)
 # below (checked first) via the literal "不想"/"不太想"/"沒想" terms.
 _BBQ_WANT_AFFIRM_PATTERN = re.compile(rf"想(?!到)[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})")
 
+# "想到" ("think of" / "realize", never "want to") heads a clause that can
+# contain other trigger words with nothing to do with a BBQ request -- Codex
+# review: "沒想到要收烤肉費" ("didn't expect there'd be a BBQ fee") wasn't
+# read as a "沒想" negation (correctly guarded above), but the "要" inside
+# "要收烤肉費" then matched the unrelated PREFIX_AFFIRM pattern instead,
+# turning a surprised remark about pricing into a persisted request. Rather
+# than trying to guard every trigger word individually against every "想到"
+# clause, the clause itself is stripped out before any pattern below ever
+# sees it -- bounded to that one clause (stops at the next clause-punctuation
+# or end of string) so a genuine, separate request stated elsewhere in the
+# same message ("沒想到你們不能烤肉，我還是想要烤肉") is still recognized.
+_THINK_OF_CLAUSE = re.compile(r"(?:不太|不|沒)?想到[^\n，,。！？；;]*")
+
 # Gap between the "label:" separator and its answer: same line (just
 # horizontal whitespace), OR the answer wrapped to the very next line (one
 # newline). NOT bare \s* -- that would let the match skip past several blank
@@ -73,12 +86,22 @@ _BBQ_LABEL_NEGATION_PATTERN = re.compile(
 # cross the same comma via the (still-unrestricted) affirm gap, so the
 # exclusion has to apply to both patterns to stay symmetric. "、" (a list
 # separator for coordinated items under ONE verb, not a new clause) is
-# deliberately NOT excluded -- "不要加床、烤肉" declines BOTH listed items,
-# and excluding "、" broke exactly that by blocking the negation from
-# reaching past it while the affirm pattern still could.
+# deliberately NOT excluded outright -- "不要加床、烤肉" declines BOTH listed
+# items, and excluding "、" broke exactly that by blocking the negation from
+# reaching past it while the affirm pattern still could. But "、" can ALSO
+# introduce a genuinely separate predicate with its own verb ("不要加床、要
+# 烤肉" = don't want a bed, [but do] want BBQ) -- Codex review found the
+# negation gap crossing "、" into a fresh affirm-trigger word ("要") and
+# wrongly claiming the BBQ term for the negation on the OTHER side of that
+# new predicate. _NEGATION_GAP (negation-only, not shared with affirm below)
+# rejects consuming "、" when an affirm trigger word immediately follows it;
+# a bare noun after "、" still passes through unchanged.
 _CLAUSE_GAP = r"[^\n，,。！？；;]{0,4}"
+_NEGATION_GAP = (
+    rf"(?:(?!、(?:{'|'.join(_NATURAL_AFFIRM_TERMS)}))[^\n，,。！？；;]){{0,4}}"
+)
 _BBQ_PREFIX_NEGATION_PATTERN = re.compile(
-    rf"(?:{_WANT_TERM_PATTERN}(?!到)|{'|'.join(_OTHER_NEGATION_TERMS)}){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
+    rf"(?:{_WANT_TERM_PATTERN}(?!到)|{'|'.join(_OTHER_NEGATION_TERMS)}){_NEGATION_GAP}(?:{_BBQ_TERM_PATTERN})"
 )
 _BBQ_PREFIX_AFFIRM_PATTERN = re.compile(
     rf"(?:{'|'.join(_NATURAL_AFFIRM_TERMS)}){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
@@ -86,6 +109,7 @@ _BBQ_PREFIX_AFFIRM_PATTERN = re.compile(
 
 
 def parse_bbq(text: str) -> BbqParseResult:
+    text = _THINK_OF_CLAUSE.sub("", text)
     if _BBQ_LABEL_NEGATION_PATTERN.search(text) is not None:
         return BbqParseResult(wants_bbq=False, mentioned=True)
     if _BBQ_LABEL_AFFIRM_PATTERN.search(text) is not None:
