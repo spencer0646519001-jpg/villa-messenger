@@ -488,13 +488,21 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     intent=availability + full slots correctly persisted, but the reply was
     still the bare BBQ policy text -- confirms the "8 other tier-1 topics
     hijack availability intent" gap noted 2026-08-17 for whole_house's
-    narrower is_booking_equivalent_topic-only fix."""
+    narrower is_booking_equivalent_topic-only fix.
+
+    Requires resolved DATES specifically, not a guest count alone -- Codex
+    review: "8人 BBQ多少錢" rule-parses adult_count=8 alongside intent="price"
+    (多少錢 keyword) with NO dates at all, and is exactly the same kind of
+    bare ancillary-policy question as "BBQ多少錢" itself; a guest count is
+    routinely mentioned in a hypothetical/policy question ("8人早餐算不算
+    錢") and isn't evidence of an active booking the way committed dates
+    are. Treating a guest count alone as sufficient suppressed the FAQ
+    answer and produced a "please give me your dates" booking prompt for a
+    pure policy question."""
     log = decision.log_payload
     if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
         return False
-    has_dates = bool(log.get("parsed_checkin")) and bool(log.get("parsed_checkout"))
-    has_guests = log.get("parsed_adult_count") is not None
-    return has_dates or has_guests
+    return bool(log.get("parsed_checkin")) and bool(log.get("parsed_checkout"))
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:

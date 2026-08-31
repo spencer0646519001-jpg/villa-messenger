@@ -911,18 +911,33 @@ def test_faq_location_keyword_di_dian() -> None:
 
 def test_faq_location_keyword_na_li() -> None:
     # Real LINE E2E regression: "請問你們家在哪裡" (contains neither 地址/位置/
-    # 怎麼去/地點, only 在哪/哪裡) hit no location keyword at all -- TYPE_6
-    # correctly upgraded intent to "faq" but with no topic match the reply
-    # fell back to the generic "已通知服務人員" defer instead of the actual
-    # address, and needlessly triggered an owner push for a fully answerable
+    # 怎麼去/地點) hit no location keyword at all -- TYPE_6 correctly
+    # upgraded intent to "faq" but with no topic match the reply fell back
+    # to the generic "已通知服務人員" defer instead of the actual address,
+    # and needlessly triggered an owner push for a fully answerable
     # question. This was never a TYPE_6 routing bug -- _is_faq already
     # correctly reaches this composer for any faq-classified message; the
-    # gap was purely this keyword list.
+    # gap was purely this keyword list. Matched via "你們家在哪" (a compound
+    # phrase, not the bare interrogative "在哪"/"哪裡" -- see the test below
+    # for why bare interrogatives were rejected).
     result = _composer().compose(
         message=_message("請問你們家在哪裡"), decision=_faq_decision(), state=None
     )
     assert "宜蘭縣員山鄉枕山十二路123號" in result.text
     assert result.owner_push_text is None
+
+
+def test_faq_location_does_not_match_unrelated_where_questions() -> None:
+    # Codex review of the first version of this fix: bare "在哪"/"哪裡" are
+    # unrestricted interrogatives, not specific to the property's own
+    # location -- "附近哪裡有便利商店" is asking about a NEARBY convenience
+    # store, and answering with the homestay's own street address (while
+    # also suppressing the owner push that would otherwise defer this
+    # unsupported question to a human) is actively wrong, not just unhelpful.
+    result = _composer().compose(
+        message=_message("附近哪裡有便利商店？"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" not in result.text
 
 
 def test_faq_amenities_empty_items_returns_safe_fallback() -> None:
@@ -1123,6 +1138,26 @@ def test_bbq_faq_still_wins_with_no_resolved_booking_slots() -> None:
         message=_message("BBQ多少錢"),
         decision=_price_intent_decision(),
         state=None,
+    )
+
+    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+
+
+def test_bbq_faq_still_wins_with_guest_count_but_no_dates() -> None:
+    # Codex review of the first version of the booking-context exemption:
+    # "8人BBQ多少錢" rule-parses adult_count=8 alongside intent="price", with
+    # NO dates at all -- a guest count mentioned in a hypothetical/policy
+    # question is not evidence of an active booking the way committed dates
+    # are. Treating it as sufficient produced a "please give me your dates"
+    # booking prompt instead of the fixed BBQ policy answer.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_adult_count": 8},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("8人 BBQ 多少錢"), decision=decision, state=None
     )
 
     assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
