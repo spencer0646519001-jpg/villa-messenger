@@ -679,6 +679,91 @@ def test_type_5_llm_trigger_resolves_bbq_mention_the_rule_parser_cannot(
     assert states[0]["wants_bbq"] == 1
 
 
+def test_type_5_bbq_hearsay_mention_does_not_open_state_or_set_wants_bbq(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "朋友說你烤肉很棒" (a friend said your BBQ is great) -- relaying someone
+    # else's opinion, not a request and not a booking-relevant message at
+    # all (no dates/guests, intent stays "faq"). TYPE_5 still fires (bbq
+    # mentioned, rule can't classify), but the LLM correctly returning
+    # wants_bbq=null (no explicit request) must not fabricate a state or a
+    # true value -- must-preserve behavior called out explicitly.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=None,
+            needs_clarification=False,
+            clarification_reason=None,
+            wants_bbq=None,
+        )
+    )
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    body = _payload_bytes([_text_event("朋友說你烤肉很棒")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    assert _rows(database_path, "conversation_states") == []
+
+
+def test_type_5_bbq_followup_against_active_state_updates_same_state(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real LINE E2E regression: an active booking context (dates + guests
+    # known, still missing room_count -- state stays in_progress), followed
+    # by "可以幫我加一下烤肉嗎" ("can you add BBQ for me"). bbq_parser can't
+    # classify this phrasing (mentioned=False) on its own, so it needs
+    # TYPE_5 to resolve wants_bbq -- verifies TYPE_5 fires and merges
+    # correctly for a FOLLOW-UP message against an open state, not just a
+    # standalone first message.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+
+    body1 = _payload_bytes([_text_event_with_reply_token("9/20-9/22入住,8大2小")])
+    assert _post(client, body1, _sign(body1)).status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert states[0]["status"] == "in_progress"
+    assert states[0]["wants_bbq"] == 0
+
+    provider = FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=None,
+            needs_clarification=False,
+            clarification_reason=None,
+            wants_bbq=True,
+        )
+    )
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    body2 = _payload_bytes([_text_event_with_reply_token("可以幫我加一下烤肉嗎")])
+    assert _post(client, body2, _sign(body2)).status_code == 200
+
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1  # same state updated, not a new one opened
+    assert states[0]["checkin_date"] == "2026-09-20"
+    assert states[0]["checkout_date"] == "2026-09-22"
+    assert states[0]["wants_bbq"] == 1
+
+
 def test_state_write_failure_isolated_still_200_and_persisted(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

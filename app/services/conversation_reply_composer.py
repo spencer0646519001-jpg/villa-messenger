@@ -175,6 +175,7 @@ class ConversationReplyComposer:
             and not _is_booking_equivalent_quote(
                 decision, has_booking_equivalent_match
             )
+            and not _has_resolved_booking_context(decision)
         ):
             return self._compose_faq(message)
         # gate3: tier-1 FAQ match answers directly when it is clearly FAQ-only.
@@ -446,6 +447,17 @@ def _should_answer_gate3_faq(
     )
     if _is_booking_equivalent_quote(decision, product_match):
         return False
+    # Same reasoning as gate1's _has_resolved_booking_context check --
+    # before that fix, gate1 unconditionally caught every NON_PRICEABLE
+    # topic first, so this gate never even SAW one. Now that gate1 can let
+    # a NON_PRICEABLE topic with a genuine resolved booking context fall
+    # through, this gate's own topic != "checkout" branch (which only
+    # excludes literal price intent, per Decision F) would otherwise claim
+    # it right back -- confirmed live: fixing only gate1 still left "9/20-
+    # 9/22入住,8大2小,想烤肉" (intent=availability) answering the bare BBQ
+    # policy text instead of the booking reply.
+    if _has_resolved_booking_context(decision):
+        return False
     if faq_match.topic != "checkout":
         return decision.log_payload.get("inquiry_intent") != "price"
     return _is_bare_checkout_faq(decision, state)
@@ -458,6 +470,31 @@ def _is_booking_equivalent_quote(
         has_booking_equivalent_match
         and decision.log_payload.get("inquiry_intent") in _QUOTE_RELEVANT_INTENTS
     )
+
+
+def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
+    """True when THIS message's own parsed slots already show real, resolved
+    dates and/or a guest count -- not just a NON_PRICEABLE keyword -- AND the
+    final intent is quote-relevant. Distinguishes "9/20-9/22入住,8大2小,想烤肉"
+    (a booking/availability inquiry with a supplemental BBQ mention -- the
+    booking reply must stay primary) from a bare "BBQ多少錢"/"早餐多少錢嗎"
+    (price intent too, but no dates/guests at all -- there's nothing to quote
+    against, so the fixed policy FAQ answer is correct, per Decision F).
+    Deliberately reads only decision.log_payload (this message's OWN parsed
+    fields), never the accumulated `state` dict -- gate1 runs before the
+    state-driven path below and an unrelated FAQ tangent mid-quote
+    ("有早餐嗎" during an active complete state) must still answer FAQ.
+    Real LINE E2E regression: this exact bbq case reached production with
+    intent=availability + full slots correctly persisted, but the reply was
+    still the bare BBQ policy text -- confirms the "8 other tier-1 topics
+    hijack availability intent" gap noted 2026-08-17 for whole_house's
+    narrower is_booking_equivalent_topic-only fix."""
+    log = decision.log_payload
+    if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
+        return False
+    has_dates = bool(log.get("parsed_checkin")) and bool(log.get("parsed_checkout"))
+    has_guests = log.get("parsed_adult_count") is not None
+    return has_dates or has_guests
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:

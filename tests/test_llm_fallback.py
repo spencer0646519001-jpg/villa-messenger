@@ -361,13 +361,16 @@ def test_type_5_bbq_verdict_survives_a_booking_intent_rejection() -> None:
 
 
 def test_type_6_triggers_on_genuinely_unclassified_inquiry() -> None:
-    # "請問你們家在哪裡" contains "請問" (so the rule parser marks it as an
+    # "請問你們營業多久了" contains "請問" (so the rule parser marks it as an
     # inquiry) but matches no price/availability/booking/FAQ keyword at all
     # -- the ONLY path in inquiry_intent.py that produces
-    # is_inquiry=True + inquiry_type="unknown".
+    # is_inquiry=True + inquiry_type="unknown". (Was "請問你們家在哪裡" until
+    # the real E2E fix that added "哪裡"/"在哪" to the location FAQ keywords
+    # -- that message is now classified "faq" by the rule engine directly,
+    # so it no longer demonstrates a genuinely unclassified message.)
     provider = FakeProvider(_out(intent="faq"))
 
-    result = _fallback("請問你們家在哪裡", provider)
+    result = _fallback("請問你們營業多久了", provider)
 
     assert [call["trigger"] for call in provider.calls] == [TYPE_6_UNCLASSIFIED_INQUIRY]
     # Codex review (P2): _maybe_upgrade_intent only mapped the three
@@ -388,7 +391,7 @@ def test_type_6_faq_classification_survives_an_explicit_non_booking_verdict() ->
     # the correct faq classification.
     provider = FakeProvider(_out(intent="faq", is_booking_intent=False))
 
-    result = _fallback("請問你們家在哪裡", provider)
+    result = _fallback("請問你們營業多久了", provider)
 
     assert result.intent.inquiry_type == "faq"
     assert result.intent.is_inquiry is True
@@ -406,7 +409,7 @@ def test_type_6_faq_without_explicit_rejection_does_not_set_the_flag() -> None:
     # is_booking_intent means the LLM never made that judgment at all.
     provider = FakeProvider(_out(intent="faq"))
 
-    result = _fallback("請問你們家在哪裡", provider)
+    result = _fallback("請問你們營業多久了", provider)
 
     assert result.intent.inquiry_type == "faq"
     assert result.llm_rejected_booking_intent is False
@@ -428,7 +431,7 @@ def test_type_6_llm_upgrades_intent_and_extracts_slots() -> None:
         _out(intent="availability", is_booking_intent=True, checkin_date="2026-08-10")
     )
 
-    result = _fallback("請問你們家在哪裡", provider)
+    result = _fallback("請問你們營業多久了", provider)
 
     assert result.intent.inquiry_type == "availability"
     assert result.dates.checkin_date == "2026-08-10"

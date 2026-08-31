@@ -46,7 +46,7 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     ("bbq", ("烤肉", "BBQ", "bbq")),
     ("deposit", ("訂金", "押金", "保證金", "定金")),
     ("room_type", ("房型", "樓層", "幾間房", "幾人房")),
-    ("location", ("地址", "位置", "怎麼去", "地點")),
+    ("location", ("地址", "位置", "怎麼去", "地點", "在哪", "哪裡")),
 )
 
 _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()
