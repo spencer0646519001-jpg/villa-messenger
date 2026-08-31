@@ -1198,6 +1198,32 @@ def test_booking_reply_wins_with_only_one_resolved_date() -> None:
     assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
+def test_bbq_faq_still_wins_with_a_single_bare_date_and_price_intent() -> None:
+    # Codex review (third pass): "9/20 8人 BBQ多少錢" has date_parser
+    # auto-assign the one bare, unlabeled date as checkin (its own "a single
+    # explicit date is treated as checkin" rule), but intent is "price" --
+    # the same ancillary-policy shape as "BBQ多少錢"/"8人BBQ多少錢", not the
+    # explicit availability/booking_question intent
+    # "9/20入住,8人,想訂房也想烤肉" carries. Trusting a single date
+    # regardless of intent shape wrongly asked for a missing checkout
+    # instead of answering the fixed BBQ fee.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SHOULD_NOT_SEE_THIS",
+        log_payload={
+            "inquiry_intent": "price",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 8人 BBQ多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+
+
 _FORM_REPLY_TEXT = (
     "哈囉,歡迎來枕123民宿😊\n"
     "請告知您想詢問的問題,欲訂房請提供以下資訊,有專人為您服務,謝謝。\n"

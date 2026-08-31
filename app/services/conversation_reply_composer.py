@@ -506,11 +506,33 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     BOTH dates routed it to the bare BBQ policy answer instead of the
     missing-checkout prompt the booking flow should ask for next. A single
     committed date is still real evidence of an active booking attempt,
-    unlike a guest count with no date at all."""
+    unlike a guest count with no date at all.
+
+    A single date only counts when intent is specifically availability/
+    booking_question, not "price" -- Codex review (third pass): "9/20 8人
+    BBQ多少錢" has date_parser auto-assign the one bare date as checkin
+    (date_parser's own "a single explicit date is treated as checkin"
+    rule), but the intent is "price" (多少錢), the same ancillary-policy
+    shape as "BBQ多少錢"/"8人BBQ多少錢" -- an unlabeled date mentioned
+    alongside a pure price question isn't evidence of an active booking
+    the way it is when the customer also used explicit
+    availability/booking language (訂房/預訂/有房/etc, already reflected
+    in a rule- or LLM-resolved availability/booking_question intent by
+    the time this composer runs). Two resolved dates are still trusted
+    regardless of intent shape -- an explicit checkin+checkout range is
+    unambiguous on its own."""
     log = decision.log_payload
-    if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
+    intent = log.get("inquiry_intent")
+    if intent not in _QUOTE_RELEVANT_INTENTS:
         return False
-    return bool(log.get("parsed_checkin")) or bool(log.get("parsed_checkout"))
+    has_checkin = bool(log.get("parsed_checkin"))
+    has_checkout = bool(log.get("parsed_checkout"))
+    if has_checkin and has_checkout:
+        return True
+    return (has_checkin or has_checkout) and intent in (
+        "availability",
+        "booking_question",
+    )
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
