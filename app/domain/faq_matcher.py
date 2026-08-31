@@ -51,8 +51,11 @@ _TIER1_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = (
     # own location) -- Codex review of an earlier version of this fix.
     # Scoped to phrases that specifically ask where the PROPERTY/host is,
     # matching this file's existing style of compound phrases (e.g.
-    # "怎麼去") rather than bare interrogative words.
-    ("location", ("地址", "位置", "怎麼去", "地點", "你們在哪", "你們家在哪", "民宿在哪")),
+    # "怎麼去") rather than bare interrogative words. "你家在哪" (singular
+    # "your place", as opposed to the plural "你們") added after Codex
+    # review found "請問你家在哪裡" -- a natural, common alternate phrasing
+    # of the same question -- didn't match any of the original compounds.
+    ("location", ("地址", "位置", "怎麼去", "地點", "你們在哪", "你們家在哪", "你家在哪", "民宿在哪")),
 )
 
 _TIER2_KEYWORDS: tuple[tuple[FaqTopic, tuple[str, ...]], ...] = ()

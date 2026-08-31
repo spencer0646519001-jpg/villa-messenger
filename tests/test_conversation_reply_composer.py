@@ -940,6 +940,18 @@ def test_faq_location_does_not_match_unrelated_where_questions() -> None:
     assert "宜蘭縣員山鄉枕山十二路123號" not in result.text
 
 
+def test_faq_location_keyword_ni_jia() -> None:
+    # Codex review (second pass): "請問你家在哪裡" (singular "你家", as
+    # opposed to the plural "你們" the original compounds required) is a
+    # natural, common alternate phrasing of the same question and matched
+    # none of them.
+    result = _composer().compose(
+        message=_message("請問你家在哪裡"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
 def test_faq_amenities_empty_items_returns_safe_fallback() -> None:
     composer = ConversationReplyComposer(
         tenant_pricing_loader=lambda tid: _PRICING,
@@ -1161,6 +1173,29 @@ def test_bbq_faq_still_wins_with_guest_count_but_no_dates() -> None:
     )
 
     assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+
+
+def test_booking_reply_wins_with_only_one_resolved_date() -> None:
+    # Codex review (second pass): "9/20入住,8人,想訂房也想烤肉" gives checkin
+    # but not checkout yet -- a genuinely in-progress booking, still missing
+    # a slot, NOT a bare policy question. Requiring BOTH dates routed it to
+    # the bare BBQ policy answer instead of the missing-checkout prompt the
+    # booking flow should ask for next.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
+        log_payload={
+            "inquiry_intent": "availability",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，8人，想訂房也想烤肉"), decision=decision, state=None
+    )
+
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
 _FORM_REPLY_TEXT = (

@@ -498,11 +498,19 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     錢") and isn't evidence of an active booking the way committed dates
     are. Treating a guest count alone as sufficient suppressed the FAQ
     answer and produced a "please give me your dates" booking prompt for a
-    pure policy question."""
+    pure policy question.
+
+    Requires only ONE resolved date, not both -- Codex review (second
+    pass): "9/20入住,8人,想訂房也想烤肉" gives checkin but not checkout yet
+    (a genuinely in-progress booking, still missing a slot), and requiring
+    BOTH dates routed it to the bare BBQ policy answer instead of the
+    missing-checkout prompt the booking flow should ask for next. A single
+    committed date is still real evidence of an active booking attempt,
+    unlike a guest count with no date at all."""
     log = decision.log_payload
     if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
         return False
-    return bool(log.get("parsed_checkin")) and bool(log.get("parsed_checkout"))
+    return bool(log.get("parsed_checkin")) or bool(log.get("parsed_checkout"))
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
