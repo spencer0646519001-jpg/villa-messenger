@@ -47,6 +47,7 @@ class LLMOutput:
     clarification_reason: str | None
     room_count: int | None = None
     intents: list[str] = field(default_factory=list)
+    wants_bbq: bool | None = None
 
 
 class LLMProvider(Protocol):

@@ -641,6 +641,44 @@ def test_bbq_request_with_dates_and_guests_persists_wants_bbq(
     assert states[0]["wants_bbq"] == 1
 
 
+def test_type_5_llm_trigger_resolves_bbq_mention_the_rule_parser_cannot(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "他們說烤肉不錯誒" (relaying a friend's opinion, not a request or a
+    # policy question) has no date/guest signal, so it hits none of
+    # TYPE_1/2/3 -- only the newer TYPE_5_BBQ_AMBIGUITY trigger (added so
+    # genuinely ambiguous BBQ phrasing goes to the LLM instead of another
+    # bbq_parser.py regex patch) calls the LLM here.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=None,
+            needs_clarification=False,
+            clarification_reason=None,
+            wants_bbq=True,
+        )
+    )
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    body = _payload_bytes([_text_event("我要訂房,他們說烤肉不錯誒")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["wants_bbq"] == 1
+
+
 def test_state_write_failure_isolated_still_200_and_persisted(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

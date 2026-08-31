@@ -200,6 +200,7 @@ def _llm_output_from_dict(data: dict) -> LLMOutput:
         clarification_reason=_clarification_reason_or_none(data.get("clarification_reason")),
         room_count=_int_or_none(data.get("room_count")),
         intents=_intents_or_empty(data.get("intents")),
+        wants_bbq=_bool_or_none(data.get("wants_bbq")),
     )
 
 
@@ -249,13 +250,14 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
     if trigger == "type_3_faq_booking_collision":
         collision_instruction = """
 
-本次是 FAQ topic 與訂房線索同時出現的語意衝突。你只負責判斷意圖:
+本次是 FAQ topic 與訂房線索同時出現的語意衝突。判斷意圖:
 - 若客人在詢問名詞定義、規則或附加服務政策,回 intent "faq"、
   is_booking_intent false。
 - 若客人在用該詞表達想訂住宿或查指定日期能否入住,回 intent
   "availability" 或 "booking"、is_booking_intent true。
 - 不要判斷實際空房、不要計價、不要產生客人回覆。
-- 本 trigger 不做欄位抽取;日期、人數、房數、寵物欄位全部填 null。
+- 同時正常抽取日期、人數、寵物、烤肉等欄位(跟其他 trigger 一樣),不要
+  因為本次主要任務是判斷意圖就把這些欄位都填 null。
 - intents 可列出所有看見的意圖,例如 ["availability", "faq:pets"];
   intent 欄位仍放主要意圖。
 """
@@ -274,17 +276,39 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
 - 不要判斷實際空房、不要計價、不要產生客人回覆。
 - 本 trigger 不做欄位抽取;日期、人數、房數、寵物欄位全部填 null。
 """
+    bbq_ambiguity_instruction = ""
+    if trigger == "type_5_bbq_ambiguity":
+        bbq_ambiguity_instruction = """
+
+本次情境是客人訊息裡有提到「烤肉」或「BBQ」,但規則引擎判斷不出客人是要還
+是不要。請判斷 wants_bbq:
+- 客人明確表示要加烤肉、有烤肉需求 => true。
+- 客人明確表示不要烤肉、婉拒烤肉這個服務 => false。
+- 只是在問烤肉相關的費用、政策、地點、時段等,沒有明確表態要不要
+  => null(不要用「有問到烤肉」自己腦補成 true)。
+- 同時正常抽取日期、人數、寵物、意圖等其他欄位。
+"""
+    unclassified_inquiry_instruction = ""
+    if trigger == "type_6_unclassified_inquiry":
+        unclassified_inquiry_instruction = """
+
+本次情境是規則引擎判斷不出這句話屬於哪一種分類(訊息看起來像是在問問題,但
+不屬於價格/空房/訂房/常見 FAQ 任何一種)。請判斷這句話真正的意圖,並正常抽
+取日期、人數、寵物、烤肉等欄位。單純問候、感謝、閒聊(這種訊息通常根本不會
+被送進這個 trigger,但如果真的收到)=> intent "other"、is_booking_intent
+false。
+"""
     return f"""
 你是民宿訂房訊息的欄位抽取器。只輸出 JSON,不要解釋,不要產生給客人的回覆文字。
 
 任務:
-- 從客人訊息抽出入住日期、退房日期、人數、寵物、意圖。
+- 從客人訊息抽出入住日期、退房日期、人數、寵物、烤肉需求、意圖。
 - 日期一律輸出 YYYY-MM-DD。沒有明寫年份時使用 {reference_year}。
 - 無法判斷的欄位填 null。
 - tenant_id 不在 prompt 中使用,也不可輸出。
 
 trigger: {trigger}
-{collision_instruction}{state_continuation_instruction}
+{collision_instruction}{state_continuation_instruction}{bbq_ambiguity_instruction}{unclassified_inquiry_instruction}
 
 簡寫日期範例:
 - "7/28-29" => checkin_date "2026-07-28", checkout_date "2026-07-29"
@@ -299,6 +323,9 @@ trigger: {trigger}
 - clarification_reason "date_range_too_broad"
 - 日期欄位填 null
 
+wants_bbq 一律採保守判斷:沒有明確表態要或不要,一律填 null,不要因為訊息
+提到「烤肉」就自動猜成 true。
+
 JSON schema:
 {{
   "intent": "price|availability|booking|faq|other|unknown|null",
@@ -311,6 +338,7 @@ JSON schema:
   "pet_count": "integer|null",
   "room_count": "integer|null",
   "has_pet": "boolean|null",
+  "wants_bbq": "boolean|null",
   "last_message_text": "string|null",
   "is_booking_intent": "boolean|null",
   "needs_clarification": "boolean",

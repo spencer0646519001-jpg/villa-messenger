@@ -7,6 +7,8 @@ from app.domain.inquiry_parser import parse_inquiry
 from app.domain.llm_fallback import (
     TYPE_3_FAQ_BOOKING_COLLISION,
     TYPE_4_STATE_CONTINUATION_JUDGMENT,
+    TYPE_5_BBQ_AMBIGUITY,
+    TYPE_6_UNCLASSIFIED_INQUIRY,
     judge_state_continuation,
     llm_fallback_parse,
 )
@@ -290,6 +292,91 @@ def test_type_3_llm_disabled_uses_product_policy_rule_fallback(monkeypatch) -> N
     assert policy.intent.inquiry_type == "faq"
 
 
+def test_type_3_merges_llm_provided_slots_when_present() -> None:
+    # Spencer's request when expanding LLM-trigger scope: TYPE_3 already
+    # pays for an LLM call to resolve the FAQ/booking classification
+    # conflict, so use the same call's slot extraction instead of
+    # discarding it (previously the prompt told the LLM to leave every
+    # slot null on this trigger, so there was nothing to merge at all).
+    provider = FakeProvider(
+        _out(intent="availability", is_booking_intent=True, has_pet=True, pet_count=2)
+    )
+
+    result = _fallback("8/15可以包棟嗎 9人", provider)
+
+    assert result.pets.has_pet is True
+    assert result.pets.pet_count == 2
+
+
+def test_type_5_triggers_when_bbq_mentioned_but_unresolved() -> None:
+    # "他們說烤肉不錯誒" ("they said BBQ is pretty good") -- a genuine relay
+    # of someone else's opinion, not a request or a policy question. Even
+    # after hardening bbq_parser.py across many review rounds, this kind of
+    # open-ended phrasing has no natural regex stopping point, which is
+    # exactly the class of problem TYPE_5 hands off to the LLM instead.
+    provider = FakeProvider(_out(wants_bbq=True))
+
+    result = _fallback("他們說烤肉不錯誒", provider)
+
+    assert [call["trigger"] for call in provider.calls] == [TYPE_5_BBQ_AMBIGUITY]
+    assert result.bbq.wants_bbq is True
+    assert result.bbq.mentioned is True
+
+
+def test_type_5_does_not_trigger_when_rule_parser_already_resolved_bbq() -> None:
+    provider = FakeProvider(_out(wants_bbq=False))
+
+    _fallback("想加烤肉", provider)
+
+    assert provider.calls == []
+
+
+def test_type_5_null_wants_bbq_leaves_rule_result_untouched() -> None:
+    # Tri-state contract, same as pets: None means "the LLM couldn't tell
+    # either" (e.g. a pure pricing/policy question), and must NOT clobber
+    # the rule parser's own wants_bbq=False/mentioned=False.
+    provider = FakeProvider(_out(wants_bbq=None))
+
+    result = _fallback("他們說烤肉不錯誒", provider)
+
+    assert result.bbq.wants_bbq is False
+    assert result.bbq.mentioned is False
+
+
+def test_type_6_triggers_on_genuinely_unclassified_inquiry() -> None:
+    # "請問你們家在哪裡" contains "請問" (so the rule parser marks it as an
+    # inquiry) but matches no price/availability/booking/FAQ keyword at all
+    # -- the ONLY path in inquiry_intent.py that produces
+    # is_inquiry=True + inquiry_type="unknown".
+    provider = FakeProvider(_out(intent="faq"))
+
+    _fallback("請問你們家在哪裡", provider)
+
+    assert [call["trigger"] for call in provider.calls] == [TYPE_6_UNCLASSIFIED_INQUIRY]
+
+
+def test_type_6_does_not_trigger_for_non_inquiry_chitchat() -> None:
+    # "你好"/"謝謝" are is_inquiry=False entirely (not "unknown") -- must
+    # never reach TYPE_6, or every greeting would burn an LLM call.
+    provider = FakeProvider(_out(intent="other"))
+
+    for text in ("你好", "謝謝"):
+        _fallback(text, provider)
+
+    assert provider.calls == []
+
+
+def test_type_6_llm_upgrades_intent_and_extracts_slots() -> None:
+    provider = FakeProvider(
+        _out(intent="availability", is_booking_intent=True, checkin_date="2026-08-10")
+    )
+
+    result = _fallback("請問你們家在哪裡", provider)
+
+    assert result.intent.inquiry_type == "availability"
+    assert result.dates.checkin_date == "2026-08-10"
+
+
 def test_llm_enabled_false_short_circuits_provider(monkeypatch) -> None:
     monkeypatch.setenv("LLM_ENABLED", "false")
     provider = FakeProvider(_out(checkin_date="2026-05-08", checkout_date="2026-05-10"))
@@ -368,7 +455,15 @@ def test_provider_preserves_valid_multi_intents_and_drops_invalid_values(
     assert result.intents == ["availability", "faq:whole_house"]
 
 
-def test_collision_prompt_forbids_availability_pricing_reply_and_slot_extraction() -> None:
+def test_collision_prompt_forbids_availability_pricing_and_reply_but_extracts_slots() -> None:
+    # Old assertion: "欄位全部填 null" (this trigger extracted nothing).
+    # New assertion: the prompt now tells the LLM to extract slots normally.
+    # Why: Spencer's explicit request when expanding LLM-trigger scope --
+    # TYPE_3 already pays for an LLM call to resolve the FAQ/booking
+    # classification conflict; discarding whatever that same call could also
+    # tell us about dates/guests/pets/bbq wasted it. The availability/
+    # pricing/reply-text prohibitions are unrelated to slot extraction and
+    # stay exactly as strict as before.
     prompt = openrouter_base._build_system_prompt(  # noqa: SLF001
         2026, TYPE_3_FAQ_BOOKING_COLLISION
     )
@@ -376,7 +471,7 @@ def test_collision_prompt_forbids_availability_pricing_reply_and_slot_extraction
     assert "不要判斷實際空房" in prompt
     assert "不要計價" in prompt
     assert "不要產生客人回覆" in prompt
-    assert "欄位全部填 null" in prompt
+    assert "同時正常抽取日期、人數、寵物、烤肉等欄位" in prompt
 
 
 _STATE = {
