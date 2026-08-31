@@ -151,10 +151,22 @@ def _merge_llm_into_inquiry(
 ) -> InquiryParseResult:
     if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
         return _merge_collision_judgment(inquiry, llm_out)
+    if trigger == TYPE_5_BBQ_AMBIGUITY:
+        # The bbq verdict is a direct answer to a direct question ("does
+        # this customer want BBQ"), not a slot whose validity depends on
+        # THIS message establishing overall booking intent -- unlike
+        # TYPE_1/2's dates/guests, which really would be spurious if the
+        # LLM says this isn't a booking at all (a business meeting
+        # mentioning dates). Merge it before the is_booking_intent
+        # rejection below can discard it. Codex review (P1): an explicit
+        # decline (wants_bbq=False) paired with is_booking_intent=False was
+        # being silently dropped -- mentioned stayed False, so it couldn't
+        # clear a stale wants_bbq=True from an earlier turn.
+        inquiry = inquiry.model_copy(update={"bbq": _merge_bbq(inquiry.bbq, llm_out)})
     if llm_out.is_booking_intent is False:
         return _reject_booking_intent(inquiry)
     if llm_out.needs_clarification:
-        clarified = _maybe_upgrade_intent(inquiry, llm_out)
+        clarified = _maybe_upgrade_intent(inquiry, llm_out, trigger=trigger)
         clarified = clarified.model_copy(
             update={
                 "needs_clarification": True,
@@ -164,7 +176,7 @@ def _merge_llm_into_inquiry(
         return _recompute_flags(clarified)
 
     merged = _merge_slots(inquiry, llm_out)
-    merged = _maybe_upgrade_intent(merged, llm_out)
+    merged = _maybe_upgrade_intent(merged, llm_out, trigger=trigger)
     return _recompute_flags(merged)
 
 
@@ -356,12 +368,29 @@ def _date_missing_fields(checkin: str | None, checkout: str | None) -> list[str]
 def _maybe_upgrade_intent(
     inquiry: InquiryParseResult,
     llm_out: LLMOutput,
+    *,
+    trigger: str | None = None,
 ) -> InquiryParseResult:
     mapped_intent = _map_llm_intent(llm_out.intent)
     if mapped_intent is None and llm_out.is_booking_intent is True:
         mapped_intent = "booking_question"
     if mapped_intent not in _QUOTE_RELEVANT_INTENTS:
-        return inquiry
+        # TYPE_6 fires specifically because the RULE parser's own
+        # classification is "unknown" -- if the LLM instead confidently
+        # says this is an ordinary FAQ question, apply that too, not just
+        # the three quote-relevant intents. Without this, a message the
+        # LLM correctly recognized as intent="faq" stayed "unknown"
+        # forever: conversation_reply_composer._is_faq only checks for the
+        # literal string "faq", so the customer got no reply at all instead
+        # of the FAQ confirm-and-defer message. Codex review (P2). Not
+        # extended to other triggers -- TYPE_1/2/5 already have a rule
+        # intent that's meaningfully different from "genuinely unclassified"
+        # and downgrading it to "faq" on the LLM's say-so isn't the same
+        # well-scoped case.
+        if trigger == TYPE_6_UNCLASSIFIED_INQUIRY and llm_out.intent == "faq":
+            mapped_intent = "faq"
+        else:
+            return inquiry
     return inquiry.model_copy(
         update={
             "intent": InquiryIntentResult(

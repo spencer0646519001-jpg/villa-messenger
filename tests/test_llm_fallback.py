@@ -343,6 +343,23 @@ def test_type_5_null_wants_bbq_leaves_rule_result_untouched() -> None:
     assert result.bbq.mentioned is False
 
 
+def test_type_5_bbq_verdict_survives_a_booking_intent_rejection() -> None:
+    # Codex review (P1): a valid TYPE_5 response can pair an explicit BBQ
+    # verdict with is_booking_intent=False (the LLM decided THIS message
+    # alone doesn't establish overall booking intent). Unlike TYPE_1/2's
+    # dates/guests -- genuinely untrustworthy if this isn't a booking at
+    # all -- the BBQ verdict is a direct answer to a direct question and
+    # must survive the rejection path, or an explicit decline could fail to
+    # clear a stale wants_bbq=True from an earlier turn.
+    provider = FakeProvider(_out(wants_bbq=False, is_booking_intent=False))
+
+    result = _fallback("他們說烤肉不錯誒", provider)
+
+    assert result.bbq.wants_bbq is False
+    assert result.bbq.mentioned is True
+    assert result.llm_rejected_booking_intent is True
+
+
 def test_type_6_triggers_on_genuinely_unclassified_inquiry() -> None:
     # "請問你們家在哪裡" contains "請問" (so the rule parser marks it as an
     # inquiry) but matches no price/availability/booking/FAQ keyword at all
@@ -350,9 +367,16 @@ def test_type_6_triggers_on_genuinely_unclassified_inquiry() -> None:
     # is_inquiry=True + inquiry_type="unknown".
     provider = FakeProvider(_out(intent="faq"))
 
-    _fallback("請問你們家在哪裡", provider)
+    result = _fallback("請問你們家在哪裡", provider)
 
     assert [call["trigger"] for call in provider.calls] == [TYPE_6_UNCLASSIFIED_INQUIRY]
+    # Codex review (P2): _maybe_upgrade_intent only mapped the three
+    # quote-relevant intents, so a correct LLM "faq" classification never
+    # got applied and the message stayed "unknown" -- silently dropped
+    # (owner push only, no customer reply) instead of getting the FAQ
+    # confirm-and-defer reply conversation_reply_composer._is_faq gates on.
+    assert result.intent.inquiry_type == "faq"
+    assert result.intent.is_inquiry is True
 
 
 def test_type_6_does_not_trigger_for_non_inquiry_chitchat() -> None:
