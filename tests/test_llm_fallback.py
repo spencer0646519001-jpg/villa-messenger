@@ -379,6 +379,21 @@ def test_type_6_triggers_on_genuinely_unclassified_inquiry() -> None:
     assert result.intent.is_inquiry is True
 
 
+def test_type_6_faq_classification_survives_an_explicit_non_booking_verdict() -> None:
+    # Codex review (P2, second pass): the first fix only covered
+    # is_booking_intent left null (as in the test above) -- but a coherent
+    # LLM response naturally pairs intent="faq" with the EXPLICIT
+    # is_booking_intent=False, which the rejection branch would otherwise
+    # return through first, leaving the message "unknown" regardless of
+    # the correct faq classification.
+    provider = FakeProvider(_out(intent="faq", is_booking_intent=False))
+
+    result = _fallback("請問你們家在哪裡", provider)
+
+    assert result.intent.inquiry_type == "faq"
+    assert result.intent.is_inquiry is True
+
+
 def test_type_6_does_not_trigger_for_non_inquiry_chitchat() -> None:
     # "你好"/"謝謝" are is_inquiry=False entirely (not "unknown") -- must
     # never reach TYPE_6, or every greeting would burn an LLM call.
