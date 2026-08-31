@@ -40,11 +40,13 @@ def test_affirmative_bbq_answers(text: str) -> None:
         "沒有要烤肉",
         "不要烤肉",
         "不要BBQ",
-        # "不想" must stay a negation now that "想" is a recognized affirm
-        # term -- otherwise "不想烤肉" would match the "想...烤肉" affirm
-        # pattern and flip an explicit decline into wants_bbq=True.
+        # "想...烤肉" (tight gap) must stay a negation when a negation marker
+        # precedes "想", including a MODIFIED negation like "不太想" where
+        # "不想" isn't a contiguous substring -- Codex review flagged this
+        # exact gap in the first version of the fix.
         "不想烤肉",
         "不想要烤肉",
+        "不太想烤肉",
     ],
 )
 def test_negative_bbq_answers(text: str) -> None:
@@ -68,6 +70,11 @@ def test_mentioned_true_when_answer_is_explicit(text: str) -> None:
     [
         "入住日期:8/4-8/6",
         "是否烤肉 (酌收清潔費 NT1,000)",
+        # Codex review of the first version of the "想" fix (P1): "想" only
+        # counts as a BBQ request within a tight gap of the BBQ term -- a
+        # question about the fee ("想問一下烤肉費用") must NOT match just
+        # because "想" appears somewhere earlier in the same sentence.
+        "想問一下烤肉費用",
     ],
 )
 def test_mentioned_false_when_no_explicit_answer(text: str) -> None:

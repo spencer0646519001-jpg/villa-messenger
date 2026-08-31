@@ -113,6 +113,17 @@ def test_trailing_checkin_label_after_a_full_range_scopes_the_whole_range(
     assert result.checkout_date == expected_checkout
 
 
+def test_bare_day_range_shorthand_pairs_across_a_line_wrap() -> None:
+    # Codex review of the range-pair generalization (P2): the pair-detection
+    # gap must tolerate a newline between the separator and the day digits,
+    # same as _RANGE_SEPARATOR_DAY_PATTERN itself already does -- a
+    # horizontal-only gap missed this pairing and silently dropped checkout.
+    result = parse_stay_dates("入住7/17-\n18", reference_year=2026)
+
+    assert result.checkin_date == "2026-07-17"
+    assert result.checkout_date == "2026-07-18"
+
+
 def test_hyphenated_clock_time_is_not_read_as_a_second_date() -> None:
     # Codex review of commit eec20a8 (P1): "7/17-18:00" (5pm) used to be
     # read as a 7/17-7/18 stay instead of a single date with a clock time.

@@ -106,8 +106,12 @@ def _valid_date_matches(
 # whitespace) between them are one "A-B" range, whether B is a bare-day
 # shorthand ("7/17-18") or a full second M/D date ("8/20-8/22") -- both need
 # the same label-repair logic below, so both are detected here instead of
-# only the shorthand case.
-_BARE_SEPARATOR_PATTERN = re.compile(r"[ \t]*[-~～至到][ \t]*")
+# only the shorthand case. \s* (not [ \t]*) after the separator to match
+# _RANGE_SEPARATOR_DAY_PATTERN's own tolerance -- Codex review (P2): a
+# horizontal-only gap missed a shorthand suffix wrapped onto the next line
+# ("入住7/17-\n18"), which _range_suffix_match already accepted as valid,
+# so the pair went undetected and checkout silently dropped to None.
+_BARE_SEPARATOR_PATTERN = re.compile(r"[-~～至到]\s*")
 
 
 def _find_range_pairs(
