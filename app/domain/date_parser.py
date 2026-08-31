@@ -35,7 +35,7 @@ _RANGE_SEPARATOR_DAY_PATTERN = re.compile(
 
 def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseResult:
     year = reference_year if reference_year is not None else datetime.now().year
-    date_matches, shorthand_pairs = _valid_date_matches(text, year)
+    date_matches, range_pairs = _valid_date_matches(text, year)
 
     checkin = None
     checkout = None
@@ -52,8 +52,8 @@ def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseR
         elif label is None:
             unlabeled[idx] = parsed_date
 
-    checkin, checkout = _resolve_shorthand_pairs(
-        shorthand_pairs, date_matches, labels, unlabeled, checkin, checkout
+    checkin, checkout = _resolve_range_pairs(
+        range_pairs, date_matches, labels, unlabeled, checkin, checkout
     )
     unlabeled_dates = list(unlabeled.values())
 
@@ -89,7 +89,6 @@ def _valid_date_matches(
     text: str, year: int
 ) -> tuple[list[tuple[date, int, int]], list[tuple[int, int]]]:
     matches: list[tuple[date, int, int]] = []
-    shorthand_pairs: list[tuple[int, int]] = []
     for match in _DATE_PATTERN.finditer(text):
         month = int(match.group("month"))
         day = int(match.group("day"))
@@ -97,35 +96,66 @@ def _valid_date_matches(
             parsed_date = date(year, month, day)
         except ValueError:
             continue
-        primary_idx = len(matches)
         matches.append((parsed_date, match.start(), match.end()))
         suffix_matches = _range_suffix_match(text, match.end(), year, month)
-        if suffix_matches:
-            matches.extend(suffix_matches)
-            shorthand_pairs.append((primary_idx, primary_idx + 1))
-    return matches, shorthand_pairs
+        matches.extend(suffix_matches)
+    return matches, _find_range_pairs(text, matches)
 
 
-def _resolve_shorthand_pairs(
-    shorthand_pairs: list[tuple[int, int]],
+# Two adjacent matches with nothing but a range separator (and optional
+# whitespace) between them are one "A-B" range, whether B is a bare-day
+# shorthand ("7/17-18") or a full second M/D date ("8/20-8/22") -- both need
+# the same label-repair logic below, so both are detected here instead of
+# only the shorthand case.
+_BARE_SEPARATOR_PATTERN = re.compile(r"[ \t]*[-~～至到][ \t]*")
+
+
+def _find_range_pairs(
+    text: str, matches: list[tuple[date, int, int]]
+) -> list[tuple[int, int]]:
+    pairs: list[tuple[int, int]] = []
+    for i in range(len(matches) - 1):
+        between = text[matches[i][2] : matches[i + 1][1]]
+        if _BARE_SEPARATOR_PATTERN.fullmatch(between):
+            pairs.append((i, i + 1))
+    return pairs
+
+
+def _resolve_range_pairs(
+    range_pairs: list[tuple[int, int]],
     date_matches: list[tuple[date, int, int]],
     labels: dict[int, str | None],
     unlabeled: dict[int, date],
     checkin: date | None,
     checkout: date | None,
 ) -> tuple[date | None, date | None]:
-    # A shorthand pair ("7/17-18") is strong-enough evidence on its own that
-    # if EITHER side already got a label (e.g. "7/17-18退房" labels only the
-    # suffix as checkout), the other side fills the opposite, still-empty
-    # role -- rather than sitting stranded in unlabeled_dates, unused, because
-    # the plain "exactly two unlabeled dates" fallback below never sees it.
-    # Flagged by Codex review of commit eec20a8 (P2).
-    for lo_idx, hi_idx in shorthand_pairs:
+    # A range pair ("7/17-18", "8/20-8/22") is strong-enough evidence on its
+    # own that if EITHER side already got a label (e.g. "7/17-18退房" labels
+    # only the suffix as checkout), the other side fills the opposite, still-
+    # empty role -- rather than sitting stranded in unlabeled_dates, unused,
+    # because the plain "exactly two unlabeled dates" fallback below never
+    # sees it. Flagged by Codex review of commit eec20a8 (P2).
+    for lo_idx, hi_idx in range_pairs:
         if labels[lo_idx] == "checkin" and labels[hi_idx] is None and checkout is None:
             checkout = date_matches[hi_idx][0]
             unlabeled.pop(hi_idx, None)
         elif labels[hi_idx] == "checkout" and labels[lo_idx] is None and checkin is None:
             checkin = date_matches[lo_idx][0]
+            unlabeled.pop(lo_idx, None)
+        elif (
+            labels[hi_idx] == "checkin"
+            and labels[lo_idx] is None
+            and checkin == date_matches[hi_idx][0]
+            and checkout is None
+        ):
+            # A trailing 「入住」 after a full "A-B" range attaches, via
+            # _has_close_label_after, to B (the later/closer date) even
+            # though it scopes the whole range: "8/20-8/22入住" means check
+            # in on 8/20 and check out on 8/22, not check in on 8/22. Undo
+            # the main loop's earlier (wrong) checkin=B and re-point it to
+            # the earlier date, with B becoming checkout.
+            checkin = date_matches[lo_idx][0]
+            checkout = date_matches[hi_idx][0]
             unlabeled.pop(lo_idx, None)
     return checkin, checkout
 

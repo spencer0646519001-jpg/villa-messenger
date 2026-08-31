@@ -12,6 +12,16 @@ from app.domain.bbq_parser import parse_bbq
         "是否烤肉 (酌收清潔費 NT1,000):\n是",
         "要烤肉",
         "需要BBQ",
+        # Real LINE E2E regression: "想加烤肉" (a very common customer
+        # phrasing) fell through to mentioned=False because "想" wasn't
+        # recognized as a request word and "要" in "我要訂房" sits too far
+        # from "烤肉" to match -- see test_line_webhook.py's
+        # test_bbq_request_with_pet_persists_wants_bbq_on_first_turn for the
+        # full end-to-end reproduction.
+        "我要訂房，想加烤肉，有帶一隻狗",
+        "8/20-8/22入住,8大2小,想加烤肉",
+        "想加烤肉",
+        "想烤肉",
     ],
 )
 def test_affirmative_bbq_answers(text: str) -> None:
@@ -30,6 +40,11 @@ def test_affirmative_bbq_answers(text: str) -> None:
         "沒有要烤肉",
         "不要烤肉",
         "不要BBQ",
+        # "不想" must stay a negation now that "想" is a recognized affirm
+        # term -- otherwise "不想烤肉" would match the "想...烤肉" affirm
+        # pattern and flip an explicit decline into wants_bbq=True.
+        "不想烤肉",
+        "不想要烤肉",
     ],
 )
 def test_negative_bbq_answers(text: str) -> None:

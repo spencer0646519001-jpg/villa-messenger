@@ -15,8 +15,21 @@ _AFFIRM_TERMS = ("是", "要", "需要", "有")
 # they can only match right after the "label:" separator, never inside the
 # "是否" question wording that precedes it.
 _LABEL_NEGATION_TERMS = ("否", "不要", "不用", "不需要", "沒有", "無")
-_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無")
-_NATURAL_AFFIRM_TERMS = ("要", "需要", "有")
+# "不想" sits alongside "不要"/"不用" here (natural-order only, not the
+# colon-anchored label list) precisely because "想" is now a natural-order
+# affirm term below -- without it, "不想烤肉" would fail every negation check
+# and then match the "想...烤肉" affirm pattern, flipping an explicit decline
+# into wants_bbq=True.
+_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無", "不想")
+# "想" added for real customer phrasing like "想加烤肉" / "想烤肉" -- a plain
+# BBQ request ("我要訂房，想加烤肉") was falling through to mentioned=False
+# because "要" in "我要訂房" sits too far from "烤肉" to match, and "想" itself
+# wasn't recognized as a request word at all, so wants_bbq was never
+# persisted even though the FAQ topic matcher (keyword-only, see
+# faq_matcher.py) separately fired on the bare word "烤肉" and answered with
+# the BBQ policy -- making it look like the system "knew" but silently
+# dropped it.
+_NATURAL_AFFIRM_TERMS = ("要", "需要", "有", "想")
 
 # Gap between the "label:" separator and its answer: same line (just
 # horizontal whitespace), OR the answer wrapped to the very next line (one
