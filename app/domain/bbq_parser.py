@@ -26,17 +26,26 @@ _LABEL_NEGATION_TERMS = ("否", "不要", "不用", "不需要", "沒有", "無"
 # this list, with no separate mechanism to keep in sync.
 # "沒想" alongside "不想"/"不太想" -- Codex review: "沒想要烤肉" is the same
 # decline as "不想要烤肉", just with "沒" instead of "不".
-_NATURAL_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無", "不想", "不太想", "沒想")
+#
+# These three are checked with a negative lookahead against "到" right after
+# "想" (see _WANT_TERM_PATTERN below) -- Codex review: "沒想到原來烤肉要收費"
+# ("didn't expect BBQ costs extra", not a decline) matched as a bare "沒想"
+# negation, since "到原來" fits the negation gap. "想到" always means "think
+# of/realize" in Chinese, never "want to", so excluding it is categorical
+# and safe, not a narrow patch for this one sentence.
+_WANT_NEGATION_TERMS = ("不想", "不太想", "沒想")
+_OTHER_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無")
 _NATURAL_AFFIRM_TERMS = ("要", "需要", "有")
-# Bare "想" (real customer phrasing: "想加烤肉" / "想烤肉") stays its OWN
+_WANT_TERM_PATTERN = "|".join(_WANT_NEGATION_TERMS)
+# Bare "想" (real customer phrasing: "想加烤肉" / "想烤肉") stays its own
 # pair with a much tighter gap than _NATURAL_AFFIRM_TERMS -- with the shared
 # 4-char gap, "想問一下烤肉費用" (asking about the FEE, not requesting BBQ)
 # also matched and got wrongly persisted as wants_bbq=True. A 2-char gap
 # still covers every real reported phrasing ("想加烤肉", "想烤肉", "想要烤肉")
 # while excluding "問一下"-style detours. No separate negation pattern is
-# needed for it: an actual decline is always caught by _NATURAL_NEGATION_TERMS
-# above (checked first) via the literal "不想"/"不太想" terms.
-_BBQ_WANT_AFFIRM_PATTERN = re.compile(rf"想[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})")
+# needed for it: an actual decline is always caught by the negation pattern
+# below (checked first) via the literal "不想"/"不太想"/"沒想" terms.
+_BBQ_WANT_AFFIRM_PATTERN = re.compile(rf"想(?!到)[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})")
 
 # Gap between the "label:" separator and its answer: same line (just
 # horizontal whitespace), OR the answer wrapped to the very next line (one
@@ -53,19 +62,26 @@ _BBQ_LABEL_AFFIRM_PATTERN = re.compile(
 _BBQ_LABEL_NEGATION_PATTERN = re.compile(
     rf"(?:{_BBQ_TERM_PATTERN})[^\n:：]{{0,30}}{_COLON_GAP}(?:{'|'.join(_LABEL_NEGATION_TERMS)})"
 )
-# Natural word order: "不用烤肉" / "不需要BBQ" / "要烤肉". The negation gap
-# excludes clause-separating punctuation (unlike the affirm gap below) --
-# Codex review: "不想加床，要烤肉" declines an EXTRA BED, not BBQ, but the
+# Natural word order: "不用烤肉" / "不需要BBQ" / "要烤肉". Both the negation
+# and affirm gap exclude CLAUSE-separating punctuation (，,。！？；;) -- Codex
+# review: "不想加床，要烤肉" declines an EXTRA BED, not BBQ, but the
 # unrestricted 4-char gap needed to reach "不想要參加烤肉" also reached
 # straight through the comma into a separate, genuinely affirmative clause
-# and wrongly negated it. A real negation of the BBQ request itself never
-# needs to cross a clause boundary to reach the BBQ term.
-_NEGATION_GAP = r"[^\n，,。！？；;、]{0,4}"
+# and wrongly negated it. Symmetrically, once the negation gap stopped at
+# the comma, "不需要加床，烤肉也不用" (BOTH declined) started matching the
+# AFFIRM pattern instead -- the bare "要" trapped inside "不需要" could still
+# cross the same comma via the (still-unrestricted) affirm gap, so the
+# exclusion has to apply to both patterns to stay symmetric. "、" (a list
+# separator for coordinated items under ONE verb, not a new clause) is
+# deliberately NOT excluded -- "不要加床、烤肉" declines BOTH listed items,
+# and excluding "、" broke exactly that by blocking the negation from
+# reaching past it while the affirm pattern still could.
+_CLAUSE_GAP = r"[^\n，,。！？；;]{0,4}"
 _BBQ_PREFIX_NEGATION_PATTERN = re.compile(
-    rf"(?:{'|'.join(_NATURAL_NEGATION_TERMS)}){_NEGATION_GAP}(?:{_BBQ_TERM_PATTERN})"
+    rf"(?:{_WANT_TERM_PATTERN}(?!到)|{'|'.join(_OTHER_NEGATION_TERMS)}){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
 )
 _BBQ_PREFIX_AFFIRM_PATTERN = re.compile(
-    rf"(?:{'|'.join(_NATURAL_AFFIRM_TERMS)})[^\n]{{0,4}}(?:{_BBQ_TERM_PATTERN})"
+    rf"(?:{'|'.join(_NATURAL_AFFIRM_TERMS)}){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
 )
 
 

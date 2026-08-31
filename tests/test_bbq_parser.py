@@ -38,6 +38,16 @@ def test_affirmative_bbq_answers(text: str) -> None:
     assert parse_bbq(text).wants_bbq is True
 
 
+def test_want_negation_terms_do_not_cross_a_list_separator() -> None:
+    # Codex review: "、" enumerates coordinated items under ONE verb ("不要
+    # [加床、烤肉]" = don't want [bed, BBQ]), unlike "，" which usually starts
+    # a new clause -- excluding it from the negation gap (as if it were a
+    # clause boundary) broke declining multiple listed items at once.
+    result = parse_bbq("不要加床、烤肉")
+    assert result.wants_bbq is False
+    assert result.mentioned is True
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -67,6 +77,19 @@ def test_negative_bbq_answers(text: str) -> None:
     assert parse_bbq(text).wants_bbq is False
 
 
+def test_affirm_gap_also_stops_at_a_clause_boundary() -> None:
+    # Codex review: once the negation gap stopped at "，", "不需要加床，烤肉
+    # 也不用" (BOTH the bed AND the BBQ are declined) started matching the
+    # AFFIRM pattern instead -- the bare "要" trapped inside "不需要" could
+    # still cross the same comma via the (then-still-unrestricted) affirm
+    # gap. The postfix negation "烤肉也不用" itself isn't recognized (this
+    # file only parses prefix-style negation), so the safe outcome is
+    # mentioned=False, not a false wants_bbq=True.
+    result = parse_bbq("不需要加床，烤肉也不用")
+    assert result.wants_bbq is False
+    assert result.mentioned is False
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -89,6 +112,10 @@ def test_mentioned_true_when_answer_is_explicit(text: str) -> None:
         # question about the fee ("想問一下烤肉費用") must NOT match just
         # because "想" appears somewhere earlier in the same sentence.
         "想問一下烤肉費用",
+        # Codex review: "沒想到" ("didn't expect", never "don't want") must
+        # not be misread as the "沒想" negation term just because "沒想" is
+        # a literal substring of it.
+        "沒想到原來烤肉要收費",
     ],
 )
 def test_mentioned_false_when_no_explicit_answer(text: str) -> None:
