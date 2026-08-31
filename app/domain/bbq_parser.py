@@ -47,18 +47,25 @@ _WANT_TERM_PATTERN = "|".join(_WANT_NEGATION_TERMS)
 # below (checked first) via the literal "不想"/"不太想"/"沒想" terms.
 _BBQ_WANT_AFFIRM_PATTERN = re.compile(rf"想(?!到)[^\n]{{0,2}}(?:{_BBQ_TERM_PATTERN})")
 
-# "想到" ("think of" / "realize", never "want to") heads a clause that can
-# contain other trigger words with nothing to do with a BBQ request -- Codex
-# review: "沒想到要收烤肉費" ("didn't expect there'd be a BBQ fee") wasn't
-# read as a "沒想" negation (correctly guarded above), but the "要" inside
-# "要收烤肉費" then matched the unrelated PREFIX_AFFIRM pattern instead,
-# turning a surprised remark about pricing into a persisted request. Rather
-# than trying to guard every trigger word individually against every "想到"
-# clause, the clause itself is stripped out before any pattern below ever
-# sees it -- bounded to that one clause (stops at the next clause-punctuation
-# or end of string) so a genuine, separate request stated elsewhere in the
-# same message ("沒想到你們不能烤肉，我還是想要烤肉") is still recognized.
-_THINK_OF_CLAUSE = re.compile(r"(?:不太|不|沒)?想到[^\n，,。！？；;]*")
+# "想到" ("think of" / "realize", never "want to") heads a short remark that
+# can contain other trigger words with nothing to do with a BBQ request --
+# Codex review: "沒想到要收烤肉費" ("didn't expect there'd be a BBQ fee")
+# wasn't read as a "沒想" negation (correctly guarded above), but the "要"
+# inside "要收烤肉費" then matched the unrelated PREFIX_AFFIRM pattern
+# instead, turning a surprised remark about pricing into a persisted
+# request. Rather than guard every trigger word individually against every
+# "想到" remark, the remark itself is stripped out before any pattern below
+# ever sees it -- but bounded to a SHORT window (0-6 chars, stopping early
+# at clause punctuation), not the unbounded rest of the string: Codex review
+# of the first version of this fix found that customers routinely drop
+# punctuation entirely, so an unbounded strip deleted a genuinely separate,
+# later request in the SAME run-on sentence ("沒想到可以烤肉但我想烤肉" --
+# the later "我想烤肉" got erased along with the earlier remark just because
+# nothing marked where the remark ended). (?!時候) excludes "想到時候" ("when
+# the time comes") -- a distinct, common construction where "想" and "到" are
+# NOT the "think of/realize" compound at all ("我們想到時候要烤肉" is a
+# genuine future want, not a remark about an unexpected fact).
+_THINK_OF_CLAUSE = re.compile(r"(?:不太|不|沒)?想到(?!時候)[^\n，,。！？；;]{0,6}")
 
 # Gap between the "label:" separator and its answer: same line (just
 # horizontal whitespace), OR the answer wrapped to the very next line (one
@@ -94,11 +101,18 @@ _BBQ_LABEL_NEGATION_PATTERN = re.compile(
 # negation gap crossing "、" into a fresh affirm-trigger word ("要") and
 # wrongly claiming the BBQ term for the negation on the OTHER side of that
 # new predicate. _NEGATION_GAP (negation-only, not shared with affirm below)
-# rejects consuming "、" when an affirm trigger word immediately follows it;
-# a bare noun after "、" still passes through unchanged.
+# rejects consuming "、" when specifically "要"/"需要" immediately follows it
+# -- those two carry a strong "switching to affirmative" signal paired
+# against "不要"/"不需要". "有" is deliberately EXCLUDED from this block list
+# -- Codex review: "不要有煙、有烤肉味" (no smoke, no BBQ smell -- BOTH still
+# declined) repeats "有" for each item in a single negated enumeration, a
+# common parallel-list construction, not a switch to a new predicate the way
+# "要" signals.
 _CLAUSE_GAP = r"[^\n，,。！？；;]{0,4}"
+_NEGATION_BLOCKED_AFTER_LIST_SEPARATOR = ("要", "需要")
 _NEGATION_GAP = (
-    rf"(?:(?!、(?:{'|'.join(_NATURAL_AFFIRM_TERMS)}))[^\n，,。！？；;]){{0,4}}"
+    rf"(?:(?!、(?:{'|'.join(_NEGATION_BLOCKED_AFTER_LIST_SEPARATOR)}))"
+    rf"[^\n，,。！？；;]){{0,4}}"
 )
 _BBQ_PREFIX_NEGATION_PATTERN = re.compile(
     rf"(?:{_WANT_TERM_PATTERN}(?!到)|{'|'.join(_OTHER_NEGATION_TERMS)}){_NEGATION_GAP}(?:{_BBQ_TERM_PATTERN})"

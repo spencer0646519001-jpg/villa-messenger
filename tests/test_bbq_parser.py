@@ -36,6 +36,15 @@ from app.domain.bbq_parser import parse_bbq
         # not suppress a genuinely separate, later affirmative statement in
         # the SAME message -- the redaction is bounded to that one clause.
         "沒想到你們不能烤肉，我還是想要烤肉",
+        # Codex review: customers routinely drop punctuation entirely -- the
+        # "想到" redaction must stay bounded to a short window and NOT eat a
+        # genuinely separate, later request just because nothing marks
+        # where the "didn't expect" remark ends.
+        "沒想到可以烤肉但我想烤肉",
+        # Codex review: "想到時候" ("when the time comes") is a distinct,
+        # common construction -- "想"+"到時候", NOT the "想到"
+        # (think-of/realize) compound -- so it must not be redacted away.
+        "我們想到時候要烤肉",
     ],
 )
 def test_affirmative_bbq_answers(text: str) -> None:
@@ -60,6 +69,16 @@ def test_negation_gap_stops_at_a_new_predicate_after_list_separator() -> None:
     # the BBQ term for the wrong clause.
     result = parse_bbq("不要加床、要烤肉")
     assert result.wants_bbq is True
+    assert result.mentioned is True
+
+
+def test_negation_gap_crosses_a_repeated_you_predicate_after_list_separator() -> None:
+    # Codex review: unlike "要" (a strong "switching to affirmative" signal
+    # paired against "不要"), "有" repeated after "、" is a common PARALLEL
+    # enumeration still under the SAME negation ("不要[有煙]、[有烤肉味]" =
+    # no smoke, no BBQ smell -- BOTH declined), not a new predicate.
+    result = parse_bbq("不要有煙、有烤肉味")
+    assert result.wants_bbq is False
     assert result.mentioned is True
 
 
