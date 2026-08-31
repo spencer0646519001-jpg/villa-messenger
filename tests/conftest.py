@@ -42,6 +42,21 @@ def _isolate_line_outbound(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixt
     from app.api import line_webhook_routes
     from app.clients import line_send_client
 
+    # Default webhook-level tests to no LLM provider, regardless of the
+    # developer's ambient .env (LLM_ENABLED=true + a real OPENROUTER_API_KEY,
+    # needed for live LINE testing of TYPE_1-6). Forcing the LLM_ENABLED env
+    # var itself was tried first and reverted: llm_fallback.py's own
+    # _llm_enabled() reads that SAME var but defaults to true when unset --
+    # test_llm_fallback.py's tests call llm_fallback_parse() directly (with
+    # enabled=None) and rely on that default to exercise the FakeProvider
+    # they pass in, so forcing the env var off broke ~20 of them. Patching
+    # build_llm_provider_from_env() itself (its only two call sites are both
+    # in line_webhook_routes.py) affects only the webhook path and leaves
+    # direct llm_fallback_parse() calls untouched. A test that needs a real
+    # provider here already overrides this locally (many already do), which
+    # simply re-monkeypatches over this default for that test's duration.
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: None)
+
     def _record_route_call(kind: str, kwargs: dict[str, Any]) -> None:
         call = {"test": request.node.nodeid, "kind": kind, "kwargs": dict(kwargs)}
         ROUTE_OUTBOUND_CALLS.append(call)
