@@ -1263,6 +1263,42 @@ def test_booking_reply_wins_with_explicit_checkin_label_and_price_wording() -> N
     assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
+def test_dated_parking_faq_still_wins_with_no_guest_count() -> None:
+    # Codex review (fifth pass): "9/20 停車要多少錢" has a single date and a
+    # price intent (多少錢 wins the classifier) but NO stated guest count --
+    # a bare ancillary-fee question about a specific day, not a booking
+    # request. The fourth-pass fix (any single date sufficient, regardless
+    # of guest count) wrongly suppressed this parking policy answer in
+    # favor of a booking missing-info prompt.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 停車要多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_parking(available=True, free=True)
+
+
+def test_dated_breakfast_faq_still_wins_with_no_guest_count() -> None:
+    # Same shape as the parking case above, for a different NON_PRICEABLE
+    # topic: "9/20 早餐多少錢" -- single date, price intent, no guest count.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 早餐多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_breakfast(breakfast_provided=False)
+
+
 _FORM_REPLY_TEXT = (
     "哈囉,歡迎來枕123民宿😊\n"
     "請告知您想詢問的問題,欲訂房請提供以下資訊,有專人為您服務,謝謝。\n"

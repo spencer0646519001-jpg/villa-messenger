@@ -509,9 +509,10 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     unlike a guest count with no date at all.
 
     Does NOT additionally require intent to be specifically availability/
-    booking_question (tried in a third pass, then reverted): "多少錢" is
-    checked before booking/availability terms in inquiry_intent.py's
-    priority order, so ANY message combining a date with a price question
+    booking_question, for a message with BOTH a date and a stated guest
+    count (tried in a third pass, then reverted): "多少錢" is checked before
+    booking/availability terms in inquiry_intent.py's priority order, so a
+    message combining a date AND a guest count with a price question
     rule-classifies as "price" regardless of what else it says -- including
     "9/20入住,8人,想訂房也想烤肉,總共多少錢", which explicitly labels the
     date with 入住 AND says 想訂房. Requiring a non-"price" intent rejected
@@ -519,13 +520,35 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     bare policy questions it was meant to exclude -- confirmed independently
     by Spencer ("9/20 8人BBQ多少錢" reads as a booking inquiry to any normal
     person, not a bare policy question) and by Codex's own labeled-date
-    counterexample above. A committed date is trusted on its own merit,
-    regardless of which keyword happened to win the rule classifier's
-    priority race."""
+    counterexample above.
+
+    DOES still require a stated guest count alongside a single date when
+    intent is literally "price" (fifth pass, Codex review): a single date
+    with NO guest count and a price question -- "9/20 停車要多少錢"/"9/20
+    早餐多少錢" -- is a bare ancillary-fee question tied to a specific day,
+    not evidence of an active booking; dropping the guest-count requirement
+    entirely (as the fourth pass did) made every dated FAQ price question
+    skip its policy answer. A single date is trusted on its own merit ONLY
+    when the intent itself isn't the ambiguous "price" case (e.g.
+    "booking_question"/"availability" won the classifier despite a date
+    being present); when "price" specifically wins -- which happens
+    whenever 多少錢 appears, regardless of what else the message says -- an
+    accompanying guest count is what distinguishes a real booking request
+    ("9/20 8人 BBQ多少錢") from a bare policy question about a specific day
+    ("9/20 停車要多少錢")."""
     log = decision.log_payload
-    if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
+    intent = log.get("inquiry_intent")
+    if intent not in _QUOTE_RELEVANT_INTENTS:
         return False
-    return bool(log.get("parsed_checkin")) or bool(log.get("parsed_checkout"))
+    has_checkin = bool(log.get("parsed_checkin"))
+    has_checkout = bool(log.get("parsed_checkout"))
+    if has_checkin and has_checkout:
+        return True
+    if not (has_checkin or has_checkout):
+        return False
+    if intent != "price":
+        return True
+    return bool(log.get("parsed_adult_count")) or bool(log.get("parsed_child_count"))
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
