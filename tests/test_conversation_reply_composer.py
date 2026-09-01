@@ -1198,18 +1198,30 @@ def test_booking_reply_wins_with_only_one_resolved_date() -> None:
     assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
-def test_bbq_faq_still_wins_with_a_single_bare_date_and_price_intent() -> None:
-    # Codex review (third pass): "9/20 8人 BBQ多少錢" has date_parser
-    # auto-assign the one bare, unlabeled date as checkin (its own "a single
-    # explicit date is treated as checkin" rule), but intent is "price" --
-    # the same ancillary-policy shape as "BBQ多少錢"/"8人BBQ多少錢", not the
-    # explicit availability/booking_question intent
-    # "9/20入住,8人,想訂房也想烤肉" carries. Trusting a single date
-    # regardless of intent shape wrongly asked for a missing checkout
-    # instead of answering the fixed BBQ fee.
+def test_booking_reply_wins_with_a_single_bare_date_despite_price_intent() -> None:
+    # Old assertion (Codex review, third pass, later reverted -- see the
+    # comment on _has_resolved_booking_context): expected
+    # render_faq_bbq(cleaning_fee_twd=1000) here, on the theory that a bare
+    # date + guest count + a price question was "the same ancillary-policy
+    # shape as BBQ多少錢" and should default to the fixed FAQ answer.
+    #
+    # New assertion: expects the booking reply, matching the customer's
+    # actual intent_relevant reply text.
+    #
+    # Why the expected product behavior changed: Spencer's direct
+    # correction -- "9/20 8人BBQ多少錢" reads as a booking inquiry (a
+    # specific date + headcount) to any normal person, not a bare policy
+    # question; treating it otherwise was over-fit to the rule classifier's
+    # keyword-priority mechanics (多少錢 always wins over 訂房/availability
+    # terms), not real semantics. Independently confirmed by Codex's own
+    # next-round counterexample: "9/20入住,8人,想訂房也想烤肉,總共多少錢"
+    # explicitly labels the date with 入住 AND says 想訂房, yet still
+    # rule-classifies as "price" for the same reason -- so gating on
+    # intent!="price" rejected genuine booking requests, not just bare
+    # policy questions.
     decision = InquiryDecision(
         action_type="reply_to_customer_only",
-        customer_reply_text="SHOULD_NOT_SEE_THIS",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
         log_payload={
             "inquiry_intent": "price",
             "parsed_checkin": "2026-09-20",
@@ -1221,7 +1233,34 @@ def test_bbq_faq_still_wins_with_a_single_bare_date_and_price_intent() -> None:
         message=_message("9/20 8人 BBQ多少錢"), decision=decision, state=None
     )
 
-    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
+
+
+def test_booking_reply_wins_with_explicit_checkin_label_and_price_wording() -> None:
+    # Codex review (fourth pass): "9/20入住,8人,想訂房也想烤肉,總共多少錢"
+    # explicitly labels the date with 入住 AND says 想訂房 (an unambiguous
+    # booking request), but still rule-classifies as "price" because 多少錢
+    # is checked before booking/availability terms in inquiry_intent.py's
+    # priority order -- confirms gating on intent!="price" would have
+    # rejected genuine, explicitly-labeled booking requests too, not just
+    # bare policy questions.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
+        log_payload={
+            "inquiry_intent": "price",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，8人，想訂房也想烤肉，總共多少錢"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
 _FORM_REPLY_TEXT = (

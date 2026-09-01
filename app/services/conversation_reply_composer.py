@@ -508,31 +508,24 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     committed date is still real evidence of an active booking attempt,
     unlike a guest count with no date at all.
 
-    A single date only counts when intent is specifically availability/
-    booking_question, not "price" -- Codex review (third pass): "9/20 8人
-    BBQ多少錢" has date_parser auto-assign the one bare date as checkin
-    (date_parser's own "a single explicit date is treated as checkin"
-    rule), but the intent is "price" (多少錢), the same ancillary-policy
-    shape as "BBQ多少錢"/"8人BBQ多少錢" -- an unlabeled date mentioned
-    alongside a pure price question isn't evidence of an active booking
-    the way it is when the customer also used explicit
-    availability/booking language (訂房/預訂/有房/etc, already reflected
-    in a rule- or LLM-resolved availability/booking_question intent by
-    the time this composer runs). Two resolved dates are still trusted
-    regardless of intent shape -- an explicit checkin+checkout range is
-    unambiguous on its own."""
+    Does NOT additionally require intent to be specifically availability/
+    booking_question (tried in a third pass, then reverted): "多少錢" is
+    checked before booking/availability terms in inquiry_intent.py's
+    priority order, so ANY message combining a date with a price question
+    rule-classifies as "price" regardless of what else it says -- including
+    "9/20入住,8人,想訂房也想烤肉,總共多少錢", which explicitly labels the
+    date with 入住 AND says 想訂房. Requiring a non-"price" intent rejected
+    this and every similarly-phrased real booking inquiry, not just the
+    bare policy questions it was meant to exclude -- confirmed independently
+    by Spencer ("9/20 8人BBQ多少錢" reads as a booking inquiry to any normal
+    person, not a bare policy question) and by Codex's own labeled-date
+    counterexample above. A committed date is trusted on its own merit,
+    regardless of which keyword happened to win the rule classifier's
+    priority race."""
     log = decision.log_payload
-    intent = log.get("inquiry_intent")
-    if intent not in _QUOTE_RELEVANT_INTENTS:
+    if log.get("inquiry_intent") not in _QUOTE_RELEVANT_INTENTS:
         return False
-    has_checkin = bool(log.get("parsed_checkin"))
-    has_checkout = bool(log.get("parsed_checkout"))
-    if has_checkin and has_checkout:
-        return True
-    return (has_checkin or has_checkout) and intent in (
-        "availability",
-        "booking_question",
-    )
+    return bool(log.get("parsed_checkin")) or bool(log.get("parsed_checkout"))
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
