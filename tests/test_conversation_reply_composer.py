@@ -1263,6 +1263,28 @@ def test_booking_reply_wins_with_explicit_checkin_label_and_price_wording() -> N
     assert result.text == "MISSING_CHECKOUT_PROMPT"
 
 
+def test_booking_reply_wins_with_explicit_booking_term_but_no_guest_count() -> None:
+    # Codex review (sixth pass): "9/20入住,想訂房也想烤肉,總共多少錢" has a
+    # single date and NO guest count at all -- the fifth-pass fix (require a
+    # guest count for single-date price intent) wrongly fell back to the
+    # bare BBQ FAQ here, even though 想訂房 makes the booking request
+    # explicit. An explicit booking-intent keyword (訂房/預訂/保留) is an
+    # alternative signal to a guest count, not a replacement for it.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_GUESTS_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，想訂房也想烤肉，總共多少錢"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == "SINGLE_MISSING_GUESTS_PROMPT"
+
+
 def test_dated_parking_faq_still_wins_with_no_guest_count() -> None:
     # Codex review (fifth pass): "9/20 停車要多少錢" has a single date and a
     # price intent (多少錢 wins the classifier) but NO stated guest count --

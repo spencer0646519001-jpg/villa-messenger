@@ -39,6 +39,7 @@ from app.domain.faq_matcher import (
 from app.domain.form_reply_detector import looks_like_structured_form_reply
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.inquiry_intent import has_explicit_booking_term
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
@@ -175,7 +176,7 @@ class ConversationReplyComposer:
             and not _is_booking_equivalent_quote(
                 decision, has_booking_equivalent_match
             )
-            and not _has_resolved_booking_context(decision)
+            and not _has_resolved_booking_context(decision, message.text)
         ):
             return self._compose_faq(message)
         # gate3: tier-1 FAQ match answers directly when it is clearly FAQ-only.
@@ -197,6 +198,7 @@ class ConversationReplyComposer:
                 faq_match,
                 decision,
                 state,
+                message.text,
                 has_booking_equivalent_match=has_booking_equivalent_match,
             )
         ):
@@ -437,6 +439,7 @@ def _should_answer_gate3_faq(
     faq_match: FaqMatch,
     decision: InquiryDecision,
     state: dict | None,
+    raw_text: str,
     *,
     has_booking_equivalent_match: bool | None = None,
 ) -> bool:
@@ -456,7 +459,7 @@ def _should_answer_gate3_faq(
     # it right back -- confirmed live: fixing only gate1 still left "9/20-
     # 9/22入住,8大2小,想烤肉" (intent=availability) answering the bare BBQ
     # policy text instead of the booking reply.
-    if _has_resolved_booking_context(decision):
+    if _has_resolved_booking_context(decision, raw_text):
         return False
     if faq_match.topic != "checkout":
         return decision.log_payload.get("inquiry_intent") != "price"
@@ -472,7 +475,7 @@ def _is_booking_equivalent_quote(
     )
 
 
-def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
+def _has_resolved_booking_context(decision: InquiryDecision, raw_text: str) -> bool:
     """True when THIS message's own parsed slots already show real, resolved
     dates and/or a guest count -- not just a NON_PRICEABLE keyword -- AND the
     final intent is quote-relevant. Distinguishes "9/20-9/22入住,8大2小,想烤肉"
@@ -535,7 +538,16 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
     whenever 多少錢 appears, regardless of what else the message says -- an
     accompanying guest count is what distinguishes a real booking request
     ("9/20 8人 BBQ多少錢") from a bare policy question about a specific day
-    ("9/20 停車要多少錢")."""
+    ("9/20 停車要多少錢").
+
+    ALSO accepts an explicit booking-intent keyword (訂房/預訂/保留) as an
+    alternative to a guest count, for the same single-date + intent=="price"
+    case (sixth pass, Codex review): "9/20入住,想訂房也想烤肉,總共多少錢" has
+    no guest count at all, but 想訂房 makes the booking request explicit --
+    requiring a headcount in every single-date price message would reject
+    this and answer the bare BBQ policy instead of the booking flow's own
+    missing-slot prompt. raw_text is this message's own text (not the
+    accumulated state), same scope restriction as the parsed slots above."""
     log = decision.log_payload
     intent = log.get("inquiry_intent")
     if intent not in _QUOTE_RELEVANT_INTENTS:
@@ -548,7 +560,11 @@ def _has_resolved_booking_context(decision: InquiryDecision) -> bool:
         return False
     if intent != "price":
         return True
-    return bool(log.get("parsed_adult_count")) or bool(log.get("parsed_child_count"))
+    return (
+        bool(log.get("parsed_adult_count"))
+        or bool(log.get("parsed_child_count"))
+        or has_explicit_booking_term(raw_text)
+    )
 
 
 def _is_bare_checkout_faq(decision: InquiryDecision, state: dict | None) -> bool:
