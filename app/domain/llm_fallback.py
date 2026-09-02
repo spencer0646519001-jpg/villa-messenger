@@ -14,12 +14,14 @@ import os
 import re
 from datetime import date
 
+from app.domain.bbq_parser import _BBQ_TERMS
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.date_parser import parse_stay_dates
 from app.domain.faq_matcher import match_all_faq_topics
 from app.domain.guest_count_parser import parse_guest_counts
 from app.domain.llm_provider import LLMFallbackExhaustedError, LLMOutput, LLMProvider
 from app.domain.parser_models import (
+    BbqParseResult,
     DateParseResult,
     GuestCountParseResult,
     InquiryIntentResult,
@@ -32,6 +34,17 @@ TYPE_1_DATE_TRANSLATION = "type_1_date_translation"
 TYPE_2_INTENT_JUDGMENT = "type_2_intent_judgment"
 TYPE_3_FAQ_BOOKING_COLLISION = "type_3_faq_booking_collision"
 TYPE_4_STATE_CONTINUATION_JUDGMENT = "type_4_state_continuation_judgment"
+# TYPE_5/TYPE_6: added to let the LLM resolve cases the rule engine can see
+# but not confidently classify, instead of hand-patching bbq_parser.py's
+# regex for every new phrasing variant (7 rounds of Codex review on that
+# file's "想"/"、"/negation-scope edge cases -- see commits 10088ec through
+# 2d855fc -- showed that approach has no natural end). Design discussed with
+# Spencer: keep the EXISTING "ask for missing info" flow untouched (these
+# triggers fire on genuine ambiguity, never on "customer simply hasn't said
+# it yet" -- that's still handled for free by missing_fields/needs_info,
+# computed downstream of this module).
+TYPE_5_BBQ_AMBIGUITY = "type_5_bbq_ambiguity"
+TYPE_6_UNCLASSIFIED_INQUIRY = "type_6_unclassified_inquiry"
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -93,7 +106,22 @@ def _select_trigger(
         return TYPE_1_DATE_TRANSLATION
     if dates_complete and not is_quote_relevant:
         return TYPE_2_INTENT_JUDGMENT
+    if _has_unresolved_bbq_mention(raw_text, inquiry.bbq):
+        return TYPE_5_BBQ_AMBIGUITY
+    # Only the rule parser's OWN "genuinely unclassified" bucket -- reached
+    # via 請問/想問/詢問/問一下 with no other keyword match at all (see
+    # inquiry_intent.py) -- not "is_inquiry=False" chit-chat (你好/謝謝),
+    # which never reaches here regardless of this check.
+    if inquiry.intent.is_inquiry and inquiry.intent.inquiry_type == "unknown":
+        return TYPE_6_UNCLASSIFIED_INQUIRY
     return None
+
+
+def _has_unresolved_bbq_mention(raw_text: str, bbq: BbqParseResult) -> bool:
+    if bbq.mentioned:
+        return False
+    text = normalize_for_parsing(raw_text)
+    return any(term in text for term in _BBQ_TERMS)
 
 
 def _date_signal_present(raw_text: str) -> bool:
@@ -123,6 +151,39 @@ def _merge_llm_into_inquiry(
 ) -> InquiryParseResult:
     if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
         return _merge_collision_judgment(inquiry, llm_out)
+    if trigger == TYPE_5_BBQ_AMBIGUITY:
+        # The bbq verdict is a direct answer to a direct question ("does
+        # this customer want BBQ"), not a slot whose validity depends on
+        # THIS message establishing overall booking intent -- unlike
+        # TYPE_1/2's dates/guests, which really would be spurious if the
+        # LLM says this isn't a booking at all (a business meeting
+        # mentioning dates). Merge it before the is_booking_intent
+        # rejection below can discard it. Codex review (P1): an explicit
+        # decline (wants_bbq=False) paired with is_booking_intent=False was
+        # being silently dropped -- mentioned stayed False, so it couldn't
+        # clear a stale wants_bbq=True from an earlier turn.
+        inquiry = inquiry.model_copy(update={"bbq": _merge_bbq(inquiry.bbq, llm_out)})
+    if trigger == TYPE_6_UNCLASSIFIED_INQUIRY and llm_out.intent == "faq":
+        # Same reasoning as the TYPE_5 bbq merge above, one level up: a
+        # coherent LLM response naturally pairs intent="faq" with
+        # is_booking_intent=false, which the rejection branch below would
+        # otherwise return through BEFORE this trigger's whole point --
+        # reclassifying a genuinely-unclassified message -- ever takes
+        # effect, leaving it "unknown" and the customer with no reply.
+        # Codex review (P2, second pass): the first fix only handled
+        # is_booking_intent left null, not the far more likely case where
+        # the LLM explicitly confirms it isn't a booking.
+        merged = _merge_slots(inquiry, llm_out)
+        updates: dict = {"intent": InquiryIntentResult(is_inquiry=True, inquiry_type="faq")}
+        if llm_out.is_booking_intent is False:
+            # The flag's contract (see _reject_booking_intent) is "the LLM
+            # explicitly said this isn't a booking", independent of what we
+            # then do with the intent classification -- still record it,
+            # or InquiryService's log payload reports no rejection even
+            # though the provider gave one. Codex review (P2, third pass).
+            updates["llm_rejected_booking_intent"] = True
+        merged = merged.model_copy(update=updates)
+        return _recompute_flags(merged)
     if llm_out.is_booking_intent is False:
         return _reject_booking_intent(inquiry)
     if llm_out.needs_clarification:
@@ -167,12 +228,19 @@ def _reject_booking_intent(inquiry: InquiryParseResult) -> InquiryParseResult:
 def _merge_collision_judgment(
     inquiry: InquiryParseResult, llm_out: LLMOutput
 ) -> InquiryParseResult:
+    # Slots are merged here too now (Spencer's request, alongside TYPE_5/6):
+    # this trigger's prompt used to tell the LLM to leave every slot null
+    # ("不做欄位抽取") since the ONLY job was resolving the FAQ-vs-booking
+    # classification conflict -- discarding whatever the same LLM call could
+    # have told us about dates/guests/pets/bbq. The prompt now asks for full
+    # extraction on this trigger too, so use it the same way TYPE_1/2/5/6 do.
     judgment = _collision_booking_judgment(llm_out)
     merged = inquiry.model_copy(
         update={"llm_detected_intents": list(llm_out.intents)}
     )
+    merged = _merge_slots(merged, llm_out)
     if judgment is None:
-        return merged
+        return _recompute_flags(merged)
     if judgment:
         mapped = _map_llm_intent(llm_out.intent) or "availability"
         merged = merged.model_copy(
@@ -211,6 +279,7 @@ def _merge_slots(inquiry: InquiryParseResult, llm_out: LLMOutput) -> InquiryPars
             "dates": _merge_dates(inquiry.dates, llm_out),
             "guests": _merge_guests(inquiry.guests, llm_out),
             "pets": _merge_pets(inquiry.pets, llm_out),
+            "bbq": _merge_bbq(inquiry.bbq, llm_out),
         }
     )
 
@@ -262,6 +331,16 @@ def _merge_pets(pets: PetParseResult, llm_out: LLMOutput) -> PetParseResult:
     )
 
 
+def _merge_bbq(bbq: BbqParseResult, llm_out: LLMOutput) -> BbqParseResult:
+    # Same tri-state contract as _merge_pets: None means the LLM wasn't asked
+    # or couldn't tell (leave the rule parser's result alone -- it may have
+    # already resolved this via a pattern LLM wasn't even consulted about);
+    # True/False is an explicit statement THIS turn and overwrites.
+    if not isinstance(llm_out.wants_bbq, bool):
+        return bbq
+    return bbq.model_copy(update={"wants_bbq": llm_out.wants_bbq, "mentioned": True})
+
+
 def _valid_iso_date_or_none(value: str | None) -> str | None:
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
         return None
@@ -311,6 +390,11 @@ def _maybe_upgrade_intent(
     inquiry: InquiryParseResult,
     llm_out: LLMOutput,
 ) -> InquiryParseResult:
+    # TYPE_6's "faq" classification is handled earlier in
+    # _merge_llm_into_inquiry (before the is_booking_intent rejection check
+    # this function is called after), not here -- see that function's
+    # comment for why. This function only ever upgrades to the three
+    # quote-relevant intents.
     mapped_intent = _map_llm_intent(llm_out.intent)
     if mapped_intent is None and llm_out.is_booking_intent is True:
         mapped_intent = "booking_question"

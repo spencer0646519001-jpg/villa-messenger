@@ -579,6 +579,106 @@ def test_quote_relevant_message_opens_one_state(
     assert states[0]["checkin_date"] == "2026-05-12"
 
 
+def test_bbq_request_with_pet_persists_wants_bbq_on_first_turn(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Real LINE E2E regression: the reply already answered with the BBQ
+    # policy (FAQ topic matcher fires on the bare word "烤肉"), which made it
+    # look like the system "knew" the customer wanted BBQ -- but the
+    # slot-filling parser (bbq_parser.parse_bbq) failed to recognize "想加
+    # 烤肉" as an explicit request, so wants_bbq was never persisted. No
+    # second turn is involved here, so this is not a supersede/merge issue.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: None)
+    body = _payload_bytes([_text_event("我要訂房，想加烤肉，有帶一隻狗")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["has_pet"] == 1
+    assert states[0]["pet_count"] == 1
+    assert states[0]["wants_bbq"] == 1
+
+
+def test_bbq_request_with_dates_and_guests_persists_wants_bbq(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bare word "烤肉" also matches the FAQ topic matcher, so this message
+    # (dates + guests + BBQ) hits the rule parser's FAQ/booking-collision
+    # trigger (TYPE_3_FAQ_BOOKING_COLLISION) -- on the real live test this
+    # was resolved by the actual LLM; mocked here per the requested
+    # deterministic-test style so the assertion doesn't depend on live-model
+    # classification.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=True,
+            needs_clarification=False,
+            clarification_reason=None,
+        )
+    )
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    body = _payload_bytes([_text_event("9/20-9/22,8大2小,想加烤肉")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["wants_bbq"] == 1
+
+
+def test_type_5_llm_trigger_resolves_bbq_mention_the_rule_parser_cannot(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # "他們說烤肉不錯誒" (relaying a friend's opinion, not a request or a
+    # policy question) has no date/guest signal, so it hits none of
+    # TYPE_1/2/3 -- only the newer TYPE_5_BBQ_AMBIGUITY trigger (added so
+    # genuinely ambiguous BBQ phrasing goes to the LLM instead of another
+    # bbq_parser.py regex patch) calls the LLM here.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    provider = FakeProvider(
+        LLMOutput(
+            intent=None,
+            checkin_date=None,
+            checkout_date=None,
+            adult_count=None,
+            child_count=None,
+            infant_count=None,
+            pet_count=None,
+            has_pet=None,
+            last_message_text=None,
+            is_booking_intent=None,
+            needs_clarification=False,
+            clarification_reason=None,
+            wants_bbq=True,
+        )
+    )
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+    body = _payload_bytes([_text_event("我要訂房,他們說烤肉不錯誒")])
+
+    response = _post(client, body, _sign(body))
+
+    assert response.status_code == 200
+    states = _rows(database_path, "conversation_states")
+    assert len(states) == 1
+    assert states[0]["wants_bbq"] == 1
+
+
 def test_state_write_failure_isolated_still_200_and_persisted(
     client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

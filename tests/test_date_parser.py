@@ -91,6 +91,51 @@ def test_bare_day_range_shorthand_keeps_both_ends_when_one_side_is_labeled(
     assert result.checkout_date == expected_checkout
 
 
+@pytest.mark.parametrize(
+    "text,expected_checkin,expected_checkout",
+    [
+        # Real LINE E2E regression: a trailing 「入住」 after a FULL two-date
+        # range attaches (via _has_close_label_after) only to the closer,
+        # later date -- misreading "8/20-8/22入住" as checkin=8/22 with
+        # checkout dropped entirely, instead of checkin=8/20 / checkout=8/22.
+        ("8/20-8/22入住,8大2小,想加烤肉", "2026-08-20", "2026-08-22"),
+        ("8/20-8/22入住", "2026-08-20", "2026-08-22"),
+        # Bare-day shorthand suffers the same mislabeling for the same reason.
+        ("7/17-18入住", "2026-07-17", "2026-07-18"),
+    ],
+)
+def test_trailing_checkin_label_after_a_full_range_scopes_the_whole_range(
+    text: str, expected_checkin: str, expected_checkout: str
+) -> None:
+    result = parse_stay_dates(text, reference_year=2026)
+
+    assert result.checkin_date == expected_checkin
+    assert result.checkout_date == expected_checkout
+
+
+def test_full_date_range_pairs_across_a_spaced_separator() -> None:
+    # Codex review (P2): a Chinese-style date match ("8月20日") ends right
+    # after "日" with no trailing-space consumption of its own, so a spaced
+    # separator left a leading space in the pair-detection gap that an
+    # earlier version of the fix (which dropped horizontal tolerance BEFORE
+    # the separator while fixing tolerance AFTER it) no longer accepted.
+    result = parse_stay_dates("入住8月20日 - 8月22日", reference_year=2026)
+
+    assert result.checkin_date == "2026-08-20"
+    assert result.checkout_date == "2026-08-22"
+
+
+def test_bare_day_range_shorthand_pairs_across_a_line_wrap() -> None:
+    # Codex review of the range-pair generalization (P2): the pair-detection
+    # gap must tolerate a newline between the separator and the day digits,
+    # same as _RANGE_SEPARATOR_DAY_PATTERN itself already does -- a
+    # horizontal-only gap missed this pairing and silently dropped checkout.
+    result = parse_stay_dates("入住7/17-\n18", reference_year=2026)
+
+    assert result.checkin_date == "2026-07-17"
+    assert result.checkout_date == "2026-07-18"
+
+
 def test_hyphenated_clock_time_is_not_read_as_a_second_date() -> None:
     # Codex review of commit eec20a8 (P1): "7/17-18:00" (5pm) used to be
     # read as a 7/17-7/18 stay instead of a single date with a clock time.
