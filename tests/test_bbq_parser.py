@@ -156,6 +156,14 @@ def test_mentioned_true_when_answer_is_explicit(text: str) -> None:
         # fall through to the AFFIRM pattern either. The whole clause is
         # scoped out, not just the negation check.
         "沒想到要收烤肉費",
+        # Real E2E regression: "有人說烤肉不錯欸" (someone said your BBQ is
+        # good) is third-party hearsay, not the customer stating a want.
+        # Bare "有" as a natural-affirm marker used to match across "有人"
+        # (the existential-subject "someone", unrelated to an affirmative
+        # "有[BBQ]" statement) and wrongly persisted wants_bbq=True even with
+        # an active booking state open.
+        "有人說烤肉不錯欸",
+        "9/20-9/22入住,8大2小。有人說烤肉不錯欸",
     ],
 )
 def test_mentioned_false_when_no_explicit_answer(text: str) -> None:
