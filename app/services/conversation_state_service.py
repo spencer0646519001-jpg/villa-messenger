@@ -110,6 +110,7 @@ class ConversationStateService:
             return self._supersede_with_fresh_state(message, active, slots, off_kwargs)
         self._fill_contextual_room_count(slots, active, message.text)
         self._fill_contextual_pet_count(slots, active, message.text)
+        slots = _guard_intent_downgrade(slots, active)
         if not self._has_slot(slots):
             return active
         self._repo.update_slots(
@@ -235,6 +236,25 @@ def _should_open(decision: InquiryDecision, slots: dict) -> bool:
         and _has_full_date_range(slots)
     )
     return is_quote_relevant or is_ambiguous_with_dates
+
+
+def _guard_intent_downgrade(slots: dict, active: dict) -> dict:
+    """A follow-up's OWN per-message intent classification (e.g. a bare "我要
+    加烤肉" reads as "faq" in isolation, same as any other bare topic-keyword
+    mention) is a turn-level judgment about what THIS message is about, not a
+    reclassification of the whole booking conversation -- it must not
+    downgrade an already-established quote-relevant state intent. Real E2E
+    regression: an active availability state's intent flipped to "faq" from
+    a BBQ add-on follow-up, even though dates/guests/wants_bbq all merged
+    correctly. Only fires on a genuine downgrade; an upgrade (e.g.
+    price -> availability) or a same-or-first classification passes through."""
+    if (
+        slots.get("intent") is not None
+        and slots["intent"] not in _QUOTE_RELEVANT_INTENTS
+        and active.get("intent") in _QUOTE_RELEVANT_INTENTS
+    ):
+        return {**slots, "intent": None}
+    return slots
 
 
 def _merge_row(base: dict, slots: dict) -> dict:

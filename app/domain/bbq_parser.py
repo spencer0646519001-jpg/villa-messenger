@@ -35,11 +35,10 @@ _LABEL_NEGATION_TERMS = ("否", "不要", "不用", "不需要", "沒有", "無"
 # and safe, not a narrow patch for this one sentence.
 _WANT_NEGATION_TERMS = ("不想", "不太想", "沒想")
 _OTHER_NEGATION_TERMS = ("不要", "不用", "不需要", "沒有", "無")
-_NATURAL_AFFIRM_TERMS = ("要", "需要", "有")
 _WANT_TERM_PATTERN = "|".join(_WANT_NEGATION_TERMS)
 # Bare "想" (real customer phrasing: "想加烤肉" / "想烤肉") stays its own
-# pair with a much tighter gap than _NATURAL_AFFIRM_TERMS -- with the shared
-# 4-char gap, "想問一下烤肉費用" (asking about the FEE, not requesting BBQ)
+# pair with a much tighter gap than the natural-word-order affirm terms below
+# -- with the shared 4-char gap, "想問一下烤肉費用" (asking about the FEE, not requesting BBQ)
 # also matched and got wrongly persisted as wants_bbq=True. A 2-char gap
 # still covers every real reported phrasing ("想加烤肉", "想烤肉", "想要烤肉")
 # while excluding "問一下"-style detours. No separate negation pattern is
@@ -117,8 +116,14 @@ _NEGATION_GAP = (
 _BBQ_PREFIX_NEGATION_PATTERN = re.compile(
     rf"(?:{_WANT_TERM_PATTERN}(?!到)|{'|'.join(_OTHER_NEGATION_TERMS)}){_NEGATION_GAP}(?:{_BBQ_TERM_PATTERN})"
 )
+# Bare "有" is EXCLUDED when immediately followed by "人" -- "有人說烤肉不錯
+# 欸" ("someone said your BBQ is good") is the existential-subject "有人"
+# (someone/there is a person), not an affirmative "有[BBQ]" statement; the
+# person doing the talking is a third party, not the customer stating a
+# want. Real E2E regression: this previously matched and persisted
+# wants_bbq=True from pure hearsay, even with an active booking state open.
 _BBQ_PREFIX_AFFIRM_PATTERN = re.compile(
-    rf"(?:{'|'.join(_NATURAL_AFFIRM_TERMS)}){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
+    rf"(?:要|需要|有(?!人)){_CLAUSE_GAP}(?:{_BBQ_TERM_PATTERN})"
 )
 
 

@@ -70,6 +70,16 @@ def parse_inquiry_intent(text: str) -> InquiryIntentResult:
     return InquiryIntentResult(is_inquiry=False, inquiry_type="unknown")
 
 
+def has_explicit_booking_term(text: str) -> bool:
+    """True when text contains an explicit booking-intent keyword (訂房/預訂/
+    保留). Exposed for conversation_reply_composer's booking-context check,
+    which needs to distinguish an explicit booking request ("9/20入住,想訂房
+    也想烤肉,總共多少錢") from a bare dated ancillary-fee question ("9/20 停車
+    要多少錢") once 多少錢 has already won parse_inquiry_intent's priority
+    race and no guest count was given either."""
+    return _contains_any(normalize_for_parsing(text), _BOOKING_TERMS)
+
+
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 

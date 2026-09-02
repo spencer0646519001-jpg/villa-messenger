@@ -39,6 +39,7 @@ from app.domain.faq_matcher import (
 from app.domain.form_reply_detector import looks_like_structured_form_reply
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
+from app.domain.inquiry_intent import has_explicit_booking_term
 from app.domain.pricing_models import PricingResult
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import (
@@ -175,6 +176,7 @@ class ConversationReplyComposer:
             and not _is_booking_equivalent_quote(
                 decision, has_booking_equivalent_match
             )
+            and not _has_resolved_booking_context(decision, message.text)
         ):
             return self._compose_faq(message)
         # gate3: tier-1 FAQ match answers directly when it is clearly FAQ-only.
@@ -196,6 +198,7 @@ class ConversationReplyComposer:
                 faq_match,
                 decision,
                 state,
+                message.text,
                 has_booking_equivalent_match=has_booking_equivalent_match,
             )
         ):
@@ -436,6 +439,7 @@ def _should_answer_gate3_faq(
     faq_match: FaqMatch,
     decision: InquiryDecision,
     state: dict | None,
+    raw_text: str,
     *,
     has_booking_equivalent_match: bool | None = None,
 ) -> bool:
@@ -445,6 +449,17 @@ def _should_answer_gate3_faq(
         else has_booking_equivalent_match
     )
     if _is_booking_equivalent_quote(decision, product_match):
+        return False
+    # Same reasoning as gate1's _has_resolved_booking_context check --
+    # before that fix, gate1 unconditionally caught every NON_PRICEABLE
+    # topic first, so this gate never even SAW one. Now that gate1 can let
+    # a NON_PRICEABLE topic with a genuine resolved booking context fall
+    # through, this gate's own topic != "checkout" branch (which only
+    # excludes literal price intent, per Decision F) would otherwise claim
+    # it right back -- confirmed live: fixing only gate1 still left "9/20-
+    # 9/22入住,8大2小,想烤肉" (intent=availability) answering the bare BBQ
+    # policy text instead of the booking reply.
+    if _has_resolved_booking_context(decision, raw_text):
         return False
     if faq_match.topic != "checkout":
         return decision.log_payload.get("inquiry_intent") != "price"
@@ -457,6 +472,98 @@ def _is_booking_equivalent_quote(
     return (
         has_booking_equivalent_match
         and decision.log_payload.get("inquiry_intent") in _QUOTE_RELEVANT_INTENTS
+    )
+
+
+def _has_resolved_booking_context(decision: InquiryDecision, raw_text: str) -> bool:
+    """True when THIS message's own parsed slots already show real, resolved
+    dates and/or a guest count -- not just a NON_PRICEABLE keyword -- AND the
+    final intent is quote-relevant. Distinguishes "9/20-9/22入住,8大2小,想烤肉"
+    (a booking/availability inquiry with a supplemental BBQ mention -- the
+    booking reply must stay primary) from a bare "BBQ多少錢"/"早餐多少錢嗎"
+    (price intent too, but no dates/guests at all -- there's nothing to quote
+    against, so the fixed policy FAQ answer is correct, per Decision F).
+    Deliberately reads only decision.log_payload (this message's OWN parsed
+    fields), never the accumulated `state` dict -- gate1 runs before the
+    state-driven path below and an unrelated FAQ tangent mid-quote
+    ("有早餐嗎" during an active complete state) must still answer FAQ.
+    Real LINE E2E regression: this exact bbq case reached production with
+    intent=availability + full slots correctly persisted, but the reply was
+    still the bare BBQ policy text -- confirms the "8 other tier-1 topics
+    hijack availability intent" gap noted 2026-08-17 for whole_house's
+    narrower is_booking_equivalent_topic-only fix.
+
+    Requires resolved DATES specifically, not a guest count alone -- Codex
+    review: "8人 BBQ多少錢" rule-parses adult_count=8 alongside intent="price"
+    (多少錢 keyword) with NO dates at all, and is exactly the same kind of
+    bare ancillary-policy question as "BBQ多少錢" itself; a guest count is
+    routinely mentioned in a hypothetical/policy question ("8人早餐算不算
+    錢") and isn't evidence of an active booking the way committed dates
+    are. Treating a guest count alone as sufficient suppressed the FAQ
+    answer and produced a "please give me your dates" booking prompt for a
+    pure policy question.
+
+    Requires only ONE resolved date, not both -- Codex review (second
+    pass): "9/20入住,8人,想訂房也想烤肉" gives checkin but not checkout yet
+    (a genuinely in-progress booking, still missing a slot), and requiring
+    BOTH dates routed it to the bare BBQ policy answer instead of the
+    missing-checkout prompt the booking flow should ask for next. A single
+    committed date is still real evidence of an active booking attempt,
+    unlike a guest count with no date at all.
+
+    Does NOT additionally require intent to be specifically availability/
+    booking_question, for a message with BOTH a date and a stated guest
+    count (tried in a third pass, then reverted): "多少錢" is checked before
+    booking/availability terms in inquiry_intent.py's priority order, so a
+    message combining a date AND a guest count with a price question
+    rule-classifies as "price" regardless of what else it says -- including
+    "9/20入住,8人,想訂房也想烤肉,總共多少錢", which explicitly labels the
+    date with 入住 AND says 想訂房. Requiring a non-"price" intent rejected
+    this and every similarly-phrased real booking inquiry, not just the
+    bare policy questions it was meant to exclude -- confirmed independently
+    by Spencer ("9/20 8人BBQ多少錢" reads as a booking inquiry to any normal
+    person, not a bare policy question) and by Codex's own labeled-date
+    counterexample above.
+
+    DOES still require a stated guest count alongside a single date when
+    intent is literally "price" (fifth pass, Codex review): a single date
+    with NO guest count and a price question -- "9/20 停車要多少錢"/"9/20
+    早餐多少錢" -- is a bare ancillary-fee question tied to a specific day,
+    not evidence of an active booking; dropping the guest-count requirement
+    entirely (as the fourth pass did) made every dated FAQ price question
+    skip its policy answer. A single date is trusted on its own merit ONLY
+    when the intent itself isn't the ambiguous "price" case (e.g.
+    "booking_question"/"availability" won the classifier despite a date
+    being present); when "price" specifically wins -- which happens
+    whenever 多少錢 appears, regardless of what else the message says -- an
+    accompanying guest count is what distinguishes a real booking request
+    ("9/20 8人 BBQ多少錢") from a bare policy question about a specific day
+    ("9/20 停車要多少錢").
+
+    ALSO accepts an explicit booking-intent keyword (訂房/預訂/保留) as an
+    alternative to a guest count, for the same single-date + intent=="price"
+    case (sixth pass, Codex review): "9/20入住,想訂房也想烤肉,總共多少錢" has
+    no guest count at all, but 想訂房 makes the booking request explicit --
+    requiring a headcount in every single-date price message would reject
+    this and answer the bare BBQ policy instead of the booking flow's own
+    missing-slot prompt. raw_text is this message's own text (not the
+    accumulated state), same scope restriction as the parsed slots above."""
+    log = decision.log_payload
+    intent = log.get("inquiry_intent")
+    if intent not in _QUOTE_RELEVANT_INTENTS:
+        return False
+    has_checkin = bool(log.get("parsed_checkin"))
+    has_checkout = bool(log.get("parsed_checkout"))
+    if has_checkin and has_checkout:
+        return True
+    if not (has_checkin or has_checkout):
+        return False
+    if intent != "price":
+        return True
+    return (
+        bool(log.get("parsed_adult_count"))
+        or bool(log.get("parsed_child_count"))
+        or has_explicit_booking_term(raw_text)
     )
 
 

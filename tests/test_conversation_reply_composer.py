@@ -909,6 +909,49 @@ def test_faq_location_keyword_di_dian() -> None:
     assert result.owner_push_text is None
 
 
+def test_faq_location_keyword_na_li() -> None:
+    # Real LINE E2E regression: "請問你們家在哪裡" (contains neither 地址/位置/
+    # 怎麼去/地點) hit no location keyword at all -- TYPE_6 correctly
+    # upgraded intent to "faq" but with no topic match the reply fell back
+    # to the generic "已通知服務人員" defer instead of the actual address,
+    # and needlessly triggered an owner push for a fully answerable
+    # question. This was never a TYPE_6 routing bug -- _is_faq already
+    # correctly reaches this composer for any faq-classified message; the
+    # gap was purely this keyword list. Matched via "你們家在哪" (a compound
+    # phrase, not the bare interrogative "在哪"/"哪裡" -- see the test below
+    # for why bare interrogatives were rejected).
+    result = _composer().compose(
+        message=_message("請問你們家在哪裡"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
+def test_faq_location_does_not_match_unrelated_where_questions() -> None:
+    # Codex review of the first version of this fix: bare "在哪"/"哪裡" are
+    # unrestricted interrogatives, not specific to the property's own
+    # location -- "附近哪裡有便利商店" is asking about a NEARBY convenience
+    # store, and answering with the homestay's own street address (while
+    # also suppressing the owner push that would otherwise defer this
+    # unsupported question to a human) is actively wrong, not just unhelpful.
+    result = _composer().compose(
+        message=_message("附近哪裡有便利商店？"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" not in result.text
+
+
+def test_faq_location_keyword_ni_jia() -> None:
+    # Codex review (second pass): "請問你家在哪裡" (singular "你家", as
+    # opposed to the plural "你們" the original compounds required) is a
+    # natural, common alternate phrasing of the same question and matched
+    # none of them.
+    result = _composer().compose(
+        message=_message("請問你家在哪裡"), decision=_faq_decision(), state=None
+    )
+    assert "宜蘭縣員山鄉枕山十二路123號" in result.text
+    assert result.owner_push_text is None
+
+
 def test_faq_amenities_empty_items_returns_safe_fallback() -> None:
     composer = ConversationReplyComposer(
         tenant_pricing_loader=lambda tid: _PRICING,
@@ -1062,6 +1105,220 @@ def test_product_topic_prevents_earlier_policy_topic_from_hijacking_quote() -> N
     )
 
     assert result.text == SINGLE_MISSING_CHECKOUT_MESSAGE
+
+
+def test_bbq_mention_does_not_override_a_resolved_booking_reply() -> None:
+    # Real LINE E2E regression: "9/20-9/22入住,8大2小,想烤肉" parsed and
+    # persisted correctly (intent=availability, dates, guests, wants_bbq=1
+    # all confirmed in the DB), but the customer only received the bare
+    # BBQ policy text ("烤肉需事先預約,清潔費1000元") instead of the booking/
+    # availability reply. bbq ∈ NON_PRICEABLE, and unlike whole_house
+    # (is_booking_equivalent_topic), it had no exemption at all once real,
+    # resolved date+guest slots are present -- the booking reply must stay
+    # primary and BBQ information may be appended, but never replace it.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="BOOKING_REPLY",
+        log_payload={
+            "inquiry_intent": "availability",
+            "parsed_checkin": "2026-09-20",
+            "parsed_checkout": "2026-09-22",
+            "parsed_adult_count": 8,
+            "parsed_child_count": 2,
+            "parsed_wants_bbq": True,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20-9/22入住，8大2小，想烤肉"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == "BOOKING_REPLY"
+    assert result.text != render_faq_bbq(cleaning_fee_twd=1000)
+
+
+def test_bbq_faq_still_wins_with_no_resolved_booking_slots() -> None:
+    # Must-preserve companion to the test above (Decision F): "BBQ多少錢"
+    # classifies as price intent too, but carries NO resolved dates/guests
+    # at all -- nothing to quote against, so the fixed BBQ policy answer
+    # stays correct. Same assertions as
+    # test_decision_f_bbq_price_intent_is_policy_faq_not_quote, re-asserted
+    # here to document the boundary the new exemption must not cross.
+    result = _composer().compose(
+        message=_message("BBQ多少錢"),
+        decision=_price_intent_decision(),
+        state=None,
+    )
+
+    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+
+
+def test_bbq_faq_still_wins_with_guest_count_but_no_dates() -> None:
+    # Codex review of the first version of the booking-context exemption:
+    # "8人BBQ多少錢" rule-parses adult_count=8 alongside intent="price", with
+    # NO dates at all -- a guest count mentioned in a hypothetical/policy
+    # question is not evidence of an active booking the way committed dates
+    # are. Treating it as sufficient produced a "please give me your dates"
+    # booking prompt instead of the fixed BBQ policy answer.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_adult_count": 8},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("8人 BBQ 多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_bbq(cleaning_fee_twd=1000)
+
+
+def test_booking_reply_wins_with_only_one_resolved_date() -> None:
+    # Codex review (second pass): "9/20入住,8人,想訂房也想烤肉" gives checkin
+    # but not checkout yet -- a genuinely in-progress booking, still missing
+    # a slot, NOT a bare policy question. Requiring BOTH dates routed it to
+    # the bare BBQ policy answer instead of the missing-checkout prompt the
+    # booking flow should ask for next.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
+        log_payload={
+            "inquiry_intent": "availability",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，8人，想訂房也想烤肉"), decision=decision, state=None
+    )
+
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
+
+
+def test_booking_reply_wins_with_a_single_bare_date_despite_price_intent() -> None:
+    # Old assertion (Codex review, third pass, later reverted -- see the
+    # comment on _has_resolved_booking_context): expected
+    # render_faq_bbq(cleaning_fee_twd=1000) here, on the theory that a bare
+    # date + guest count + a price question was "the same ancillary-policy
+    # shape as BBQ多少錢" and should default to the fixed FAQ answer.
+    #
+    # New assertion: expects the booking reply, matching the customer's
+    # actual intent_relevant reply text.
+    #
+    # Why the expected product behavior changed: Spencer's direct
+    # correction -- "9/20 8人BBQ多少錢" reads as a booking inquiry (a
+    # specific date + headcount) to any normal person, not a bare policy
+    # question; treating it otherwise was over-fit to the rule classifier's
+    # keyword-priority mechanics (多少錢 always wins over 訂房/availability
+    # terms), not real semantics. Independently confirmed by Codex's own
+    # next-round counterexample: "9/20入住,8人,想訂房也想烤肉,總共多少錢"
+    # explicitly labels the date with 入住 AND says 想訂房, yet still
+    # rule-classifies as "price" for the same reason -- so gating on
+    # intent!="price" rejected genuine booking requests, not just bare
+    # policy questions.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
+        log_payload={
+            "inquiry_intent": "price",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 8人 BBQ多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
+
+
+def test_booking_reply_wins_with_explicit_checkin_label_and_price_wording() -> None:
+    # Codex review (fourth pass): "9/20入住,8人,想訂房也想烤肉,總共多少錢"
+    # explicitly labels the date with 入住 AND says 想訂房 (an unambiguous
+    # booking request), but still rule-classifies as "price" because 多少錢
+    # is checked before booking/availability terms in inquiry_intent.py's
+    # priority order -- confirms gating on intent!="price" would have
+    # rejected genuine, explicitly-labeled booking requests too, not just
+    # bare policy questions.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="MISSING_CHECKOUT_PROMPT",
+        log_payload={
+            "inquiry_intent": "price",
+            "parsed_checkin": "2026-09-20",
+            "parsed_adult_count": 8,
+        },
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，8人，想訂房也想烤肉，總共多少錢"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == "MISSING_CHECKOUT_PROMPT"
+
+
+def test_booking_reply_wins_with_explicit_booking_term_but_no_guest_count() -> None:
+    # Codex review (sixth pass): "9/20入住,想訂房也想烤肉,總共多少錢" has a
+    # single date and NO guest count at all -- the fifth-pass fix (require a
+    # guest count for single-date price intent) wrongly fell back to the
+    # bare BBQ FAQ here, even though 想訂房 makes the booking request
+    # explicit. An explicit booking-intent keyword (訂房/預訂/保留) is an
+    # alternative signal to a guest count, not a replacement for it.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_GUESTS_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20入住，想訂房也想烤肉，總共多少錢"),
+        decision=decision,
+        state=None,
+    )
+
+    assert result.text == "SINGLE_MISSING_GUESTS_PROMPT"
+
+
+def test_dated_parking_faq_still_wins_with_no_guest_count() -> None:
+    # Codex review (fifth pass): "9/20 停車要多少錢" has a single date and a
+    # price intent (多少錢 wins the classifier) but NO stated guest count --
+    # a bare ancillary-fee question about a specific day, not a booking
+    # request. The fourth-pass fix (any single date sufficient, regardless
+    # of guest count) wrongly suppressed this parking policy answer in
+    # favor of a booking missing-info prompt.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 停車要多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_parking(available=True, free=True)
+
+
+def test_dated_breakfast_faq_still_wins_with_no_guest_count() -> None:
+    # Same shape as the parking case above, for a different NON_PRICEABLE
+    # topic: "9/20 早餐多少錢" -- single date, price intent, no guest count.
+    decision = InquiryDecision(
+        action_type="reply_to_customer_only",
+        customer_reply_text="SINGLE_MISSING_DATES_PROMPT",
+        log_payload={"inquiry_intent": "price", "parsed_checkin": "2026-09-20"},
+        parsed_as_inquiry=True,
+    )
+    result = _composer().compose(
+        message=_message("9/20 早餐多少錢"), decision=decision, state=None
+    )
+
+    assert result.text == render_faq_breakfast(breakfast_provided=False)
 
 
 _FORM_REPLY_TEXT = (
