@@ -238,3 +238,69 @@ def test_preceding_field_label_on_previous_line_does_not_attach() -> None:
 
     assert result.checkin_date == "2026-08-10"
     assert result.checkout_date == "2026-08-12"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # The real production message (2026-09-22): the customer is answering
+        # "how many rooms do you want", listing room types -- a 4-person room,
+        # a 4-person room and a 2-person room -- not asking about 4 April.
+        "開 4/4/2，3間是多少錢?",
+        "1. 開4/4/2，3間是多少錢? 2. 4間全開是多少?",
+        "開4/4/2三間",
+    ],
+)
+def test_room_configuration_is_not_read_as_a_date(text: str) -> None:
+    result = parse_stay_dates(text, reference_year=2026)
+
+    assert result.checkin_date is None
+    assert result.checkout_date is None
+    assert result.nights is None
+    assert result.confidence == "low"
+    assert result.missing_fields == ["checkin_date", "checkout_date"]
+
+
+def test_room_configuration_does_not_reach_the_availability_probe() -> None:
+    # Why this bug mattered: a lone checkin with no checkout makes
+    # availability_probe assume a one-night stay and query the calendar, so
+    # "開 4/4/2" produced a real customer-visible reply about 4/4-4/5.
+    from app.domain.availability_probe import with_single_night_availability_probe
+    from app.domain.inquiry_parser import parse_inquiry
+
+    inquiry = parse_inquiry("開 4/4/2，3間是多少錢?", reference_year=2026)
+    probed = with_single_night_availability_probe(inquiry, "開 4/4/2，3間是多少錢?")
+
+    assert probed.dates.checkin_date is None
+    assert probed.availability_probe_checkout is None
+
+
+def test_nearby_room_count_does_not_suppress_a_genuine_date() -> None:
+    result = parse_stay_dates("開3間，8/20-8/22入住", reference_year=2026)
+
+    assert result.checkin_date == "2026-08-20"
+    assert result.checkout_date == "2026-08-22"
+    assert result.nights == 2
+
+
+@pytest.mark.parametrize(
+    ("text", "checkin", "checkout"),
+    [
+        ("民宿有開 4/4 嗎?", "2026-04-04", None),
+        ("請問有開 4/4-6 嗎?", "2026-04-04", "2026-04-06"),
+        ("有開4/4嗎", "2026-04-04", None),
+        # Codex review of commit bd2c0f0 (P1): a semantic "開" rule dropped
+        # the range's front half here and left 4/6 stranded as a lone
+        # checkin, so availability would have been checked for 4/6-4/7 --
+        # dates the customer never asked about.
+        ("民宿開 4/4-4/6 的房間嗎?", "2026-04-04", "2026-04-06"),
+    ],
+)
+def test_open_for_business_question_keeps_its_dates(
+    text: str, checkin: str, checkout: str | None
+) -> None:
+    # "開" here means "open for business" and the date is the whole question.
+    result = parse_stay_dates(text, reference_year=2026)
+
+    assert result.checkin_date == checkin
+    assert result.checkout_date == checkout

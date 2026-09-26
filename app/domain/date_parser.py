@@ -10,7 +10,15 @@ _DATE_PATTERN = re.compile(
     # a trailing newline into the match itself, hiding it from
     # _has_close_label_after's own newline check (it only sees text AFTER
     # match.end()).
-    r"(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\d)"
+    # A third slash-separated component means this is not a stay date:
+    # "開 4/4/2" is a room configuration (a 4-person room, a 4-person room
+    # and a 2-person room), and reading its first two parts as 4 April sent a
+    # real customer an availability answer for a date she never mentioned.
+    # This module has no year support, so a real stay date can never carry a
+    # third "/" component -- rejecting it here costs nothing. Full-width ／ is
+    # listed too: parse_stay_dates is called on raw text in a few places
+    # (inquiry_intent, form_reply_detector) that skip normalize_for_parsing.
+    r"(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\d)(?![ \t]*[/／])"
 )
 _CHECKIN_LABELS = ("入住",)
 _CHECKOUT_LABELS = ("退房",)
@@ -85,6 +93,23 @@ def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseR
     )
 
 
+# Deliberately NOT here: a semantic "開 means rooms, not a date" rule. Two
+# rounds of Codex review killed it, and the second failure was worse than the
+# bug it was meant to catch. Suppressing a single match lets the OTHER end of
+# a range survive alone -- "民宿開 4/4-4/6 的房間嗎?" kept only 4/6 and would
+# have quietly checked availability for the wrong dates, which beats reading
+# a room list as a date on the "silently wrong" scale. And any character-level
+# test for the room sense also fires on "有開 4/4 嗎?" / "民宿開 4/4-4/6 的
+# 房間嗎?", where 開 means "open for business" and the date IS the question.
+#
+# The remaining gap is the two-room answer "開 4/4，2間" (no third slash, so
+# the guard on _DATE_PATTERN above does not see it). That shape has never
+# appeared in production or eval data -- it was reasoned out, not observed --
+# so it stays unhandled rather than justifying a mechanism with this track
+# record. If it ever does show up, the right home is the conversation-state
+# layer (ConversationStateService._fill_contextual_room_count), which knows
+# the system just asked "要開幾間房?" and can disambiguate from real state
+# instead of guessing from neighbouring characters.
 def _valid_date_matches(
     text: str, year: int
 ) -> tuple[list[tuple[date, int, int]], list[tuple[int, int]]]:
