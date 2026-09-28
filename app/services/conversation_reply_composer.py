@@ -24,6 +24,7 @@ from typing import Callable
 
 from pydantic import BaseModel
 
+from app.domain.holiday_gate import evaluate_holiday_gate
 from app.domain.availability_gate import (
     AvailabilityGateResult,
     AvailabilityServiceLike,
@@ -126,6 +127,7 @@ class ConversationReplyComposer:
         tenant_amenities_loader: Callable[[int], dict],
         tenant_room_policy_loader: Callable[[int], dict],
         tenant_location_loader: Callable[[int], dict],
+        holiday_ensure_years: Callable[[int, list[int]], list[int]] | None = None,
         availability_service: AvailabilityServiceLike | None = None,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
@@ -135,6 +137,7 @@ class ConversationReplyComposer:
         self._amenities_loader = tenant_amenities_loader
         self._room_policy_loader = tenant_room_policy_loader
         self._location_loader = tenant_location_loader
+        self._holiday_ensure_years = holiday_ensure_years
         self._availability_service = availability_service
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
 
@@ -325,6 +328,21 @@ class ConversationReplyComposer:
     def _quote_for_state(self, message: InboundMessage, state: dict) -> ComposedReply:
         kwargs = _state_stay_kwargs(state)
         room_policy = self._room_policy_loader(message.tenant_id)
+        # Missing holiday data must hand the stay to staff, never be priced as
+        # "no holidays" -- the multi-turn path reaches calculate_price too, so
+        # it needs the same gate the single-turn path has.
+        holiday_gate = evaluate_holiday_gate(
+            ensure_years=self._holiday_ensure_years,
+            tenant_id=message.tenant_id,
+            checkin=kwargs["checkin_date"],
+            checkout=kwargs["checkout_date"],
+        )
+        if not holiday_gate.can_quote:
+            return ComposedReply(
+                text=render_manual_review_message(),
+                owner_push_text=_manual_review_push(message),
+                completed_state_id=state["id"],
+            )
         pricing = calculate_price(
             **kwargs,
             tenant_pricing=self._pricing_loader(message.tenant_id),

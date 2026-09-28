@@ -18,6 +18,7 @@ from app.domain.availability_gate import (
     AvailabilityGateResult,
     evaluate_availability_gate,
 )
+from app.domain.holiday_gate import evaluate_holiday_gate
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.inquiry_parser import parse_inquiry
 from app.domain.llm_fallback import llm_fallback_parse
@@ -93,6 +94,7 @@ class InquiryService:
         tenant_pricing_loader: Callable[[int], dict],
         tenant_special_dates_loader: Callable[[int], dict],
         tenant_room_policy_loader: Callable[[int], dict] | None = None,
+        holiday_ensure_years: Callable[[int, list[int]], list[int]] | None = None,
         now_provider: Callable[[], datetime] | None = None,
         availability_service: AvailabilityService | None = None,
         llm_provider: LLMProvider | None = None,
@@ -105,6 +107,7 @@ class InquiryService:
         self._tenant_room_policy_loader = tenant_room_policy_loader or (
             lambda tenant_id: {}
         )
+        self._holiday_ensure_years = holiday_ensure_years
         self._now = now_provider or (lambda: datetime.now(timezone.utc))
         self._availability_service = availability_service
         self._llm_provider = llm_provider
@@ -385,6 +388,9 @@ class InquiryService:
         room_gate = self._room_gate(message, inquiry, room_policy)
         if room_gate is not None:
             return room_gate
+        holiday_block = self._holiday_block(message, inquiry)
+        if holiday_block is not None:
+            return holiday_block
         pricing = calculate_price(
             **self._stay_kwargs(inquiry),
             tenant_pricing=self._tenant_pricing_loader(message.tenant_id),
@@ -393,9 +399,17 @@ class InquiryService:
         )
         if not pricing.can_quote:
             return self._handle_unquotable(message, inquiry, pricing)
-        # Availability gate applies only to otherwise-quotable inquiries:
-        # over-capacity and invalid-date are pricing-layer failures that
-        # take precedence over calendar state.
+        return self._quote_against_availability(message, inquiry, pricing)
+
+    def _quote_against_availability(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        pricing: PricingResult,
+    ) -> InquiryDecision:
+        """Availability is checked only for otherwise-quotable inquiries:
+        over-capacity and invalid-date are pricing-layer failures that take
+        precedence over calendar state."""
         outcome = self._check_availability(inquiry)
         if outcome.status == "blocked":
             return self._handle_full_house(message, inquiry, outcome)
@@ -446,6 +460,50 @@ class InquiryService:
             suggested_room_count=suggested,
         )
         return self._room_reply(message, inquiry, "room_capacity_suggestion", text)
+
+    def _holiday_block(
+        self, message: InboundMessage, inquiry: InquiryParseResult
+    ) -> InquiryDecision | None:
+        """Refuse to price a stay whose years we hold no calendar for.
+
+        Missing data must never reach pricing, which treats an unknown date as
+        an ordinary day -- that is exactly what quoted 2027 春節 at the
+        Saturday/weekday rate.
+        """
+        gate = evaluate_holiday_gate(
+            ensure_years=self._holiday_ensure_years,
+            tenant_id=message.tenant_id,
+            checkin=date.fromisoformat(inquiry.dates.checkin_date),
+            checkout=date.fromisoformat(inquiry.dates.checkout_date),
+        )
+        if gate.can_quote:
+            return None
+        return self._handle_holiday_unavailable(message, inquiry, gate)
+
+    def _handle_holiday_unavailable(
+        self,
+        message: InboundMessage,
+        inquiry: InquiryParseResult,
+        holiday_gate,
+    ) -> InquiryDecision:
+        """No calendar for these years, so no quote -- staff take it instead.
+
+        Same shape as the room manual-review path: the customer gets the
+        standard "staff will confirm" line and the owner gets pushed, so the
+        enquiry is visibly handed over rather than quietly answered wrong.
+        """
+        log = self._room_log(message, inquiry, "holiday_calendar_unavailable")
+        log["holiday_missing_years"] = list(holiday_gate.missing_years)
+        log["holiday_gate_reason"] = holiday_gate.reason
+        return InquiryDecision(
+            action_type="reply_and_push",
+            customer_reply_text=render_manual_review_message(),
+            owner_push_text=self._manual_review_push(message),
+            log_payload=log,
+            parsed_as_inquiry=True,
+            could_quote=False,
+            completes_conversation_state=True,
+        )
 
     def _handle_room_manual_review(
         self, message: InboundMessage, inquiry: InquiryParseResult

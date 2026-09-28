@@ -1161,3 +1161,157 @@ def test_reference_date_uses_tenant_timezone_not_utc() -> None:
     )
 
     assert decision.log_payload["parsed_checkin"] == "2027-12-31"
+
+
+# ============================================================
+# HOLIDAY CALENDAR GATE
+# ============================================================
+
+
+def _holiday_service_with(cached_years: dict[int, list[dict]], config: dict):
+    """A real HolidayCalendarService over fake storage and a dead network."""
+    from app.clients.taiwan_holiday_client import TaiwanHolidayError
+    from app.services.holiday_calendar_service import HolidayCalendarService
+
+    class _Repo:
+        def __init__(self) -> None:
+            self.rows = dict(cached_years)
+
+        def get_payload(self, year):
+            return self.rows.get(year)
+
+        def save_payload(self, year, payload):
+            self.rows[year] = payload
+
+        def cached_years(self):
+            return sorted(self.rows)
+
+    class _DeadClient:
+        def fetch_year(self, year):
+            raise TaiwanHolidayError("network down")
+
+    return HolidayCalendarService(
+        repository=_Repo(),
+        client=_DeadClient(),
+        tenant_config_special_dates_loader=lambda tid: config,
+    )
+
+
+def _real_config() -> dict:
+    return json.loads(
+        (
+            Path(__file__).resolve().parent.parent
+            / "data"
+            / "tenants"
+            / "zhen123-house"
+            / "config.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _service_with_holidays(holiday_service, config: dict) -> InquiryService:
+    return InquiryService(
+        operation_mode_service=FakeOperationModeService(return_value=True),
+        tenant_pricing_loader=lambda tid: config["pricing"],
+        tenant_special_dates_loader=holiday_service.special_dates_for,
+        tenant_room_policy_loader=lambda tid: config["room_policy"],
+        holiday_ensure_years=holiday_service.ensure_years,
+    )
+
+
+def test_year_with_no_calendar_is_handed_to_staff_instead_of_quoted() -> None:
+    # The production failure this whole change targets: config.json had no
+    # 2027 entries, pricing read "not in the list" as "ordinary day", and a
+    # 春節 stay was quoted at NT$29,000 against the owner's NT$60,000 -- with
+    # nothing in the reply to show anything was wrong. Blocking is the only
+    # safe way to be missing this data.
+    config = _real_config()
+    service = _service_with_holidays(
+        _holiday_service_with({}, config["special_dates"]), config
+    )
+
+    decision = service.handle_message(
+        message=_build_message(
+            "明年 2/6-2/8 6大4小 開3間房 多少錢?",
+            timestamp=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.could_quote is False
+    assert decision.action_type == "reply_and_push"
+    assert decision.customer_reply_text == MANUAL_REVIEW_MESSAGE
+    assert decision.owner_push_text is not None
+    assert decision.log_payload["action_taken"] == "holiday_calendar_unavailable"
+    assert decision.log_payload["holiday_missing_years"] == [2027]
+
+
+def test_cached_year_lets_the_same_stay_be_priced_as_spring_festival() -> None:
+    config = _real_config()
+    payload = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "taiwan_calendar_2027.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    service = _service_with_holidays(
+        _holiday_service_with({2027: payload}, config["special_dates"]), config
+    )
+
+    decision = service.handle_message(
+        message=_build_message(
+            "明年 2/6-2/8 6大4小 開3間房 多少錢?",
+            timestamp=datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.could_quote is True
+    assert "入住:2027/02/06(六)" in decision.customer_reply_text
+    assert decision.customer_reply_text.count("春節房價") == 2
+
+
+def test_an_uncached_year_goes_to_staff_even_though_config_lists_it() -> None:
+    # Codex review of commits 58da71f and 3fc5f83 (P1 twice): config.json is
+    # an override that gets merged into the answer, never proof that a year is
+    # completely described. Letting it vouch for coverage meant one custom
+    # date could mark a whole year covered and skip the fetch, putting this
+    # module's own bug back through the override path.
+    #
+    # So yes, a cold cache plus a dead network sends even 2026 to staff. That
+    # is the right direction to fail, and barely reachable in production:
+    # startup prewarms this year and next, and a host that cannot reach the
+    # calendar cannot reach LINE either.
+    config = _real_config()
+    service = _service_with_holidays(
+        _holiday_service_with({}, config["special_dates"]), config
+    )
+
+    decision = service.handle_message(
+        message=_build_message(
+            "2/17 入住 2/19 退房 4 大人 開2房 多少錢?",
+            timestamp=datetime(2026, 1, 10, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.could_quote is False
+    assert decision.log_payload["holiday_missing_years"] == [2026]
+
+
+def test_cached_2026_quotes_spring_festival_from_the_fetched_calendar() -> None:
+    config = _real_config()
+    payload = json.loads(
+        (Path(__file__).resolve().parent / "fixtures" / "taiwan_calendar_2026.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    service = _service_with_holidays(
+        _holiday_service_with({2026: payload}, config["special_dates"]), config
+    )
+
+    decision = service.handle_message(
+        message=_build_message(
+            "2/17 入住 2/19 退房 4 大人 開2房 多少錢?",
+            timestamp=datetime(2026, 1, 10, 10, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.could_quote is True
+    assert decision.customer_reply_text.count("春節房價") == 2
