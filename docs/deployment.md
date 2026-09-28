@@ -561,14 +561,22 @@ docker compose -p villa-messenger cp web:/data/homestay.db ./homestay-backup-$(d
    覆寫的 `DATABASE_PATH`。務必確認 volume 掛載路徑與 `DATABASE_PATH` 一致,
    否則會重演坑 2 的問題。
 
+4. **假日行事曆需要對外 HTTPS**——報價需要知道行程觸及的年份有哪些國定假日與
+   春節,資料來自公開 CDN(`cdn.jsdelivr.net`),每年一檔、抓回來快取在
+   `holiday_calendar_cache` 表。容器必須能對外連 HTTPS 到該 host。
+   連不到時**不會報錯價**:受影響的行程一律轉人工(回「請民宿人員為您進一步
+   確認」+ 推播主人),因為「查不到假日」與「沒有假日」在 pricing 裡是同一件
+   事,靜默退回平日價就是 2026-09 那次少報一半的成因。
+   啟動時會在背景預熱今年與明年;失敗不影響啟動,之後每筆詢價自己會重試
+   (同一年度 5 分鐘退避一次,避免斷網時每則訊息都等滿 timeout)。
+   詳見 `docs/case_study_holiday_pricing_and_year_inference_2026-09.md`。
+
 ---
 
 ## 尚待處理的 TODO
 
 - `scripts/seed_sandbox.py` / `scripts/add_owner.py` 硬編碼相對路徑,應改讀
   `settings.database_path`(見坑 2)。
-- `app/main.py` 應加 `logging.basicConfig()`,讓 logging 不依賴 uvicorn
-  啟動參數(見坑 3)。
 - Owner push 加上「跳轉到該客人對話」的 LINE deep link(可行性待查)。
 - `scripts/set_mode.py` 在容器內執行時會踩到跟坑 2 一樣的路徑陷阱:腳本頂部
   寫死 `DATABASE_PATH = "data/homestay.db"`(相對路徑,腳本自己的註解也承認

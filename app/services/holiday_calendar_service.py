@@ -10,9 +10,10 @@ so out loud (ensure_years reports the year as missing and the gate blocks the
 quote), never returning an empty holiday list, because "no data" priced as "no
 holidays" is the bug this replaces.
 
-The tenant's own config.json special_dates stays in the merge and always wins.
-It is a hand-maintained override that works offline, and keeping it is also why
-2026 behaviour cannot shift underneath the owner.
+The tenant's own config.json special_dates is merged into the answer as an
+override, which is what keeps 2026 pricing from shifting underneath the owner.
+It is NOT evidence that a year is covered -- see ensure_years for why letting it
+vouch for coverage put this module's own bug back through the override path.
 """
 
 import calendar
@@ -82,17 +83,21 @@ class HolidayCalendarService:
         `tenant_id` stays in the signature because coverage is asked per
         enquiry and a future tenant-scoped rule belongs here.
         """
-        if not self.enabled:
-            return []
-        return [year for year in sorted(set(years)) if not self._have_year(year)]
+        return self._missing_years(years)
 
     def prewarm(self, years: list[int]) -> list[int]:
         """Cache these years before any customer asks; return what is missing.
 
         Startup-only, and tenant-free on purpose: prewarming wants the real
         government calendar in the cache, whatever any tenant's config happens
-        to say about those years.
+        to say about those years. Same work as ensure_years today, because
+        config stopped counting as coverage; kept separate because the two
+        callers are asking different questions and only one of them has a
+        tenant to ask about.
         """
+        return self._missing_years(years)
+
+    def _missing_years(self, years: list[int]) -> list[int]:
         if not self.enabled:
             return []
         return [year for year in sorted(set(years)) if not self._have_year(year)]

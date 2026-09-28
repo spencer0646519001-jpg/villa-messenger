@@ -311,8 +311,10 @@ def test_quote_spring_festival_full_9_nights(
     )
 
     assert out.count("春節房價") == 9
-    assert "連住折扣:-NT$8,000" in out
-    assert "小計:NT$217,000" in out
+    # No discount line at all on a peak stay -- render_quote_message only
+    # emits it when there is something to take off.
+    assert "連住折扣" not in out
+    assert "小計:NT$270,000" in out
 
 
 def test_quote_national_holiday_three_nights(
@@ -333,8 +335,8 @@ def test_quote_national_holiday_three_nights(
     )
 
     assert out.count("國定假日房價") == 3
-    assert "連住折扣:-NT$2,000" in out
-    assert "小計:NT$43,000" in out
+    assert "連住折扣" not in out
+    assert "小計:NT$45,000" in out
 
 
 def test_quote_confirmation_lines_in_order(zhen123_pricing) -> None:

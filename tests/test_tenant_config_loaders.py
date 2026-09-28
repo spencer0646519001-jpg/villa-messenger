@@ -137,7 +137,9 @@ def test_loads_real_zhen123_pricing(database_path: Path) -> None:
 
     base = pricing["base_prices_per_night"]
     assert base["8_people"]["weekday"] == 9000
-    assert base["12_people"]["spring_festival"] == 31000
+    # 春節 is one flat rate across all three room counts.
+    assert base["8_people"]["spring_festival"] == 30000
+    assert base["12_people"]["spring_festival"] == 30000
 
 
 def test_loads_real_zhen123_special_dates(database_path: Path) -> None:
