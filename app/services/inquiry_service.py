@@ -113,12 +113,12 @@ class InquiryService:
         urgency = detect_urgency(message.text)
         if urgency.is_urgent:
             return self._handle_urgent(message, urgency)
-        reference_year = self._reference_year()
-        inquiry = parse_inquiry(message.text, reference_year=reference_year)
+        reference_date = self._reference_date(message)
+        inquiry = parse_inquiry(message.text, reference_date=reference_date)
         system_state = self._system_state(message)
         if system_state != "on":
             return self._handle_off_mode(message, inquiry, system_state)
-        inquiry = self._with_llm_fallback(message, inquiry, reference_year)
+        inquiry = self._with_llm_fallback(message, inquiry, reference_date)
         inquiry = with_single_night_availability_probe(inquiry, message.text)
         if not self._is_quote_relevant(inquiry):
             return self._handle_non_inquiry(message, inquiry)
@@ -134,19 +134,37 @@ class InquiryService:
             return self._handle_missing_info(message, inquiry)
         return self._handle_pricing(message, inquiry)
 
-    def _reference_year(self) -> int:
-        return self._now().year
+    def _reference_date(self, message: InboundMessage) -> date:
+        """The day the customer wrote the message, not the day we process it.
+
+        Normally the same instant, but off-mode messages are replayed hours
+        later, and anchoring a bare "12/31" on replay time rather than send
+        time would shift the year on exactly the dates most likely to cross
+        one. Falls back to the clock only if a message arrives without a
+        timestamp.
+
+        Read in the tenant's own timezone, like _compute_is_night does: the
+        customer's "today" is their local today. Taking .date() off the UTC
+        instant instead leaves an 8-hour window each evening where the anchor
+        is a day behind -- at Taipei 2027-01-01 01:00 a bare "12/31 入住" would
+        resolve to yesterday and go on to probe the calendar for a past date.
+        Codex review of commit 8c9aeb3 (P1).
+        """
+        local = self._received_at_dt(message).astimezone(
+            ZoneInfo(message.tenant_timezone)
+        )
+        return local.date()
 
     def _with_llm_fallback(
         self,
         message: InboundMessage,
         inquiry: InquiryParseResult,
-        reference_year: int,
+        reference_date: date,
     ) -> InquiryParseResult:
         return llm_fallback_parse(
             inquiry,
             message.text,
-            reference_year=reference_year,
+            reference_date=reference_date,
             is_quote_relevant=self._is_quote_relevant(inquiry),
             tenant_id=message.tenant_id,
             provider=self._llm_provider,
@@ -270,7 +288,9 @@ class InquiryService:
     def _parse_urgent_inquiry(self, message: InboundMessage) -> InquiryParseResult:
         # eval candidate_711 regression: log_payload left inquiry_intent as
         # None instead of the parser's "unknown" for the urgent path.
-        return parse_inquiry(message.text, reference_year=self._reference_year())
+        return parse_inquiry(
+            message.text, reference_date=self._reference_date(message)
+        )
 
     def _handle_off_mode(
         self,

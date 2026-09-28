@@ -128,7 +128,13 @@ def _text_event(
     return {
         "type": "message",
         "webhookEventId": webhook_event_id or f"evt-{uuid.uuid4()}",
-        "timestamp": 1700000000000,
+        # 2026-05-01 10:00 UTC. Parsing anchors bare "M/D" dates on the
+        # MESSAGE timestamp, so this fixture epoch decides which year the
+        # assertions below see. It used to be 2023-11-14, which only went
+        # unnoticed while parsing read the server clock instead. Chosen to
+        # sit BEFORE every date this file mentions (5/12, 5/14), so no test
+        # here depends on year roll-forward as a side effect.
+        "timestamp": 1777629600000,
         "source": {"type": "user", "userId": user_id},
         "message": {"type": "text", "id": "1", "text": text},
     }
@@ -320,7 +326,7 @@ def test_non_text_event_acknowledged_without_persisting(client: TestClient, data
     _seed_channel(database_path)
     image_event = {
         "type": "message",
-        "timestamp": 1700000000000,
+        "timestamp": 1777629600000,
         "source": {"type": "user", "userId": "Uguest"},
         "message": {"type": "image", "id": "2"},
     }

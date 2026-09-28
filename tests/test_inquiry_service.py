@@ -689,8 +689,18 @@ def test_integration_spring_festival_quote_uses_real_fixture() -> None:
         tenant_room_policy_loader=lambda tid: config["room_policy"],
     )
 
+    # Dated before the 2026 spring festival on purpose. The default message
+    # timestamp is 2026-05-13, and a bare "2/15" asked then means NEXT
+    # February -- for which config.json has no special_dates at all, so the
+    # quote silently comes out at the weekday rate. That gap is real (it is
+    # what mispriced a customer's 2027 春節 enquiry) and is fixed by the
+    # holiday-calendar work, not here; this test is about the pricing path
+    # itself, so it asks while the fixture's own year is still ahead.
     decision = service.handle_message(
-        message=_build_message("2/15 入住 2/17 退房 4 大人 開2房 多少錢?")
+        message=_build_message(
+            "2/15 入住 2/17 退房 4 大人 開2房 多少錢?",
+            timestamp=datetime(2026, 1, 10, 10, 0, tzinfo=timezone.utc),
+        )
     )
 
     assert decision.action_type == "reply_to_customer_only"
@@ -1133,3 +1143,21 @@ def test_no_method_exceeds_line_budget() -> None:
         assert body_lines <= limit, (
             f"{kind} method {name} has {body_lines} body lines, max is {limit}"
         )
+
+
+def test_reference_date_uses_tenant_timezone_not_utc() -> None:
+    # Codex review of commit 8c9aeb3 (P1): taking .date() off the UTC instant
+    # left an 8-hour window each evening where the anchor sat a day behind the
+    # customer's own calendar. At Taipei 2027-01-01 01:00 a bare "12/31 入住"
+    # would resolve to yesterday and go on to probe the calendar for a past
+    # date; in tenant-local time it correctly means next December.
+    service, _ = _build_service(system_on=True)
+
+    decision = service.handle_message(
+        message=_build_message(
+            "12/31 入住 多少錢",
+            timestamp=datetime(2026, 12, 31, 17, 0, tzinfo=timezone.utc),
+        )
+    )
+
+    assert decision.log_payload["parsed_checkin"] == "2027-12-31"

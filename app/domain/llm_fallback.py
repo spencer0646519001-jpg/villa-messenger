@@ -60,12 +60,19 @@ def llm_fallback_parse(
     inquiry: InquiryParseResult,
     raw_text: str,
     *,
-    reference_year: int,
+    reference_year: int | None = None,
+    reference_date: date | None = None,
     is_quote_relevant: bool,
     tenant_id: int,
     provider: LLMProvider | None,
     enabled: bool | None = None,
 ) -> InquiryParseResult:
+    """Pass reference_date (preferred) or reference_year; date wins if both.
+
+    reference_date additionally lets _merge_dates discard an LLM date that has
+    already passed. reference_year stays accepted so existing callers and tests
+    keep working unchanged.
+    """
     if not _llm_enabled(enabled) or provider is None:
         return inquiry
 
@@ -73,10 +80,14 @@ def llm_fallback_parse(
     if trigger is None:
         return inquiry
 
+    effective_year = reference_date.year if reference_date is not None else reference_year
+    if effective_year is None:
+        raise ValueError("llm_fallback_parse needs reference_date or reference_year")
+
     try:
         llm_out = provider.parse(
             raw_text=raw_text,
-            reference_year=reference_year,
+            reference_year=effective_year,
             trigger=trigger,
             tenant_id=tenant_id,
         )
@@ -84,7 +95,7 @@ def llm_fallback_parse(
         return inquiry
     if llm_out is None:
         return inquiry
-    return _merge_llm_into_inquiry(inquiry, llm_out, trigger)
+    return _merge_llm_into_inquiry(inquiry, llm_out, trigger, reference_date)
 
 
 def _llm_enabled(enabled: bool | None) -> bool:
@@ -148,9 +159,10 @@ def _merge_llm_into_inquiry(
     inquiry: InquiryParseResult,
     llm_out: LLMOutput,
     trigger: str,
+    reference_date: date | None = None,
 ) -> InquiryParseResult:
     if trigger == TYPE_3_FAQ_BOOKING_COLLISION:
-        return _merge_collision_judgment(inquiry, llm_out)
+        return _merge_collision_judgment(inquiry, llm_out, reference_date)
     if trigger == TYPE_5_BBQ_AMBIGUITY:
         # The bbq verdict is a direct answer to a direct question ("does
         # this customer want BBQ"), not a slot whose validity depends on
@@ -173,7 +185,7 @@ def _merge_llm_into_inquiry(
         # Codex review (P2, second pass): the first fix only handled
         # is_booking_intent left null, not the far more likely case where
         # the LLM explicitly confirms it isn't a booking.
-        merged = _merge_slots(inquiry, llm_out)
+        merged = _merge_slots(inquiry, llm_out, reference_date)
         updates: dict = {"intent": InquiryIntentResult(is_inquiry=True, inquiry_type="faq")}
         if llm_out.is_booking_intent is False:
             # The flag's contract (see _reject_booking_intent) is "the LLM
@@ -196,7 +208,7 @@ def _merge_llm_into_inquiry(
         )
         return _recompute_flags(clarified)
 
-    merged = _merge_slots(inquiry, llm_out)
+    merged = _merge_slots(inquiry, llm_out, reference_date)
     merged = _maybe_upgrade_intent(merged, llm_out)
     return _recompute_flags(merged)
 
@@ -226,7 +238,9 @@ def _reject_booking_intent(inquiry: InquiryParseResult) -> InquiryParseResult:
 
 
 def _merge_collision_judgment(
-    inquiry: InquiryParseResult, llm_out: LLMOutput
+    inquiry: InquiryParseResult,
+    llm_out: LLMOutput,
+    reference_date: date | None = None,
 ) -> InquiryParseResult:
     # Slots are merged here too now (Spencer's request, alongside TYPE_5/6):
     # this trigger's prompt used to tell the LLM to leave every slot null
@@ -238,7 +252,7 @@ def _merge_collision_judgment(
     merged = inquiry.model_copy(
         update={"llm_detected_intents": list(llm_out.intents)}
     )
-    merged = _merge_slots(merged, llm_out)
+    merged = _merge_slots(merged, llm_out, reference_date)
     if judgment is None:
         return _recompute_flags(merged)
     if judgment:
@@ -273,10 +287,14 @@ def _collision_booking_judgment(llm_out: LLMOutput) -> bool | None:
     return None
 
 
-def _merge_slots(inquiry: InquiryParseResult, llm_out: LLMOutput) -> InquiryParseResult:
+def _merge_slots(
+    inquiry: InquiryParseResult,
+    llm_out: LLMOutput,
+    reference_date: date | None = None,
+) -> InquiryParseResult:
     return inquiry.model_copy(
         update={
-            "dates": _merge_dates(inquiry.dates, llm_out),
+            "dates": _merge_dates(inquiry.dates, llm_out, reference_date),
             "guests": _merge_guests(inquiry.guests, llm_out),
             "pets": _merge_pets(inquiry.pets, llm_out),
             "bbq": _merge_bbq(inquiry.bbq, llm_out),
@@ -284,9 +302,34 @@ def _merge_slots(inquiry: InquiryParseResult, llm_out: LLMOutput) -> InquiryPars
     )
 
 
-def _merge_dates(dates: DateParseResult, llm_out: LLMOutput) -> DateParseResult:
-    checkin = _valid_iso_date_or_none(llm_out.checkin_date) or dates.checkin_date
-    checkout = _valid_iso_date_or_none(llm_out.checkout_date) or dates.checkout_date
+def _drop_if_already_past(value: str | None, reference_date: date | None) -> str | None:
+    """Decline an LLM date that has already been and gone.
+
+    An LLM date outranks the rule parser's (see below), which is what a "下週五"
+    style phrase needs. But a stay cannot be booked into the past, so a past
+    date is certainly wrong and must not win. This only declines -- it never
+    invents or shifts a date -- so the rule parser's own value stands, and a
+    customer who really said 今年 still keeps the past date they asked about
+    (date_parser leaves explicit year words alone).
+    """
+    if value is None or reference_date is None:
+        return value
+    return None if date.fromisoformat(value) < reference_date else value
+
+
+def _merge_dates(
+    dates: DateParseResult,
+    llm_out: LLMOutput,
+    reference_date: date | None = None,
+) -> DateParseResult:
+    checkin = (
+        _drop_if_already_past(_valid_iso_date_or_none(llm_out.checkin_date), reference_date)
+        or dates.checkin_date
+    )
+    checkout = (
+        _drop_if_already_past(_valid_iso_date_or_none(llm_out.checkout_date), reference_date)
+        or dates.checkout_date
+    )
     nights = _nights_between(checkin, checkout)
     return dates.model_copy(
         update={
