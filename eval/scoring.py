@@ -125,8 +125,11 @@ def derive_actual_fields(result: CaseResult, case: dict) -> dict:
 
 
 def _final_turn_parse(case: dict, result: CaseResult):
-    reference_year = result.final_message.timestamp.year
-    return parse_inquiry(case["input"], reference_year=reference_year)
+    # reference_DATE, not just the year: the eval has to see the same
+    # roll-forward the production path does, or its scores drift away from
+    # real behaviour the moment a case mentions a bare month/day.
+    reference_date = result.final_message.timestamp.date()
+    return parse_inquiry(case["input"], reference_date=reference_date)
 
 
 def _history_texts(case: dict) -> list[str]:
@@ -144,10 +147,10 @@ def _ever_mentioned(case: dict, result: CaseResult, extract) -> bool | None:
     LAST turn that explicitly mentioned the field -- mirroring the COALESCE
     overwrite ConversationStateService actually applies turn over turn. Returns
     None only when NO turn ever mentioned it: a true "never discussed"."""
-    reference_year = result.final_message.timestamp.year
+    reference_date = result.final_message.timestamp.date()
     last_value: bool | None = None
     for text in _history_texts(case):
-        parse = parse_inquiry(text, reference_year=reference_year)
+        parse = parse_inquiry(text, reference_date=reference_date)
         mentioned, value = extract(parse)
         if mentioned:
             last_value = value

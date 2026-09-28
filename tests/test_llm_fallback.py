@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.adapters.llm.deepseek_provider import DeepSeekProvider
 from app.adapters.llm.fake_provider import FakeProvider
@@ -616,3 +616,56 @@ def test_state_continuation_prompt_forbids_reply_and_slot_extraction_and_default
     assert "不要產生客人回覆" in prompt
     assert "欄位全部填 null" in prompt
     assert "傾向 true" in prompt
+
+
+# ============================================================
+# LLM DATES THAT HAVE ALREADY PASSED
+# ============================================================
+
+
+def test_llm_date_in_the_past_loses_to_the_rule_parser() -> None:
+    # An LLM date normally outranks the rule parser's, which is what "下週五"
+    # style phrasing needs. A stay cannot start in the past though, so a past
+    # LLM date is certainly wrong and must not win. Before the rule layer
+    # understood years this was the ONLY thing resolving "明年", and it worked
+    # by luck -- the guard makes the rule layer authoritative again.
+    reference = date(2026, 9, 23)
+    text = "明年 2/6-8 開3間房 2台車 多少錢?"
+    inquiry = parse_inquiry(text, reference_date=reference)
+    assert inquiry.dates.checkin_date == "2027-02-06"
+
+    provider = FakeProvider(_out(intent="price", checkin_date="2026-02-06"))
+    result = llm_fallback_parse(
+        inquiry,
+        text,
+        reference_date=reference,
+        is_quote_relevant=_quote_relevant(inquiry),
+        tenant_id=1,
+        provider=provider,
+    )
+
+    assert result.dates.checkin_date == "2027-02-06"
+    assert result.dates.checkout_date == "2027-02-08"
+
+
+def test_llm_future_date_still_wins_over_the_rule_parser() -> None:
+    reference = date(2026, 9, 23)
+    text = "下週五到下週日多少錢"
+    inquiry = parse_inquiry(text, reference_date=reference)
+    assert inquiry.dates.checkin_date is None
+
+    provider = FakeProvider(
+        _out(intent="price", checkin_date="2026-10-02", checkout_date="2026-10-04")
+    )
+    result = llm_fallback_parse(
+        inquiry,
+        text,
+        reference_date=reference,
+        is_quote_relevant=_quote_relevant(inquiry),
+        tenant_id=1,
+        provider=provider,
+    )
+
+    assert result.dates.checkin_date == "2026-10-02"
+    assert result.dates.checkout_date == "2026-10-04"
+    assert result.dates.nights == 2

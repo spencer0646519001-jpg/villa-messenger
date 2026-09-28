@@ -19,9 +19,11 @@ The legacy price keys remain the same so config values do not need to move.
 
 | Room count | Price key | Standard capacity | Weekday Sunday-Friday | Saturday | Summer weekday | Summer Saturday or national holiday | Spring festival |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 rooms | `8_people` | 8 people | 9,000 | 15,000 | 12,000 | 15,000 | 25,000 |
-| 3 rooms | `10_people` | 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 28,000 |
-| 4 rooms | `12_people` | 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 31,000 |
+| 2 rooms | `8_people` | 8 people | 9,000 | 15,000 | 12,000 | 15,000 | 30,000 |
+| 3 rooms | `10_people` | 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 30,000 |
+| 4 rooms | `12_people` | 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 30,000 |
+
+Spring festival is one flat rate across all three room counts.
 
 ## Room Count Pricing
 
@@ -74,14 +76,30 @@ Formula:
 max(0, nights - 1) * 1000
 ```
 
+**Peak dates do not discount.** If ANY night of the stay is priced as
+`spring_festival` or `national_holiday`, the long stay discount is zero for the
+whole stay -- a trip that includes a holiday is a peak trip. Saturday and summer
+rates are ordinary pricing and still discount normally.
+
 ## Season And Date Rules
 
 - Summer is July and August.
 - Saturday pricing applies only to the Saturday night itself, not the entire stay.
 - Other nights are priced by their own date.
-- National holidays should be loaded from `special_dates` in V1.5.
-- Spring festival should be loaded from `special_dates` in V1.5.
-- Taiwan holiday API is V2.
+- National holidays and spring festival are loaded from the Taiwan government
+  working-day calendar, fetched per year and cached in `holiday_calendar_cache`.
+  Each tenant's `special_dates` in config.json is merged in on top as a
+  hand-maintained override.
+- Derivation rule (`app/domain/holiday_calendar.py`): take the non-working days,
+  cut them into consecutive runs; a run containing any named day is a national
+  holiday in full, and a run whose names mention 春節 / 除夕 / 小年夜 is also a
+  spring festival in full. A run of unnamed days is just a weekend.
+- **If the calendar for a year the stay touches is unavailable, the system does
+  not quote.** It replies with the standard staff-confirmation line and pushes
+  the owner. A missing calendar must never be priced as "that year has no
+  holidays" -- that is what quoted 2027 春節 at the weekday rate.
+- Make-up workdays (補班日) are derived but do not affect pricing: a working
+  Saturday is still a Saturday to a guest.
 
 ## Price Type Priority
 

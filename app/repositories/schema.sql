@@ -221,3 +221,17 @@ CREATE INDEX IF NOT EXISTS idx_conv_states_lookup
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_states_one_active
     ON conversation_states (tenant_id, platform, platform_user_id)
     WHERE status = 'in_progress';
+
+-- One row per calendar year of the Taiwan government working-day calendar.
+-- Holds the payload as fetched rather than the derived holiday lists, so the
+-- derivation rule in app/domain/holiday_calendar.py can change without a
+-- refetch. Not tenant-scoped: it is national data, identical for every tenant.
+--
+-- This is a brand-new table, so init_db()'s CREATE TABLE IF NOT EXISTS is the
+-- whole migration -- no _ensure_column backfill needed. An existing deployed
+-- database still has to run init_db() once for the table to appear.
+CREATE TABLE IF NOT EXISTS holiday_calendar_cache (
+    year       INTEGER PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);

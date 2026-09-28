@@ -23,10 +23,19 @@ from app.services.operation_mode_service import OperationModeService
 TENANT_SLUG = "zhen123-house"
 TENANT_TIMEZONE = "Asia/Taipei"
 
-# Anchor for the replay's "now": an arbitrary, fixed, daytime Taipei timestamp so
+# Anchor for the replay's "now": a fixed, daytime Taipei timestamp so
 # night-window / stale-off-reconfirm logic behaves deterministically regardless of
 # when the eval actually runs.
-_ANCHOR_LOCAL = datetime(2026, 8, 17, 14, 0, tzinfo=ZoneInfo(TENANT_TIMEZONE))
+#
+# It must also sit BEFORE every stay date the dataset asks about. These are real
+# customer conversations, so each one was written while its dates were still
+# ahead; parsing now resolves a bare "8/10" to the next time it occurs, and an
+# anchor later than the dataset (this was 2026-08-17, past 43 of the 55 gold
+# date fields) would roll almost every case into the following year and score
+# the harness rather than the app. Gold dates span 2026-07-11..2026-10-26, so
+# early July clears them all while keeping the year -- and therefore the summer
+# and holiday price rules that apply -- exactly as before.
+_ANCHOR_LOCAL = datetime(2026, 7, 1, 14, 0, tzinfo=ZoneInfo(TENANT_TIMEZONE))
 ANCHOR_NOW_UTC = _ANCHOR_LOCAL.astimezone(timezone.utc)
 
 _STALE_RECONFIRM_LABEL = "stale_context_reconfirm"

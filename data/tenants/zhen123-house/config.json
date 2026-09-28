@@ -88,21 +88,21 @@
         "saturday": 15000,
         "summer_weekday": 12000,
         "summer_saturday_or_holiday": 15000,
-        "spring_festival": 25000
+        "spring_festival": 30000
       },
       "10_people": {
         "weekday": 12000,
         "saturday": 18000,
         "summer_weekday": 15000,
         "summer_saturday_or_holiday": 18000,
-        "spring_festival": 28000
+        "spring_festival": 30000
       },
       "12_people": {
         "weekday": 15000,
         "saturday": 21000,
         "summer_weekday": 18000,
         "summer_saturday_or_holiday": 21000,
-        "spring_festival": 31000
+        "spring_festival": 30000
       }
     },
     "people_pricing": [

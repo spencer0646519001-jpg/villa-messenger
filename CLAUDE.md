@@ -32,7 +32,8 @@ LLM 失敗 / 逾時 / 回傳壞 JSON 時,一律 fallback 到 rule-based 處理�
 具體來說:
 1. 遇到需求或問題,**先分析、提出設計方案**(講清楚「要怎麼改、為什麼、影響範圍」)
 2. **等 Spencer 確認**後,才開始寫 code
-3. 實作後 Spencer 會自己測試並 commit
+3. 可以在 **feature branch** 上 commit(codex-review 的 hook 靠 commit 觸發),
+   但**不得碰 main、不得 push**,除非 Spencer 明確指示 —— merge 與 push 由他決定
 
 不要一接到任務就直接改 code。尤其牽涉到護城河、狀態機、報價、意圖判斷這些核心
 邏輯的改動,務必先說明設計再動手。小的、明顯無風險的改動可以直接做,但仍要說明
@@ -54,26 +55,58 @@ LLM 失敗 / 逾時 / 回傳壞 JSON 時,一律 fallback 到 rule-based 處理�
 兩者皆已跑過完整測試套件(956 綠)。問題 1 的 Layer 2(舊資料重新確認提示)尚未
 在真實線上環境人工驗證過,其餘已於本機/線上驗證。
 
+## ✅ 第三個真實事故:春節報價少一半(2026-09,已修)
+
+客人問「明年 2/6-8」,系統報 NT$29,000,主人報 NT$60,000。**程式邏輯沒壞,壞的是
+「缺漏資料被當成有效資料」** —— 查不到假日就當平常日,沒寫年份就當今年。兩者都不
+報錯、不留 log、回覆看起來完全正常,只有金額是錯的。
+
+三個根因,詳見 `docs/case_study_holiday_pricing_and_year_inference_2026-09.md`:
+
+1. 房型組合記法「開 4/4/2」被當成 4 月 4 日 → 拿過去的日期去查行事曆
+2. 規則層完全不懂年份(「明年」被忽略、跨年訂單一律被擋)。那次年份之所以對,
+   是因為訊息裡有「2台車」意外觸發 LLM 順手解對 —— **靠運氣,且違反護城河精神**
+3. `special_dates` 只有 2026,2027 一片空白,而查不到就靜默退回平日價
+
+**新增的原則:寧可不報價,也不要靜默報錯價。** 行事曆現在自動抓政府辦公日曆表並
+快取(`app/domain/holiday_calendar.py` 推導 + `app/domain/holiday_gate.py` 把關),
+行程觸及的年份拿不到資料就不報價、轉人工、推播主人。
+
+一併照 Spencer 決定調整定價:春節不分房數一律 30,000;行程含春節或國定假日則整筆
+不打連住折扣。
+
+### ⚠️ 部署待辦(Spencer 尚未完成,完成後刪掉這節)
+程式已合進 main 並 push(2026-09-28),但**線上還沒部署**。部署時兩件事:
+
+1. **跑一次 `init_db()`** —— 線上既有資料庫才會有 `holiday_calendar_cache` 這張表
+   (與 `wants_bbq` 那次同一個坑)。流程照 `docs/deployment.md`「更新既有服務的
+   標準流程(含 schema 變更)」:先 build 新 image,再用 `run --rm` 跑 migration。
+2. **確認容器能對外 HTTPS 連到 `cdn.jsdelivr.net`** —— 行事曆從那裡抓。連不到
+   不會報錯價,但所有需要行事曆的詢價都會轉人工。驗證:部署後看 log 有沒有
+   `Holiday calendar ready for [2026, 2027]`;若是 `prewarm incomplete` 就是連不到。
+
+下一個 session 開始時,如果這節還在,主動提醒 Spencer。
+
 ## 部署現況(已上線)
 
 - **平台:** DigitalOcean Droplet(Ubuntu 24.04,新加坡),Docker Compose 部署
 - **對外:** `villa.<domain>` 子網域,Caddy 反向代理(系統套件版)+ HTTPS
 - **host port 8002**(container 內 8000),SQLite volume `villa_sqlite`(掛 `/data`)
 - **Compose 專案名:** `villa-messenger`
-- 詳細部署步驟與上線踩過的坑,見 `docs/deployment.md`(6 個坑 + 官方帳號切換流程)
+- 詳細部署步驟與上線踩過的坑,見 `docs/deployment.md`(9 個坑 + 官方帳號切換流程)
 - `.env` 與 `secrets/service-account.json` 不進版控,只在伺服器上手動管理
 
-### 部署相關的兩個已知技術債(TODO)
+### 部署相關的已知技術債(TODO)
 - `scripts/seed_sandbox.py` / `scripts/add_owner.py` 硬編碼相對路徑
   `data/homestay.db`,應改讀 `settings.database_path`(否則容器內執行會寫錯位置)
-- `app/main.py` 缺 `logging.basicConfig()`,導致背景任務的 log 在容器中被靜音;
-  目前靠 `docker-compose.yml` 的 `--log-level debug` 治標,根本解是在程式內設好 logging
+- ~~`app/main.py` 缺 `logging.basicConfig()`~~ —— 已完成,不需再處理
 
 ## 技術棧
 
 FastAPI + uvicorn、SQLite、LINE Messaging API、OpenRouter(LLM)、
-Google Calendar API(空房檢查)。多租戶架構(`tenants` / `tenant_channels` /
-`tenant_owners` 等表)。
+Google Calendar API(空房檢查)、台灣政府辦公日曆表(假日定價,公開 CDN,
+需要對外 HTTPS)。多租戶架構(`tenants` / `tenant_channels` / `tenant_owners`
+等表)。架構現況見 `docs/architecture.md`。
 
 ## LLM 設定要點
 
@@ -87,7 +120,9 @@ Google Calendar API(空房檢查)。多租戶架構(`tenants` / `tenant_channels
 完整測試套件,用 pytest。任何改動後務必跑測試確認全綠。護城河相關邏輯改動時尤其
 要確認既有測試沒被破壞。
 
-## 其他非阻斷 TODO(優先度低於上面兩大問題)
+## 其他非阻斷 TODO
 
 - Owner 推播加「跳轉到該客人對話」的 LINE deep link(需查 LINE 是否支援用 userId
   開啟 1:1 對話,如 `line://ti/...`)
+- 複數意圖處理(一則訊息同時問訂房與政策,例如「8/15 包棟可以帶寵物嗎 9人」)
+  —— 地基已備妥但流程未做,設計題見 `memory.md` 第五章

@@ -10,7 +10,15 @@ _DATE_PATTERN = re.compile(
     # a trailing newline into the match itself, hiding it from
     # _has_close_label_after's own newline check (it only sees text AFTER
     # match.end()).
-    r"(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\d)"
+    # A third slash-separated component means this is not a stay date:
+    # "開 4/4/2" is a room configuration (a 4-person room, a 4-person room
+    # and a 2-person room), and reading its first two parts as 4 April sent a
+    # real customer an availability answer for a date she never mentioned.
+    # This module has no year support, so a real stay date can never carry a
+    # third "/" component -- rejecting it here costs nothing. Full-width ／ is
+    # listed too: parse_stay_dates is called on raw text in a few places
+    # (inquiry_intent, form_reply_detector) that skip normalize_for_parsing.
+    r"(?P<day>0?[1-9]|[12]\d|3[01])[ \t]*(?:日)?(?!\d)(?![ \t]*[/／])"
 )
 _CHECKIN_LABELS = ("入住",)
 _CHECKOUT_LABELS = ("退房",)
@@ -33,9 +41,92 @@ _RANGE_SEPARATOR_DAY_PATTERN = re.compile(
 )
 
 
-def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseResult:
-    year = reference_year if reference_year is not None else datetime.now().year
-    date_matches, range_pairs = _valid_date_matches(text, year)
+# Year words the rule layer resolves itself. Before this existed, "明年 2/6-8"
+# parsed as THIS year's 2/6 -- a date seven months in the past -- and the only
+# reason a real customer's 春節 enquiry came out as 2027 was that her message
+# also said "2台車", which tripped the FAQ-collision LLM trigger and the LLM
+# happened to fix the year on its way past. Year arithmetic is deterministic;
+# it does not belong on that lucky path.
+_YEAR_WORD_OFFSETS = {"今年": 0, "明年": 1, "隔年": 1, "後年": 2}
+_YEAR_WORD_PATTERN = re.compile("|".join(_YEAR_WORD_OFFSETS))
+
+
+def _year_word_positions(text: str) -> list[tuple[int, int]]:
+    return [
+        (match.start(), _YEAR_WORD_OFFSETS[match.group()])
+        for match in _YEAR_WORD_PATTERN.finditer(text)
+    ]
+
+
+def _basis_for_match(
+    start: int,
+    base_year: int,
+    reference_date: date | None,
+    positions: list[tuple[int, int]],
+) -> tuple[int, date | None]:
+    """Year basis for the one date beginning at `start`.
+
+    Each date takes the nearest year word BEFORE it, rather than the message
+    taking a single one. "今年12/31入住，明年1/2退房" is an ordinary way to write
+    a new-year stay and means two different years; so does the explicit
+    "明年12/31入住，後年1/2退房". Both went a year wrong under a message-wide
+    rule -- Codex review of commits 8c9aeb3 and fea1e5e (P1 twice, which is
+    what moved this from "documented limitation" to "fix the class").
+
+    A date with no year word before it falls back to roll-forward, and an
+    explicit word switches roll-forward off for that date: the customer named
+    their year and guessing past them would be wrong.
+    """
+    offset = None
+    for position, value in positions:
+        if position >= start:
+            break
+        offset = value
+    if offset is None:
+        return base_year, reference_date
+    return base_year + offset, None
+
+
+def _build_date(year: int, month: int, day: int, not_before: date | None) -> date | None:
+    """Build (month, day), rolling to the next year when it has already passed.
+
+    Only year and year + 1 are tried: that covers every real month/day, and
+    the one shape it does not -- 2/29 in a run of non-leap years -- keeps the
+    pre-existing "silently drop an impossible date" behaviour rather than
+    quietly jumping a customer two years forward.
+    """
+    if not_before is None:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return None
+    for candidate_year in (year, year + 1):
+        try:
+            built = date(candidate_year, month, day)
+        except ValueError:
+            continue
+        if built >= not_before:
+            return built
+    return None
+
+
+def parse_stay_dates(
+    text: str,
+    reference_year: int | None = None,
+    *,
+    reference_date: date | None = None,
+) -> DateParseResult:
+    if reference_date is None:
+        # Legacy path: every pre-existing caller and test. No roll-forward, no
+        # year words, one base year for the whole message -- exactly as before.
+        base_year = reference_year if reference_year is not None else datetime.now().year
+        positions: list[tuple[int, int]] = []
+    else:
+        base_year = reference_date.year
+        positions = _year_word_positions(text)
+    date_matches, range_pairs = _valid_date_matches(
+        text, base_year, reference_date, positions
+    )
 
     checkin = None
     checkout = None
@@ -62,6 +153,14 @@ def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseR
     elif checkin is None and checkout is None and len(date_matches) == 1:
         checkin = date_matches[0][0]
 
+    if reference_date is not None:
+        # A message carrying any year word has had its years stated, so
+        # reconciliation may only carry a departure over new year, never
+        # re-pick a year the customer gave.
+        checkin, checkout = _reconcile_stay_years(
+            checkin, checkout, None if positions else reference_date
+        )
+
     nights = None
     confidence = "low"
     if checkin is not None and checkout is not None:
@@ -85,19 +184,114 @@ def parse_stay_dates(text: str, reference_year: int | None = None) -> DateParseR
     )
 
 
+# Deliberately NOT here: a semantic "開 means rooms, not a date" rule. Two
+# rounds of Codex review killed it, and the second failure was worse than the
+# bug it was meant to catch. Suppressing a single match lets the OTHER end of
+# a range survive alone -- "民宿開 4/4-4/6 的房間嗎?" kept only 4/6 and would
+# have quietly checked availability for the wrong dates, which beats reading
+# a room list as a date on the "silently wrong" scale. And any character-level
+# test for the room sense also fires on "有開 4/4 嗎?" / "民宿開 4/4-4/6 的
+# 房間嗎?", where 開 means "open for business" and the date IS the question.
+#
+# The remaining gap is the two-room answer "開 4/4，2間" (no third slash, so
+# the guard on _DATE_PATTERN above does not see it). That shape has never
+# appeared in production or eval data -- it was reasoned out, not observed --
+# so it stays unhandled rather than justifying a mechanism with this track
+# record. If it ever does show up, the right home is the conversation-state
+# layer (ConversationStateService._fill_contextual_room_count), which knows
+# the system just asked "要開幾間房?" and can disambiguate from real state
+# instead of guessing from neighbouring characters.
+# No real stay at this homestay runs longer than a month, so a "stay" longer
+# than this is proof that some year guess is wrong rather than a long booking.
+_MAX_PLAUSIBLE_STAY_NIGHTS = 31
+
+
+def _shifted_year(value: date, years: int) -> date | None:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:  # 2/29 landing on a non-leap year
+        return None
+
+
+def _reconcile_stay_years(
+    checkin: date | None, checkout: date | None, not_before: date | None
+) -> tuple[date | None, date | None]:
+    """Settle the two ends of a stay onto years that make sense together.
+
+    _build_date rolls each date on its own, which is right for a whole range
+    that has passed ("2/6-2/8" asked in September) but wrong when a range
+    straddles today: on 5/13, "5/12 入住 5/14 退房" would put the arrival in
+    next May and the departure in this one -- a 364-night stay. The literal
+    reading is one unit, so repair it as one: try the smallest year shift that
+    yields a plausible stay, preferring to pull a date back over pushing one
+    forward, and require the stay to still end in the future so nothing is
+    dragged wholly into the past.
+
+    "12/31入住 1/2退房" needs this too, from the other direction. It used to
+    produce two same-year dates, fail pricing's checkout > checkin check, and
+    send the customer a "your dates look out of order" question -- every
+    new-year stay was rejected that way.
+
+    When no shift works the dates are returned untouched, so a genuine typo
+    ("5/14 入住 5/12 退房") still reaches the existing invalid-date reply
+    instead of being bent into a year-long booking.
+    """
+    if checkin is None or checkout is None:
+        return checkin, checkout
+
+    def plausible(start: date, end: date) -> bool:
+        nights = (end - start).days
+        if not 0 < nights <= _MAX_PLAUSIBLE_STAY_NIGHTS:
+            return False
+        return not_before is None or end >= not_before
+
+    if plausible(checkin, checkout):
+        return checkin, checkout
+    if not_before is None:
+        # The customer named the year ("明年 12/31入住 1/2退房"). Their year is
+        # not up for revision, so the only repair on offer is carrying the
+        # departure over new year.
+        candidates = ((checkin, _shifted_year(checkout, 1)),)
+    else:
+        candidates = (
+            (_shifted_year(checkin, -1), checkout),
+            (checkin, _shifted_year(checkout, 1)),
+            (checkin, _shifted_year(checkout, -1)),
+            (_shifted_year(checkin, 1), checkout),
+        )
+    for start, end in candidates:
+        if start is not None and end is not None and plausible(start, end):
+            return start, end
+    # Nothing works, so the input itself is broken. Collapse to the literal
+    # same-year reading rather than leaving the independently-rolled pair:
+    # on 5/13, "5/14 入住 5/12 退房" rolls into 2026-05-14 -> 2027-05-12, which
+    # pricing would happily accept as a 363-night booking. Same-year makes the
+    # contradiction visible again and the customer gets the existing
+    # "your dates look out of order" question.
+    collapsed = _shifted_year(checkout, checkin.year - checkout.year)
+    return checkin, collapsed if collapsed is not None else checkout
+
+
 def _valid_date_matches(
-    text: str, year: int
+    text: str,
+    base_year: int,
+    reference_date: date | None,
+    positions: list[tuple[int, int]],
 ) -> tuple[list[tuple[date, int, int]], list[tuple[int, int]]]:
     matches: list[tuple[date, int, int]] = []
     for match in _DATE_PATTERN.finditer(text):
         month = int(match.group("month"))
         day = int(match.group("day"))
-        try:
-            parsed_date = date(year, month, day)
-        except ValueError:
+        year, not_before = _basis_for_match(
+            match.start(), base_year, reference_date, positions
+        )
+        parsed_date = _build_date(year, month, day, not_before)
+        if parsed_date is None:
             continue
         matches.append((parsed_date, match.start(), match.end()))
-        suffix_matches = _range_suffix_match(text, match.end(), year, month)
+        suffix_matches = _range_suffix_match(
+            text, match.end(), parsed_date.year, month, not_before
+        )
         matches.extend(suffix_matches)
     return matches, _find_range_pairs(text, matches)
 
@@ -168,14 +362,16 @@ def _resolve_range_pairs(
 
 
 def _range_suffix_match(
-    text: str, after: int, year: int, month: int
+    text: str, after: int, year: int, month: int, not_before: date | None
 ) -> list[tuple[date, int, int]]:
+    # `year` is the year its parent date resolved to, not the base year: once
+    # "7/17" in "7/17-18" has rolled to next July, its bare "18" belongs to
+    # the same July.
     suffix = _RANGE_SEPARATOR_DAY_PATTERN.match(text, after)
     if suffix is None:
         return []
-    try:
-        parsed_date = date(year, month, int(suffix.group("day")))
-    except ValueError:
+    parsed_date = _build_date(year, month, int(suffix.group("day")), not_before)
+    if parsed_date is None:
         return []
     return [(parsed_date, suffix.start("day"), suffix.end("day"))]
 

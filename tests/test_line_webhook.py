@@ -44,6 +44,7 @@ from app.repositories.conversation_state_repository import ConversationStateRepo
 from app.repositories.manual_hold_repository import ManualHoldRepository
 from app.repositories.message_repository import MessageRepository
 from app.repositories.operation_state_repository import OperationStateRepository
+from app.repositories.holiday_calendar_repository import HolidayCalendarRepository
 from app.repositories.sqlite import get_connection, init_db
 from app.repositories.tenant_channel_repository import TenantChannelRepository
 from app.repositories.tenant_repository import TenantRepository
@@ -70,6 +71,21 @@ _OWNER_ROW_TIME = "2026-05-03T00:00:00+08:00"
 # ============================================================
 
 
+def _seed_holiday_calendar(path: Path) -> None:
+    """Give these tests the holiday calendar they would otherwise fetch.
+
+    Quoting now refuses to price a year whose calendar it does not hold, and
+    conftest blocks outbound HTTP, so without this every quote here would
+    correctly become a "staff will confirm" hand-off. Seeding the cache keeps
+    these tests exercising the real quote path, with the coverage gate live.
+    2026 is the year every date in this file falls in.
+    """
+    payload = (
+        Path(__file__).resolve().parent / "fixtures" / "taiwan_calendar_2026.json"
+    ).read_text(encoding="utf-8")
+    HolidayCalendarRepository(path).save_payload(2026, json.loads(payload))
+
+
 @pytest.fixture
 def database_path() -> Iterator[Path]:
     parent_dir = Path("pytest-cache-files-webhook")
@@ -78,6 +94,7 @@ def database_path() -> Iterator[Path]:
     path = temp_dir / "webhook-tests.db"
     try:
         init_db(path)
+        _seed_holiday_calendar(path)
         yield path
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -128,7 +145,13 @@ def _text_event(
     return {
         "type": "message",
         "webhookEventId": webhook_event_id or f"evt-{uuid.uuid4()}",
-        "timestamp": 1700000000000,
+        # 2026-05-01 10:00 UTC. Parsing anchors bare "M/D" dates on the
+        # MESSAGE timestamp, so this fixture epoch decides which year the
+        # assertions below see. It used to be 2023-11-14, which only went
+        # unnoticed while parsing read the server clock instead. Chosen to
+        # sit BEFORE every date this file mentions (5/12, 5/14), so no test
+        # here depends on year roll-forward as a side effect.
+        "timestamp": 1777629600000,
         "source": {"type": "user", "userId": user_id},
         "message": {"type": "text", "id": "1", "text": text},
     }
@@ -320,7 +343,7 @@ def test_non_text_event_acknowledged_without_persisting(client: TestClient, data
     _seed_channel(database_path)
     image_event = {
         "type": "message",
-        "timestamp": 1700000000000,
+        "timestamp": 1777629600000,
         "source": {"type": "user", "userId": "Uguest"},
         "message": {"type": "image", "id": "2"},
     }
@@ -2885,3 +2908,16 @@ def test_methods_under_15_body_lines(func) -> None:
     assert _body_line_count(func) <= 15, (
         f"{func.__qualname__} body too long: {_body_line_count(func)} lines"
     )
+
+
+def test_holiday_calendar_service_is_shared_across_requests() -> None:
+    # Codex review of commit 58da71f (P2): the service remembers which years
+    # just failed to fetch, and rebuilding it per request threw that away --
+    # during an outage every message would wait out the full 5-second timeout
+    # again instead of failing fast.
+    first = line_webhook_routes.build_holiday_calendar_service("some/path.db")
+    second = line_webhook_routes.build_holiday_calendar_service("some/path.db")
+    other = line_webhook_routes.build_holiday_calendar_service("another/path.db")
+
+    assert first is second
+    assert first is not other

@@ -68,6 +68,13 @@ def run_case(case: dict) -> CaseResult:
         tenant_id = fixtures.seed_tenant(db_path)
 
         pricing_loader = make_tenant_pricing_loader(db_path)
+        # Deliberately the plain config loader, with no holiday-coverage gate
+        # wired: every date in this dataset is in 2026, and the golden test in
+        # tests/test_holiday_calendar.py pins the derived 2026 calendar to
+        # zhen123-house's hand-written config day for day, so both sources give
+        # pricing identical input here. A future dataset reaching past the
+        # config's years would need the cache seeded and the gate wired, or it
+        # would score a path production no longer takes.
         special_dates_loader = make_tenant_special_dates_loader(db_path)
         room_policy_loader = make_tenant_room_policy_loader(db_path)
         stay_policy_loader = make_tenant_stay_policy_loader(db_path)

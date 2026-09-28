@@ -22,6 +22,7 @@ break signature verification.
 
 import json
 import logging
+from functools import lru_cache
 import os
 import re
 from time import sleep
@@ -41,6 +42,7 @@ from app.adapters.llm import build_llm_provider_from_env
 from app.adapters.line_signature import LineSignatureError, verify_signature
 from app.api.dependencies import get_database_path
 from app.clients.google_calendar_client import GoogleCalendarClient
+from app.clients.taiwan_holiday_client import TaiwanHolidayClient
 from app.clients.line_send_client import get_profile, push_message, reply_message
 from app.config_loader import (
     TenantConfigLoadError,
@@ -80,6 +82,7 @@ from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.repositories.manual_hold_repository import ManualHoldRepository
 from app.repositories.message_repository import MessageRepository
+from app.repositories.holiday_calendar_repository import HolidayCalendarRepository
 from app.repositories.operation_state_repository import OperationStateRepository
 from app.repositories.processed_webhook_event_repository import (
     ProcessedWebhookEventRepository,
@@ -89,6 +92,7 @@ from app.repositories.tenant_owner_repository import TenantOwnerRepository
 from app.repositories.tenant_repository import TenantRepository
 from app.schemas import InboundMessage
 from app.services.availability_service import AvailabilityService
+from app.services.holiday_calendar_service import HolidayCalendarService
 from app.services.conversation_handoff_service import (
     ConversationHandoffService,
     DisplayNameLookupResult,
@@ -213,17 +217,52 @@ def _build_handoff_service(database_path: str) -> ConversationHandoffService:
     )
 
 
+@lru_cache(maxsize=8)
+def build_holiday_calendar_service(database_path: str) -> HolidayCalendarService:
+    """National holiday data, shared by every tenant.
+
+    The tenant's own config.json special_dates stays in the merge, so a
+    hand-maintained override keeps working and 2026 pricing cannot shift.
+
+    Cached per database path rather than rebuilt per request: the service
+    remembers which years just failed to fetch, and a fresh instance per
+    request threw that away -- every message during an outage would wait out the full
+    5-second timeout again. Codex review of commit 58da71f (P2). Everything it
+    holds is either stateless or keyed by that path, so sharing is safe.
+    """
+    return HolidayCalendarService(
+        repository=HolidayCalendarRepository(database_path),
+        client=TaiwanHolidayClient(),
+        tenant_config_special_dates_loader=make_tenant_special_dates_loader(database_path),
+    )
+
+
+def _pricing_loaders(database_path: str, holiday_service: HolidayCalendarService) -> dict:
+    """The pricing-facing loaders both quote paths share.
+
+    special_dates now comes from the holiday service rather than straight from
+    config.json: it merges the fetched national calendar under the tenant's own
+    hand-maintained overrides, and ensure_years is what lets the gate refuse to
+    price a year neither source covers.
+    """
+    return {
+        "tenant_pricing_loader": make_tenant_pricing_loader(database_path),
+        "tenant_special_dates_loader": holiday_service.special_dates_for,
+        "tenant_room_policy_loader": make_tenant_room_policy_loader(database_path),
+        "holiday_ensure_years": holiday_service.ensure_years,
+    }
+
+
 def _build_inquiry_service(
     database_path: str,
     availability_service: AvailabilityService | None = None,
+    holiday_service: HolidayCalendarService | None = None,
 ) -> InquiryService:
-    operation_mode_service = OperationModeService(repo=OperationStateRepository(database_path))
+    holiday_service = holiday_service or build_holiday_calendar_service(database_path)
     return InquiryService(
-        operation_mode_service=operation_mode_service,
+        operation_mode_service=OperationModeService(repo=OperationStateRepository(database_path)),
         conversation_handoff_service=_build_handoff_service(database_path),
-        tenant_pricing_loader=make_tenant_pricing_loader(database_path),
-        tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
-        tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
+        **_pricing_loaders(database_path, holiday_service),
         availability_service=availability_service,
         llm_provider=build_llm_provider_from_env(),
     )
@@ -232,13 +271,13 @@ def _build_inquiry_service(
 def _build_reply_composer(
     database_path: str,
     availability_service: AvailabilityService | None = None,
+    holiday_service: HolidayCalendarService | None = None,
 ) -> ConversationReplyComposer:
+    holiday_service = holiday_service or build_holiday_calendar_service(database_path)
     return ConversationReplyComposer(
-        tenant_pricing_loader=make_tenant_pricing_loader(database_path),
-        tenant_special_dates_loader=make_tenant_special_dates_loader(database_path),
+        **_pricing_loaders(database_path, holiday_service),
         tenant_stay_policy_loader=make_tenant_stay_policy_loader(database_path),
         tenant_amenities_loader=make_tenant_amenities_loader(database_path),
-        tenant_room_policy_loader=make_tenant_room_policy_loader(database_path),
         tenant_location_loader=make_tenant_location_loader(database_path),
         availability_service=availability_service,
     )
@@ -246,11 +285,14 @@ def _build_reply_composer(
 
 def _build_pipeline_context(database_path: str, tenant: dict) -> _PipelineContext:
     availability_service = _build_availability_service(tenant)
+    # One holiday service per request, shared by both quote paths: a year
+    # fetched for the single-turn gate is then already cached for the composer.
+    holiday_service = build_holiday_calendar_service(database_path)
     return _PipelineContext(
-        service=_build_inquiry_service(database_path, availability_service),
+        service=_build_inquiry_service(database_path, availability_service, holiday_service),
         persistence=MessagePersistenceService(database_path=database_path),
         state_service=ConversationStateService(ConversationStateRepository(database_path)),
-        composer=_build_reply_composer(database_path, availability_service),
+        composer=_build_reply_composer(database_path, availability_service, holiday_service),
         llm_provider=build_llm_provider_from_env(),
     )
 

@@ -20,9 +20,13 @@ V1.5 的 On/Off 是手動指令(主人打 `/開機` `/關機`)。
 V2 加上自動排程,例如「每天 22:00 自動 On,隔天 08:00 自動 Off」。
 時段每個 tenant 可自定。手動指令仍可即時覆寫排程。
 
-### 3. Taiwan Holiday API
-V1.5 是把 2026 國定假日手動寫進 `special_dates`。
-V2 改成自動抓 Taiwan holiday API,每年自動更新,主人不用手動編日期。
+### 3. Taiwan Holiday API ✅ 已完成(2026-09-28)
+原本是把 2026 國定假日手動寫進 `special_dates`,2027 那一批從來沒補上,於是
+客人問 2027 春節被報成週六/平日價。現在自動抓政府辦公日曆表(每年一檔 JSON),
+推導出國定假日與春節區間並快取在 `holiday_calendar_cache`,租戶 config 的
+`special_dates` 作為覆寫層疊在上面。抓不到那一年的資料就不報價、轉人工。
+詳見 `docs/pricing_rules.md` 的 Season And Date Rules 與
+`app/domain/holiday_calendar.py`。
 
 ### 4. Messenger API
 V1.5 用 Meta Business Suite 內建罐頭回覆撐著。
