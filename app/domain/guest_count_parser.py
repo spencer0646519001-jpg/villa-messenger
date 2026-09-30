@@ -9,8 +9,19 @@ _ADULT_LABELS = ("大人", "成人")
 _CHILD_LABELS = ("小孩", "小朋友", "兒童")
 _INFANT_LABELS = ("嬰兒", "嬰", "幼兒", "寶寶")
 
-_NUMBER_BEFORE_ADULT = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:大人|成人|大)")
-_NUMBER_BEFORE_CHILD = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:小孩|小朋友|兒童|小)")
+# The one-character 大/小 are abbreviations only when they are not the start of
+# a pet description: "1小型犬" / "1小狗" / "2大型犬" are dogs, not people
+# (Codex review of 9d6b6de: "帶1小型犬" read as one child; 495892d added
+# 小隻/大隻/毛孩). Breed names ("1小柴犬") are deliberately NOT chased: the
+# list is open-ended, and flipping to "only before a digit/punctuation" would
+# break real headcounts like "8大4小入住". Revisit if it shows up in real data.
+_NOT_PET_SIZE = r"(?![型狗犬貓隻毛])"
+_NUMBER_BEFORE_ADULT = re.compile(
+    rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:大人|成人|大{_NOT_PET_SIZE})"
+)
+_NUMBER_BEFORE_CHILD = re.compile(
+    rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:小孩|小朋友|兒童|小{_NOT_PET_SIZE})"
+)
 _NUMBER_BEFORE_INFANT = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:嬰兒|嬰|幼兒|寶寶)")
 
 _ADULT_BEFORE_NUMBER = re.compile(rf"(?:大人|成人)\s*(?P<count>{_NUMBER_PATTERN})\s*(?:位|人)?")
@@ -133,3 +144,14 @@ def _first_count(text: str, patterns: tuple[re.Pattern[str], ...]) -> int | None
         if parsed is not None:
             return parsed
     return None
+
+
+def has_labeled_guest_count(text: str) -> bool:
+    """True when the text states a headcount with an explicit 大人/小孩/嬰兒
+    label bound to a number ("10大2小", "大人8位"). A lone 大/小 character
+    elsewhere ("小型犬", "大概") does not count, and neither does a bare "N人"."""
+    patterns = (
+        _NUMBER_BEFORE_ADULT, _NUMBER_BEFORE_CHILD, _NUMBER_BEFORE_INFANT,
+        _ADULT_BEFORE_NUMBER, _CHILD_BEFORE_NUMBER, _INFANT_BEFORE_NUMBER,
+    )
+    return any(pattern.search(text) for pattern in patterns)

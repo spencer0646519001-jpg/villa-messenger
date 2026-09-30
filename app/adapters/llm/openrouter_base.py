@@ -298,6 +298,21 @@ def _build_system_prompt(reference_year: int, trigger: str) -> str:
 被送進這個 trigger,但如果真的收到)=> intent "other"、is_booking_intent
 false。
 """
+    room_count_answer_instruction = ""
+    if trigger == "type_7_room_count_answer":
+        room_count_answer_instruction = """
+
+本次情境是系統剛問客人「要開幾間房」,客人正在回答。輸入第一行的中括號寫著
+本館總房數與已知人數,第二行是客人的回答。你只負責判斷 room_count(總共要開
+幾間房):
+- 「全部」「全開」「包棟」「整棟」「全包」「都要」=> 本館總房數。
+- 房型組合要把間數加總,例如「4人房2間 2人房2間」「4人2間 2人2間」=> 4。
+  這裡的「4人」「2人」是房型(幾人房),不是入住人數。
+- 只講一個數字的,例如「開3間」「三房就好」=> 3。
+- 看不出總共幾間(例如只說「看你們建議」「都可以」)=> null,不要自己猜。
+- 本 trigger 只填 room_count;日期、人數、寵物、烤肉欄位全部填 null。
+- 不要判斷實際空房、不要計價、不要產生客人回覆。
+"""
     return f"""
 你是民宿訂房訊息的欄位抽取器。只輸出 JSON,不要解釋,不要產生給客人的回覆文字。
 
@@ -308,7 +323,7 @@ false。
 - tenant_id 不在 prompt 中使用,也不可輸出。
 
 trigger: {trigger}
-{collision_instruction}{state_continuation_instruction}{bbq_ambiguity_instruction}{unclassified_inquiry_instruction}
+{collision_instruction}{state_continuation_instruction}{bbq_ambiguity_instruction}{unclassified_inquiry_instruction}{room_count_answer_instruction}
 
 簡寫日期範例:
 - "7/28-29" => checkin_date "2026-07-28", checkout_date "2026-07-29"

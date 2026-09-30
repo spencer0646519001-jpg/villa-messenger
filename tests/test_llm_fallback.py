@@ -9,6 +9,8 @@ from app.domain.llm_fallback import (
     TYPE_4_STATE_CONTINUATION_JUDGMENT,
     TYPE_5_BBQ_AMBIGUITY,
     TYPE_6_UNCLASSIFIED_INQUIRY,
+    TYPE_7_ROOM_COUNT_ANSWER,
+    judge_room_count_answer,
     judge_state_continuation,
     llm_fallback_parse,
 )
@@ -669,3 +671,61 @@ def test_llm_future_date_still_wins_over_the_rule_parser() -> None:
     assert result.dates.checkin_date == "2026-10-02"
     assert result.dates.checkout_date == "2026-10-04"
     assert result.dates.nights == 2
+
+
+_ROOM_STATE = {**_STATE, "adult_count": 8, "child_count": 4}
+
+
+def test_judge_room_count_answer_returns_llm_room_count() -> None:
+    provider = FakeProvider(_out(room_count=4, adult_count=4))
+
+    room_count = judge_room_count_answer(
+        state=_ROOM_STATE,
+        raw_text="4人2間 2人2間",
+        total_rooms=4,
+        reference_year=2026,
+        tenant_id=1,
+        provider=provider,
+    )
+
+    assert room_count == 4
+    assert provider.calls[0]["trigger"] == TYPE_7_ROOM_COUNT_ANSWER
+    assert "本館共 4 間房" in provider.calls[0]["raw_text"]
+    assert "8 大 4 小" in provider.calls[0]["raw_text"]
+    assert "4人2間 2人2間" in provider.calls[0]["raw_text"]
+
+
+def test_judge_room_count_answer_rejects_out_of_range_counts() -> None:
+    for bad in (0, 5, True):
+        room_count = judge_room_count_answer(
+            state=_ROOM_STATE,
+            raw_text="全部",
+            total_rooms=4,
+            reference_year=2026,
+            tenant_id=1,
+            provider=FakeProvider(_out(room_count=bad)),
+        )
+        assert room_count is None, bad
+
+
+def test_judge_room_count_answer_returns_none_without_a_usable_llm(monkeypatch) -> None:
+    kwargs = dict(state=_ROOM_STATE, raw_text="全部", total_rooms=4, reference_year=2026, tenant_id=1)
+
+    assert judge_room_count_answer(**kwargs, provider=None) is None
+    assert judge_room_count_answer(**kwargs, provider=FakeProvider(None)) is None
+
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    provider = FakeProvider(_out(room_count=4))
+    assert judge_room_count_answer(**kwargs, provider=provider) is None
+    assert provider.calls == []
+
+
+def test_room_count_answer_prompt_explains_whole_house_and_room_type_sums() -> None:
+    prompt = openrouter_base._build_system_prompt(  # noqa: SLF001
+        2026, TYPE_7_ROOM_COUNT_ANSWER
+    )
+
+    assert "包棟" in prompt
+    assert "是房型(幾人房),不是入住人數" in prompt
+    assert "不要計價" in prompt
+    assert "不要產生客人回覆" in prompt
