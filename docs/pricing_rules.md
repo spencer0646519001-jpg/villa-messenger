@@ -19,11 +19,13 @@ The legacy price keys remain the same so config values do not need to move.
 
 | Room count | Price key | Standard capacity | Weekday Sunday-Friday | Saturday | Summer weekday | Summer Saturday or national holiday | Spring festival |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 rooms | `8_people` | 8 people | 9,000 | 15,000 | 12,000 | 15,000 | 30,000 |
-| 3 rooms | `10_people` | 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 30,000 |
-| 4 rooms | `12_people` | 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 30,000 |
+| 2 rooms | `8_people` | 8 people | 10,000 | 15,000 | 12,000 | 15,000 | 25,000 |
+| 3 rooms | `10_people` | 10 people | 12,000 | 18,000 | 15,000 | 18,000 | 28,000 |
+| 4 rooms | `12_people` | 12 people | 15,000 | 21,000 | 18,000 | 21,000 | 31,000 |
 
-Spring festival is one flat rate across all three room counts.
+These match the official price list on the homestay website (image
+`報價-20260908更改.jpg`, adopted 2026-09-30). Spring festival is priced per
+room count again; the 2026-09-28 flat NT$30,000 rule was withdrawn.
 
 ## Room Count Pricing
 
@@ -65,21 +67,19 @@ Pet-related replies must still include the standard final confirmation sentence.
 
 ## Long Stay Discount
 
-- 1 night: no discount.
-- 2 nights: NT$1,000 discount.
-- 3 nights: NT$2,000 discount.
-- N nights: `(N - 1) * 1000` discount.
+**zhen123 offers no long-stay discount** (removed 2026-09-30; the official price
+list no longer has one). Every night is charged at its own rate.
 
-Formula:
+The mechanism is per-tenant config, not code: a tenant that does offer one adds
 
-```text
-max(0, nights - 1) * 1000
+```json
+"long_stay_discount": { "discount_twd_per_extra_night_after_first": 1000 }
 ```
 
-**Peak dates do not discount.** If ANY night of the stay is priced as
-`spring_festival` or `national_holiday`, the long stay discount is zero for the
-whole stay -- a trip that includes a holiday is a peak trip. Saturday and summer
-rates are ordinary pricing and still discount normally.
+under `pricing`, giving `max(0, nights - 1) * 1000`. Without the block the
+discount is zero. Where a tenant has one, peak dates still do not discount: if
+ANY night is `spring_festival` or `national_holiday`, the discount is zero for
+the whole stay.
 
 ## Season And Date Rules
 
@@ -124,6 +124,6 @@ added to the quoted total automatically, and BBQ is also flagged in
 ## Deposits
 
 - Booking deposit: 30% of total room price.
-- Equipment/security deposit on arrival: NT$3,000.
+- Equipment/security deposit on arrival: NT$5,000 (per the official website, 2026-09-30).
 
 V1.5 must not process deposits or payments automatically.

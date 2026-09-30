@@ -149,7 +149,7 @@ def test_quote_single_weekday_night_four_adults(zhen123_pricing) -> None:
     assert "入住:2026/05/12(二)" in out
     assert "共 1 晚" in out
     assert "房型:開 2 間房" in out
-    assert "小計:NT$9,000" in out
+    assert "小計:NT$10,000" in out
     assert SAFETY_NOTE in out
     assert CHILDREN_CONFIRMATION not in out
     assert PETS_CONFIRMATION not in out
@@ -157,6 +157,30 @@ def test_quote_single_weekday_night_four_adults(zhen123_pricing) -> None:
 
 
 def test_quote_two_weekday_nights_long_stay_discount(zhen123_pricing) -> None:
+    # zhen123 itself dropped the discount on 2026-09-30; this exercises the
+    # discount line for a tenant that still offers one.
+    pricing = calculate_price(
+        checkin_date=date(2026, 5, 11),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+        tenant_pricing={
+            **zhen123_pricing,
+            "long_stay_discount": {"discount_twd_per_extra_night_after_first": 1000},
+        },
+    )
+    out = render_quote_message(
+        pricing=pricing,
+        checkin_date=date(2026, 5, 11),
+        checkout_date=date(2026, 5, 13),
+        adult_count=4,
+    )
+
+    assert "共 2 晚" in out
+    assert "連住折扣:-NT$1,000" in out
+    assert "小計:NT$19,000" in out
+
+
+def test_quote_zhen123_two_nights_has_no_discount_line(zhen123_pricing) -> None:
     pricing = calculate_price(
         checkin_date=date(2026, 5, 11),
         checkout_date=date(2026, 5, 13),
@@ -170,9 +194,8 @@ def test_quote_two_weekday_nights_long_stay_discount(zhen123_pricing) -> None:
         adult_count=4,
     )
 
-    assert "共 2 晚" in out
-    assert "連住折扣:-NT$1,000" in out
-    assert "小計:NT$17,000" in out
+    assert "連住折扣" not in out
+    assert "小計:NT$20,000" in out
 
 
 def test_quote_with_children_confirmation(zhen123_pricing) -> None:
@@ -314,7 +337,7 @@ def test_quote_spring_festival_full_9_nights(
     # No discount line at all on a peak stay -- render_quote_message only
     # emits it when there is something to take off.
     assert "連住折扣" not in out
-    assert "小計:NT$270,000" in out
+    assert "小計:NT$225,000" in out
 
 
 def test_quote_national_holiday_three_nights(

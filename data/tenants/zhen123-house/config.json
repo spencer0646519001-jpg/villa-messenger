@@ -84,25 +84,25 @@
     "currency": "TWD",
     "base_prices_per_night": {
       "8_people": {
-        "weekday": 9000,
+        "weekday": 10000,
         "saturday": 15000,
         "summer_weekday": 12000,
         "summer_saturday_or_holiday": 15000,
-        "spring_festival": 30000
+        "spring_festival": 25000
       },
       "10_people": {
         "weekday": 12000,
         "saturday": 18000,
         "summer_weekday": 15000,
         "summer_saturday_or_holiday": 18000,
-        "spring_festival": 30000
+        "spring_festival": 28000
       },
       "12_people": {
         "weekday": 15000,
         "saturday": 21000,
         "summer_weekday": 18000,
         "summer_saturday_or_holiday": 21000,
-        "spring_festival": 30000
+        "spring_festival": 31000
       }
     },
     "people_pricing": [
@@ -156,10 +156,6 @@
       "ask_for_pet_count_when_missing": true,
       "requires_staff_confirmation": true
     },
-    "long_stay_discount": {
-      "formula": "max(0, nights - 1) * 1000",
-      "discount_twd_per_extra_night_after_first": 1000
-    },
     "season_rules": {
       "summer_months": [
         7,
@@ -187,7 +183,7 @@
     },
     "deposits": {
       "booking_deposit_percent_of_total_room_price": 30,
-      "equipment_security_deposit_on_arrival_twd": 3000,
+      "equipment_security_deposit_on_arrival_twd": 5000,
       "process_automatically": false
     }
   },

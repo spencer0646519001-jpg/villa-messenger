@@ -136,10 +136,13 @@ def test_loads_real_zhen123_pricing(database_path: Path) -> None:
     pricing = make_tenant_pricing_loader(database_path)(tenant_id)
 
     base = pricing["base_prices_per_night"]
-    assert base["8_people"]["weekday"] == 9000
-    # 春節 is one flat rate across all three room counts.
-    assert base["8_people"]["spring_festival"] == 30000
-    assert base["12_people"]["spring_festival"] == 30000
+    assert base["8_people"]["weekday"] == 10000
+    # 春節 is priced per room count, per the official price list.
+    assert base["8_people"]["spring_festival"] == 25000
+    assert base["10_people"]["spring_festival"] == 28000
+    assert base["12_people"]["spring_festival"] == 31000
+    # zhen123 offers no long-stay discount (2026-09-30).
+    assert "long_stay_discount" not in pricing
 
 
 def test_loads_real_zhen123_special_dates(database_path: Path) -> None:

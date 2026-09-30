@@ -42,6 +42,30 @@ def zhen123_pricing():
         return json.load(f)["pricing"]
 
 
+@pytest.fixture
+def discounting_pricing(zhen123_pricing):
+    """zhen123's rates plus a long-stay discount, for exercising the discount
+    mechanism now that zhen123 itself no longer offers one (2026-09-30)."""
+    return {
+        **zhen123_pricing,
+        "long_stay_discount": {"discount_twd_per_extra_night_after_first": 1000},
+    }
+
+
+def test_zhen123_offers_no_long_stay_discount(zhen123_pricing) -> None:
+    result = calculate_price(
+        checkin_date=date(2026, 5, 11),
+        checkout_date=date(2026, 5, 16),
+        adult_count=4,
+        tenant_pricing=zhen123_pricing,
+    )
+
+    assert result.can_quote is True
+    assert len(result.nightly_prices) == 5
+    assert result.long_stay_discount == 0
+    assert result.total == result.room_subtotal == 50000
+
+
 def test_8_person_tier_one_weekday_night(zhen123_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 12),
@@ -53,11 +77,11 @@ def test_8_person_tier_one_weekday_night(zhen123_pricing) -> None:
     assert result.can_quote is True
     assert result.tier == "8_people"
     assert result.guest_count_used == 4
-    assert result.room_subtotal == 9000
-    assert result.total == 9000
+    assert result.room_subtotal == 10000
+    assert result.total == 10000
     assert len(result.nightly_prices) == 1
     assert result.nightly_prices[0].price_type == "weekday"
-    assert result.nightly_prices[0].amount == 9000
+    assert result.nightly_prices[0].amount == 10000
     assert result.nightly_prices[0].tier == "8_people"
     assert result.requires_owner_confirmation == []
 
@@ -205,9 +229,9 @@ def test_two_weekday_nights_no_long_stay_discount_in_pr5a(zhen123_pricing) -> No
     assert result.can_quote is True
     assert len(result.nightly_prices) == 2
     assert all(n.price_type == "weekday" for n in result.nightly_prices)
-    assert result.room_subtotal == 18000
-    assert result.long_stay_discount == 1000
-    assert result.total == 17000
+    assert result.room_subtotal == 20000
+    assert result.long_stay_discount == 0
+    assert result.total == 20000
 
 
 def test_friday_saturday_stay(zhen123_pricing) -> None:
@@ -220,11 +244,11 @@ def test_friday_saturday_stay(zhen123_pricing) -> None:
 
     assert result.can_quote is True
     assert result.nightly_prices[0].price_type == "weekday"
-    assert result.nightly_prices[0].amount == 9000
+    assert result.nightly_prices[0].amount == 10000
     assert result.nightly_prices[1].price_type == "saturday"
     assert result.nightly_prices[1].amount == 15000
-    assert result.room_subtotal == 24000
-    assert result.total == 23000
+    assert result.room_subtotal == 25000
+    assert result.total == 25000
 
 
 def test_summer_weekday(zhen123_pricing) -> None:
@@ -267,7 +291,7 @@ def test_mixed_summer_friday_to_sunday_crossing_month_boundary(zhen123_pricing) 
     assert result.nightly_prices[1].price_type == "summer_saturday_or_holiday"
     assert result.nightly_prices[1].amount == 15000
     assert result.room_subtotal == 27000
-    assert result.total == 26000
+    assert result.total == 27000
 
 
 def test_adults_plus_children_weekday_night(zhen123_pricing) -> None:
@@ -298,7 +322,7 @@ def test_adults_plus_infant_weekday_night(zhen123_pricing) -> None:
     assert result.can_quote is True
     assert result.guest_count_used == 8
     assert result.tier == "8_people"
-    assert result.total == 9000
+    assert result.total == 10000
     assert result.requires_owner_confirmation == ["infants"]
 
 
@@ -312,9 +336,9 @@ def test_adults_plus_pets_weekday_night(zhen123_pricing) -> None:
     )
 
     assert result.can_quote is True
-    assert result.room_subtotal == 9000
+    assert result.room_subtotal == 10000
     assert result.pet_fee == 1000
-    assert result.total == 10000
+    assert result.total == 11000
     assert result.requires_owner_confirmation == ["pets"]
 
 
@@ -357,9 +381,9 @@ def test_adults_plus_bbq_weekday_night(zhen123_pricing) -> None:
     )
 
     assert result.can_quote is True
-    assert result.room_subtotal == 9000
+    assert result.room_subtotal == 10000
     assert result.bbq_fee == 1000
-    assert result.total == 10000
+    assert result.total == 11000
     assert result.requires_owner_confirmation == ["bbq"]
 
 
@@ -415,7 +439,7 @@ def test_sunday_uses_weekday_rate(zhen123_pricing) -> None:
 
     assert result.can_quote is True
     assert result.nightly_prices[0].price_type == "weekday"
-    assert result.total == 9000
+    assert result.total == 10000
 
 
 def test_non_summer_weekday_is_not_summer_pricing(zhen123_pricing) -> None:
@@ -474,8 +498,8 @@ def test_pr5a_backward_compat_without_special_dates(zhen123_pricing) -> None:
 
     assert result.can_quote is True
     assert result.tier == "8_people"
-    assert result.room_subtotal == 9000
-    assert result.total == 9000
+    assert result.room_subtotal == 10000
+    assert result.total == 10000
     assert result.long_stay_discount == 0
     assert result.nightly_prices[0].price_type == "weekday"
     assert result.nightly_prices[0].price_lookup_key == "weekday"
@@ -491,7 +515,7 @@ def test_empty_special_dates_same_as_pr5a(zhen123_pricing) -> None:
     )
 
     assert result.can_quote is True
-    assert result.total == 9000
+    assert result.total == 10000
     assert result.nightly_prices[0].price_type == "weekday"
     assert result.nightly_prices[0].price_lookup_key == "weekday"
 
@@ -576,8 +600,8 @@ def test_spring_festival_single_night_8_people(zhen123_pricing, zhen123_special_
     assert result.can_quote is True
     assert result.nightly_prices[0].price_type == "spring_festival"
     assert result.nightly_prices[0].price_lookup_key == "spring_festival"
-    assert result.nightly_prices[0].amount == 30000
-    assert result.total == 30000
+    assert result.nightly_prices[0].amount == 25000
+    assert result.total == 25000
 
 
 def test_spring_festival_10_people_tier(zhen123_pricing, zhen123_special_dates) -> None:
@@ -592,8 +616,8 @@ def test_spring_festival_10_people_tier(zhen123_pricing, zhen123_special_dates) 
     assert result.can_quote is True
     assert result.tier == "10_people"
     assert result.nightly_prices[0].price_type == "spring_festival"
-    # 春節 is one flat rate across all three room counts.
-    assert result.nightly_prices[0].amount == 30000
+    # 春節 is priced per room count, per the official price list.
+    assert result.nightly_prices[0].amount == 28000
 
 
 def test_spring_festival_12_people_tier(zhen123_pricing, zhen123_special_dates) -> None:
@@ -608,7 +632,7 @@ def test_spring_festival_12_people_tier(zhen123_pricing, zhen123_special_dates) 
     assert result.can_quote is True
     assert result.tier == "12_people"
     assert result.nightly_prices[0].price_type == "spring_festival"
-    assert result.nightly_prices[0].amount == 30000
+    assert result.nightly_prices[0].amount == 31000
 
 
 def test_spring_festival_beats_national_holiday_priority(zhen123_pricing) -> None:
@@ -626,7 +650,7 @@ def test_spring_festival_beats_national_holiday_priority(zhen123_pricing) -> Non
     assert result.can_quote is True
     assert result.nightly_prices[0].price_type == "spring_festival"
     assert result.nightly_prices[0].price_lookup_key == "spring_festival"
-    assert result.nightly_prices[0].amount == 30000
+    assert result.nightly_prices[0].amount == 25000
 
 
 def test_national_holiday_during_summer(zhen123_pricing) -> None:
@@ -647,40 +671,40 @@ def test_national_holiday_during_summer(zhen123_pricing) -> None:
     assert result.nightly_prices[0].amount == 15000
 
 
-def test_long_stay_discount_two_weekday_nights(zhen123_pricing) -> None:
+def test_long_stay_discount_two_weekday_nights(discounting_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 11),
         checkout_date=date(2026, 5, 13),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
     )
 
     assert result.can_quote is True
-    assert result.room_subtotal == 18000
+    assert result.room_subtotal == 20000
     assert result.long_stay_discount == 1000
-    assert result.total == 17000
+    assert result.total == 19000
 
 
-def test_long_stay_discount_three_weekday_nights(zhen123_pricing) -> None:
+def test_long_stay_discount_three_weekday_nights(discounting_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 11),
         checkout_date=date(2026, 5, 14),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
     )
 
     assert result.can_quote is True
-    assert result.room_subtotal == 27000
+    assert result.room_subtotal == 30000
     assert result.long_stay_discount == 2000
-    assert result.total == 25000
+    assert result.total == 28000
 
 
-def test_long_stay_discount_five_nights(zhen123_pricing) -> None:
+def test_long_stay_discount_five_nights(discounting_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 11),
         checkout_date=date(2026, 5, 16),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
     )
 
     assert result.can_quote is True
@@ -688,13 +712,13 @@ def test_long_stay_discount_five_nights(zhen123_pricing) -> None:
     assert result.long_stay_discount == 4000
 
 
-def test_long_stay_discount_with_extras(zhen123_pricing) -> None:
+def test_long_stay_discount_with_extras(discounting_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 11),
         checkout_date=date(2026, 5, 13),
         adult_count=13,
         pet_count=2,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
     )
 
     assert result.can_quote is True
@@ -705,39 +729,39 @@ def test_long_stay_discount_with_extras(zhen123_pricing) -> None:
     assert result.total == 31000
 
 
-def test_long_stay_discount_with_mixed_price_types(zhen123_pricing) -> None:
+def test_long_stay_discount_with_mixed_price_types(discounting_pricing) -> None:
     result = calculate_price(
         checkin_date=date(2026, 5, 8),
         checkout_date=date(2026, 5, 10),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
     )
 
     assert result.can_quote is True
     assert result.nightly_prices[0].price_type == "weekday"
     assert result.nightly_prices[1].price_type == "saturday"
-    assert result.room_subtotal == 24000
+    assert result.room_subtotal == 25000
     assert result.long_stay_discount == 1000
-    assert result.total == 23000
+    assert result.total == 24000
 
 
-def test_long_stay_discount_across_spring_festival(zhen123_pricing, zhen123_special_dates) -> None:
+def test_long_stay_discount_across_spring_festival(discounting_pricing, zhen123_special_dates) -> None:
     result = calculate_price(
         checkin_date=date(2026, 2, 16),
         checkout_date=date(2026, 2, 19),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
         tenant_special_dates=zhen123_special_dates,
     )
 
     assert result.can_quote is True
     assert len(result.nightly_prices) == 3
     assert all(n.price_type == "spring_festival" for n in result.nightly_prices)
-    assert result.room_subtotal == 90000
-    # Peak dates do not discount: the owner quotes 春節 at the nightly rate
-    # with nothing taken off.
+    assert result.room_subtotal == 75000
+    # Even for a tenant that offers a long-stay discount, peak dates do not
+    # discount.
     assert result.long_stay_discount == 0
-    assert result.total == 90000
+    assert result.total == 75000
 
 
 def test_real_fixture_spring_festival_full_9_night_stay(
@@ -754,9 +778,9 @@ def test_real_fixture_spring_festival_full_9_night_stay(
     assert result.can_quote is True
     assert len(result.nightly_prices) == 9
     assert all(n.price_type == "spring_festival" for n in result.nightly_prices)
-    assert result.room_subtotal == 270000
+    assert result.room_subtotal == 225000
     assert result.long_stay_discount == 0
-    assert result.total == 270000
+    assert result.total == 225000
 
 
 def test_real_fixture_national_holiday_connected_weekend(
@@ -872,16 +896,17 @@ def test_two_rooms_ten_guests_is_defensively_unquotable(zhen123_pricing) -> None
 
 
 def test_one_holiday_night_removes_the_discount_from_the_whole_stay(
-    zhen123_pricing, zhen123_special_dates
+    discounting_pricing, zhen123_special_dates
 ) -> None:
     # 2026-02-22 is the last night of the 春節 run, 2026-02-23 an ordinary
-    # Monday. The owner prices a trip that includes a holiday as a peak trip,
-    # so the discount goes for the whole stay, not just that night.
+    # Monday. For a tenant that offers a long-stay discount, a trip that
+    # includes a holiday is a peak trip, so the discount goes for the whole
+    # stay, not just that night.
     result = calculate_price(
         checkin_date=date(2026, 2, 22),
         checkout_date=date(2026, 2, 24),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
         tenant_special_dates=zhen123_special_dates,
     )
 
@@ -890,17 +915,17 @@ def test_one_holiday_night_removes_the_discount_from_the_whole_stay(
         "weekday",
     ]
     assert result.long_stay_discount == 0
-    assert result.total == 30000 + 9000
+    assert result.total == 25000 + 10000
 
 
 def test_an_ordinary_stay_still_gets_its_discount(
-    zhen123_pricing, zhen123_special_dates
+    discounting_pricing, zhen123_special_dates
 ) -> None:
     result = calculate_price(
         checkin_date=date(2026, 3, 16),
         checkout_date=date(2026, 3, 19),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
         tenant_special_dates=zhen123_special_dates,
     )
 
@@ -909,7 +934,7 @@ def test_an_ordinary_stay_still_gets_its_discount(
 
 
 def test_a_saturday_is_not_a_holiday_for_discount_purposes(
-    zhen123_pricing, zhen123_special_dates
+    discounting_pricing, zhen123_special_dates
 ) -> None:
     # Only spring_festival and national_holiday suppress the discount.
     # Saturday and summer rates are ordinary pricing, not peak dates.
@@ -917,7 +942,7 @@ def test_a_saturday_is_not_a_holiday_for_discount_purposes(
         checkin_date=date(2026, 3, 20),
         checkout_date=date(2026, 3, 22),
         adult_count=4,
-        tenant_pricing=zhen123_pricing,
+        tenant_pricing=discounting_pricing,
         tenant_special_dates=zhen123_special_dates,
     )
 
@@ -925,13 +950,15 @@ def test_a_saturday_is_not_a_holiday_for_discount_purposes(
     assert result.long_stay_discount == 1000
 
 
-def test_the_real_2027_spring_festival_enquiry_matches_the_owners_quote(
+def test_the_real_2027_spring_festival_enquiry_uses_the_official_price_list(
     zhen123_pricing
 ) -> None:
     # The production case this whole change exists for: 6 adults + 4 children,
     # three rooms, 2027/02/06-02/08. The system quoted NT$29,000 (Saturday plus
     # weekday, minus a long-stay discount) because config.json had no 2027
-    # entries at all. The owner replied with NT$60,000.
+    # entries at all. The owner replied with NT$60,000 that day; since
+    # 2026-09-30 the system follows the official price list instead (3 rooms
+    # 春節 = 28,000/night, no long-stay discount).
     payload = json.loads(
         (Path(__file__).resolve().parent / "fixtures" / "taiwan_calendar_2027.json").read_text(
             encoding="utf-8"
@@ -952,4 +979,4 @@ def test_the_real_2027_spring_festival_enquiry_matches_the_owners_quote(
 
     assert all(n.price_type == "spring_festival" for n in result.nightly_prices)
     assert result.long_stay_discount == 0
-    assert result.total == 60000
+    assert result.total == 56000

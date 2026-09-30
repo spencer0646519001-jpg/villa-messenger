@@ -83,7 +83,7 @@ def calculate_price(
     room_subtotal = sum(n.amount for n in nightly_prices)
     pet_fee = 500 * pet_count if pet_count > 0 else 0
     bbq_fee = _bbq_cleaning_fee(tenant_pricing) if wants_bbq else 0
-    long_stay_discount = _long_stay_discount(nightly_prices)
+    long_stay_discount = _long_stay_discount(nightly_prices, tenant_pricing)
     total = room_subtotal + extra_person_fee + pet_fee + bbq_fee - long_stay_discount
 
     requires_owner_confirmation: list[str] = []
@@ -112,18 +112,32 @@ def calculate_price(
     )
 
 
-# Peak dates do not discount. The owner quotes 春節 at the nightly rate with
-# nothing taken off -- her own NT$60,000 for two nights is 30,000 x 2 exactly --
-# and the system used to shave NT$1,000 off that. One holiday night removes the
-# discount from the WHOLE stay, which is how she prices it: a trip that includes
-# a holiday is a peak trip.
+# The long-stay discount is the tenant's own setting, not a hard-coded rule:
+# no `long_stay_discount` block in pricing means no discount at all. zhen123
+# dropped it in 2026-09 (the official price list no longer offers one), so its
+# config simply omits the block.
+#
+# Where a tenant does offer one, peak dates still do not discount. One holiday
+# night removes the discount from the WHOLE stay -- a trip that includes a
+# holiday is a peak trip.
 _NO_DISCOUNT_PRICE_TYPES = frozenset({"spring_festival", "national_holiday"})
 
 
-def _long_stay_discount(nightly_prices: list[NightlyPrice]) -> int:
+def _long_stay_discount(nightly_prices: list[NightlyPrice], tenant_pricing: dict) -> int:
+    per_night = _long_stay_discount_per_extra_night(tenant_pricing)
+    if per_night == 0:
+        return 0
     if any(night.price_type in _NO_DISCOUNT_PRICE_TYPES for night in nightly_prices):
         return 0
-    return max(0, len(nightly_prices) - 1) * 1000
+    return max(0, len(nightly_prices) - 1) * per_night
+
+
+def _long_stay_discount_per_extra_night(tenant_pricing: dict) -> int:
+    block = tenant_pricing.get("long_stay_discount")
+    if not isinstance(block, dict):
+        return 0
+    value = block.get("discount_twd_per_extra_night_after_first")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 def _extra_person_fee(room_count: int, guest_count: int, room_rule) -> int:
