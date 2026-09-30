@@ -183,7 +183,7 @@
     },
     "deposits": {
       "booking_deposit_percent_of_total_room_price": 30,
-      "equipment_security_deposit_on_arrival_twd": 3000,
+      "equipment_security_deposit_on_arrival_twd": 5000,
       "process_automatically": false
     }
   },

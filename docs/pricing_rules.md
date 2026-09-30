@@ -124,6 +124,6 @@ added to the quoted total automatically, and BBQ is also flagged in
 ## Deposits
 
 - Booking deposit: 30% of total room price.
-- Equipment/security deposit on arrival: NT$3,000.
+- Equipment/security deposit on arrival: NT$5,000 (per the official website, 2026-09-30).
 
 V1.5 must not process deposits or payments automatically.
