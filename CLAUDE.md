@@ -89,19 +89,11 @@ LLM(`TYPE_7_ROOM_COUNT_ANSWER`)**只判斷房數**,且必須落在 1..total_room
 沒答案時規則遇到多組房數就重問。同一則訊息有提房/間但沒有大/小標籤的「N人」
 視為房型,不蓋掉已存人數。
 
-### ⚠️ 部署待辦(Spencer 尚未完成,完成後刪掉這節)
-程式已合進 main 並 push(2026-09-28),但**線上還沒部署**。部署時兩件事:
-
-1. **跑一次 `init_db()`** —— 線上既有資料庫才會有 `holiday_calendar_cache` 這張表
-   (與 `wants_bbq` 那次同一個坑)。流程照 `docs/deployment.md`「更新既有服務的
-   標準流程(含 schema 變更)」:先 build 新 image,再用 `run --rm` 跑 migration。
-2. **確認容器能對外 HTTPS 連到 `cdn.jsdelivr.net`** —— 行事曆從那裡抓。連不到
-   不會報錯價,但所有需要行事曆的詢價都會轉人工。驗證:部署後看 log 有沒有
-   `Holiday calendar ready for [2026, 2027]`;若是 `prewarm incomplete` 就是連不到。
-
-下一個 session 開始時,如果這節還在,主動提醒 Spencer。
-
 ## 部署現況(已上線)
+
+- **最近一次部署:2026-09-30**(main `308838a`):春節行事曆 + 官網定價 + 房數 LLM 解析。
+  線上資料庫已有 `holiday_calendar_cache`;容器需能對外 HTTPS 到 `cdn.jsdelivr.net`,
+  啟動 log 應出現 `Holiday calendar ready for [...]`。
 
 - **平台:** DigitalOcean Droplet(Ubuntu 24.04,新加坡),Docker Compose 部署
 - **對外:** `villa.<domain>` 子網域,Caddy 反向代理(系統套件版)+ HTTPS
