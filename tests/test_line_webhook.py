@@ -3034,3 +3034,22 @@ def test_plain_room_count_answer_does_not_call_llm(
         adults=8, children=4, room_count=4,
     )
     assert not [c for c in provider.calls if c["trigger"] == TYPE_7_ROOM_COUNT_ANSWER]
+
+
+def test_room_type_headcount_with_pet_mention_keeps_stored_guest_counts(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Codex review of 0623791 (P1): the "小" in 小型犬 used to count as an
+    # explicit headcount label, letting the room type "4人" overwrite 8 adults.
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    _capture_replies(monkeypatch)
+    provider = _RoomCountOnlyProvider(room_count=4)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+
+    _send_texts(client, ["12/25-27還有嗎", "8大4小", "4人2間 2人2間，帶小型犬1隻"])
+
+    state = _rows(database_path, "conversation_states")[0]
+    assert state["adult_count"] == 8
+    assert state["child_count"] == 4
+    assert state["room_count"] == 4

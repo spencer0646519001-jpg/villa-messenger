@@ -1,6 +1,6 @@
 import pytest
 
-from app.domain.guest_count_parser import parse_guest_counts
+from app.domain.guest_count_parser import has_labeled_guest_count, parse_guest_counts
 
 
 @pytest.mark.parametrize(
@@ -110,3 +110,17 @@ def test_label_theft_guard_survives_whitespace_gap() -> None:
     assert result.adult_count == 2
     assert result.child_count == 1
     assert result.guest_count == 3
+
+
+@pytest.mark.parametrize("text", ["10大2小", "8大4小 4人2間", "大人10位 開4間", "2小孩", "嬰兒1"])
+def test_has_labeled_guest_count_true_for_bound_labels(text: str) -> None:
+    assert has_labeled_guest_count(text) is True
+
+
+@pytest.mark.parametrize(
+    "text", ["4人2間 2人2間，帶小型犬1隻", "4人房2間 大概", "4人", "全部", "小型犬1隻"]
+)
+def test_has_labeled_guest_count_false_for_stray_characters(text: str) -> None:
+    # Codex review of 0623791 (P1): a lone 大/小 ("小型犬", "大概") must not
+    # count as an explicit headcount.
+    assert has_labeled_guest_count(text) is False

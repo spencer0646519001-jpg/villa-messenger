@@ -36,10 +36,10 @@ MAY import repositories: it is the seam that keeps the webhook route thin.
 """
 
 import logging
-import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from app.domain.guest_count_parser import has_labeled_guest_count
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
@@ -64,10 +64,10 @@ logger = logging.getLogger(__name__)
 # whenever the LLM is off or unsure, so the rules below stay the fallback.
 RoomCountResolver = Callable[[InboundMessage, dict], "int | None"]
 
-# Labels that make a headcount explicit ("10大2小", "大人8位"). A bare "N人"
-# without them, in a message that also talks about rooms, is a room type
-# ("4人2間" = two 4-person rooms), not a new headcount.
-_EXPLICIT_GUEST_LABEL = re.compile(r"大|小|成人|兒童|嬰|幼兒|寶寶")
+# A bare "N人" in a message that also talks about rooms is a room type
+# ("4人2間" = two 4-person rooms), not a new headcount -- unless the message
+# states the headcount with a bound label ("10大2小", "大人8位"); see
+# guest_count_parser.has_labeled_guest_count.
 _GUEST_SLOT_KEYS = ("adult_count", "child_count", "infant_count")
 
 
@@ -353,7 +353,7 @@ def _plain_room_count_answer(text: str) -> int | None:
 
 
 def _drop_room_type_headcount(slots: dict, text: str) -> None:
-    if count_room_mentions(text) == 0 or _EXPLICIT_GUEST_LABEL.search(text):
+    if count_room_mentions(text) == 0 or has_labeled_guest_count(text):
         return
     for key in _GUEST_SLOT_KEYS:
         slots[key] = None

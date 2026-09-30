@@ -133,3 +133,14 @@ def _first_count(text: str, patterns: tuple[re.Pattern[str], ...]) -> int | None
         if parsed is not None:
             return parsed
     return None
+
+
+def has_labeled_guest_count(text: str) -> bool:
+    """True when the text states a headcount with an explicit 大人/小孩/嬰兒
+    label bound to a number ("10大2小", "大人8位"). A lone 大/小 character
+    elsewhere ("小型犬", "大概") does not count, and neither does a bare "N人"."""
+    patterns = (
+        _NUMBER_BEFORE_ADULT, _NUMBER_BEFORE_CHILD, _NUMBER_BEFORE_INFANT,
+        _ADULT_BEFORE_NUMBER, _CHILD_BEFORE_NUMBER, _INFANT_BEFORE_NUMBER,
+    )
+    return any(pattern.search(text) for pattern in patterns)
