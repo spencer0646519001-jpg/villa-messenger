@@ -3036,8 +3036,9 @@ def test_plain_room_count_answer_does_not_call_llm(
     assert not [c for c in provider.calls if c["trigger"] == TYPE_7_ROOM_COUNT_ANSWER]
 
 
+@pytest.mark.parametrize("answer", ["4人2間 2人2間，帶小型犬1隻", "4人2間 2人2間，帶1小型犬"])
 def test_room_type_headcount_with_pet_mention_keeps_stored_guest_counts(
-    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str
 ) -> None:
     # Codex review of 0623791 (P1): the "小" in 小型犬 used to count as an
     # explicit headcount label, letting the room type "4人" overwrite 8 adults.
@@ -3047,7 +3048,7 @@ def test_room_type_headcount_with_pet_mention_keeps_stored_guest_counts(
     provider = _RoomCountOnlyProvider(room_count=4)
     monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
 
-    _send_texts(client, ["12/25-27還有嗎", "8大4小", "4人2間 2人2間，帶小型犬1隻"])
+    _send_texts(client, ["12/25-27還有嗎", "8大4小", answer])
 
     state = _rows(database_path, "conversation_states")[0]
     assert state["adult_count"] == 8

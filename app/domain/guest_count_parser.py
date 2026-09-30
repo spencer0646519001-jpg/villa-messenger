@@ -9,8 +9,16 @@ _ADULT_LABELS = ("大人", "成人")
 _CHILD_LABELS = ("小孩", "小朋友", "兒童")
 _INFANT_LABELS = ("嬰兒", "嬰", "幼兒", "寶寶")
 
-_NUMBER_BEFORE_ADULT = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:大人|成人|大)")
-_NUMBER_BEFORE_CHILD = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:小孩|小朋友|兒童|小)")
+# The one-character 大/小 are abbreviations only when they are not the start of
+# a pet description: "1小型犬" / "1小狗" / "2大型犬" are dogs, not people
+# (Codex review of 9d6b6de: "帶1小型犬" read as one child).
+_NOT_PET_SIZE = r"(?![型狗犬貓])"
+_NUMBER_BEFORE_ADULT = re.compile(
+    rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:大人|成人|大{_NOT_PET_SIZE})"
+)
+_NUMBER_BEFORE_CHILD = re.compile(
+    rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:小孩|小朋友|兒童|小{_NOT_PET_SIZE})"
+)
 _NUMBER_BEFORE_INFANT = re.compile(rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:嬰兒|嬰|幼兒|寶寶)")
 
 _ADULT_BEFORE_NUMBER = re.compile(rf"(?:大人|成人)\s*(?P<count>{_NUMBER_PATTERN})\s*(?:位|人)?")

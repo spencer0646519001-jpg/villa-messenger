@@ -118,9 +118,22 @@ def test_has_labeled_guest_count_true_for_bound_labels(text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "text", ["4人2間 2人2間，帶小型犬1隻", "4人房2間 大概", "4人", "全部", "小型犬1隻"]
+    "text",
+    ["4人2間 2人2間，帶小型犬1隻", "4人2間 2人2間，帶1小型犬", "4人房2間 大概",
+     "4人", "全部", "小型犬1隻", "2大型犬", "1小狗"],
 )
 def test_has_labeled_guest_count_false_for_stray_characters(text: str) -> None:
     # Codex review of 0623791 (P1): a lone 大/小 ("小型犬", "大概") must not
     # count as an explicit headcount.
     assert has_labeled_guest_count(text) is False
+
+
+@pytest.mark.parametrize(
+    ("text", "adults", "children"),
+    [("8大 帶1小型犬", 8, None), ("10大2小 1小狗", 10, 2), ("6大 2大型犬", 6, None)],
+)
+def test_pet_size_words_are_not_guest_labels(text: str, adults: int, children: int | None) -> None:
+    # Codex review of 9d6b6de: "1小型犬" used to read as one child.
+    result = parse_guest_counts(text)
+    assert result.adult_count == adults
+    assert result.child_count == children
