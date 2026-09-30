@@ -130,7 +130,8 @@ def test_has_labeled_guest_count_false_for_stray_characters(text: str) -> None:
 
 @pytest.mark.parametrize(
     ("text", "adults", "children"),
-    [("8大 帶1小型犬", 8, None), ("10大2小 1小狗", 10, 2), ("6大 2大型犬", 6, None)],
+    [("8大 帶1小型犬", 8, None), ("10大2小 1小狗", 10, 2), ("6大 2大型犬", 6, None),
+     ("8大 帶1小隻狗", 8, None), ("8大 帶1小毛孩", 8, None), ("8大2小 1大隻狗", 8, 2)],
 )
 def test_pet_size_words_are_not_guest_labels(text: str, adults: int, children: int | None) -> None:
     # Codex review of 9d6b6de: "1小型犬" used to read as one child.

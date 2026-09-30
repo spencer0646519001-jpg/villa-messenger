@@ -11,8 +11,11 @@ _INFANT_LABELS = ("嬰兒", "嬰", "幼兒", "寶寶")
 
 # The one-character 大/小 are abbreviations only when they are not the start of
 # a pet description: "1小型犬" / "1小狗" / "2大型犬" are dogs, not people
-# (Codex review of 9d6b6de: "帶1小型犬" read as one child).
-_NOT_PET_SIZE = r"(?![型狗犬貓])"
+# (Codex review of 9d6b6de: "帶1小型犬" read as one child; 495892d added
+# 小隻/大隻/毛孩). Breed names ("1小柴犬") are deliberately NOT chased: the
+# list is open-ended, and flipping to "only before a digit/punctuation" would
+# break real headcounts like "8大4小入住". Revisit if it shows up in real data.
+_NOT_PET_SIZE = r"(?![型狗犬貓隻毛])"
 _NUMBER_BEFORE_ADULT = re.compile(
     rf"(?P<count>{_NUMBER_PATTERN})\s*位?\s*(?:大人|成人|大{_NOT_PET_SIZE})"
 )
