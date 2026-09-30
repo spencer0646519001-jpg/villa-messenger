@@ -45,6 +45,11 @@ TYPE_4_STATE_CONTINUATION_JUDGMENT = "type_4_state_continuation_judgment"
 # computed downstream of this module).
 TYPE_5_BBQ_AMBIGUITY = "type_5_bbq_ambiguity"
 TYPE_6_UNCLASSIFIED_INQUIRY = "type_6_unclassified_inquiry"
+# TYPE_7: the open state is waiting for a room count and the customer answered
+# in words the rules cannot safely read ("全部", "4人2間 2人2間"). Rules that
+# confidently MISread such an answer never escalate, so this fires on any
+# answer that is not a plain room count -- see judge_room_count_answer.
+TYPE_7_ROOM_COUNT_ANSWER = "type_7_room_count_answer"
 
 _QUOTE_RELEVANT_INTENTS = {"price", "availability", "booking_question"}
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -552,5 +557,58 @@ def _state_continuation_context_text(state: dict, raw_text: str) -> str:
     missing_summary = "、".join(missing_parts) if missing_parts else "無"
     return (
         f"[訂房對話已知資訊:{known_summary};還缺:{missing_summary}]\n"
+        f"客人最新一句話:{raw_text}"
+    )
+
+
+def judge_room_count_answer(
+    *,
+    state: dict,
+    raw_text: str,
+    total_rooms: int,
+    reference_year: int,
+    tenant_id: int,
+    provider: LLMProvider | None,
+    enabled: bool | None = None,
+) -> int | None:
+    """Read how many rooms the customer means, when the open state has just
+    asked for a room count. Returns None (never a guess) when the LLM is off,
+    unavailable, fails, or answers outside 1..total_rooms -- callers treat None
+    as "the rules alone decide", which at worst re-asks the question.
+
+    Returns ONLY a room count: guest counts, dates and everything else in the
+    LLM output are ignored, so this can never rewrite what the state already
+    holds. Pricing, capacity checks and the reply all stay rule-based."""
+    if not _llm_enabled(enabled) or provider is None or total_rooms <= 0:
+        return None
+    try:
+        llm_out = provider.parse(
+            raw_text=_room_count_context_text(state, raw_text, total_rooms),
+            reference_year=reference_year,
+            trigger=TYPE_7_ROOM_COUNT_ANSWER,
+            tenant_id=tenant_id,
+        )
+    except LLMFallbackExhaustedError:
+        return None
+    if llm_out is None:
+        return None
+    room_count = llm_out.room_count
+    if isinstance(room_count, bool) or not isinstance(room_count, int):
+        return None
+    if not 1 <= room_count <= total_rooms:
+        return None
+    return room_count
+
+
+def _room_count_context_text(state: dict, raw_text: str, total_rooms: int) -> str:
+    guests = []
+    if state.get("adult_count"):
+        guests.append(f"{state['adult_count']} 大")
+    if state.get("child_count"):
+        guests.append(f"{state['child_count']} 小")
+    guest_summary = " ".join(guests) if guests else "未知"
+    return (
+        f"[系統剛問客人要開幾間房。本館共 {total_rooms} 間房。"
+        f"已知人數:{guest_summary}]\n"
         f"客人最新一句話:{raw_text}"
     )

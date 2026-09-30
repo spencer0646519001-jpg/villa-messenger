@@ -35,13 +35,20 @@ Unlike InquiryService (which is forbidden the repository layer), this service
 MAY import repositories: it is the seam that keeps the webhook route thin.
 """
 
+import logging
+import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from app.domain.inquiry_completeness import compute_missing_fields
 from app.domain.inquiry_decision import InquiryDecision
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
 from app.domain.pet_parser import parse_pet_count_answer
-from app.domain.room_count_parser import parse_room_count_answer
+from app.domain.room_count_parser import (
+    count_room_mentions,
+    parse_plain_room_count_answer,
+    parse_room_count_answer,
+)
 from app.domain.text_normalizer import normalize_for_parsing
 from app.repositories.conversation_state_repository import ConversationStateRepository
 from app.schemas import InboundMessage
@@ -49,6 +56,19 @@ from app.schemas import InboundMessage
 # Single source of truth for which intents are worth tracking; imported (not
 # re-declared) so this create-gate cannot drift from the service's quote gate.
 from app.services.inquiry_service import _QUOTE_RELEVANT_INTENTS
+
+logger = logging.getLogger(__name__)
+
+# (message, active state) -> room count the customer means, or None. Wired to
+# the LLM by the webhook route (llm_fallback.judge_room_count_answer); None
+# whenever the LLM is off or unsure, so the rules below stay the fallback.
+RoomCountResolver = Callable[[InboundMessage, dict], "int | None"]
+
+# Labels that make a headcount explicit ("10大2小", "大人8位"). A bare "N人"
+# without them, in a message that also talks about rooms, is a room type
+# ("4人2間" = two 4-person rooms), not a new headcount.
+_EXPLICIT_GUEST_LABEL = re.compile(r"大|小|成人|兒童|嬰|幼兒|寶寶")
+_GUEST_SLOT_KEYS = ("adult_count", "child_count", "infant_count")
 
 
 # Booking slots that count as "this message carried information". intent and
@@ -88,8 +108,13 @@ _EMPTY_STATE_ROW: dict = {
 
 
 class ConversationStateService:
-    def __init__(self, repo: ConversationStateRepository) -> None:
+    def __init__(
+        self,
+        repo: ConversationStateRepository,
+        room_count_resolver: RoomCountResolver | None = None,
+    ) -> None:
         self._repo = repo
+        self._room_count_resolver = room_count_resolver
 
     def record(self, *, message: InboundMessage, decision: InquiryDecision) -> dict | None:
         """Merge this message's slots into the user's active state (or open one)."""
@@ -108,7 +133,7 @@ class ConversationStateService:
     def _update_active(self, message: InboundMessage, active: dict, slots: dict, off_kwargs: dict) -> dict:
         if _is_fresh_full_date_range(slots, active):
             return self._supersede_with_fresh_state(message, active, slots, off_kwargs)
-        self._fill_contextual_room_count(slots, active, message.text)
+        self._fill_contextual_room_count(slots, active, message)
         self._fill_contextual_pet_count(slots, active, message.text)
         slots = _guard_intent_downgrade(slots, active)
         if not self._has_slot(slots):
@@ -160,10 +185,37 @@ class ConversationStateService:
     def _has_slot(self, slots: dict) -> bool:
         return any(slots.get(key) is not None for key in _SLOT_KEYS)
 
-    def _fill_contextual_room_count(self, slots: dict, active: dict, text: str) -> None:
-        if slots.get("room_count") is not None or not _is_waiting_for_room_count(active):
+    def _fill_contextual_room_count(self, slots: dict, active: dict, message: InboundMessage) -> None:
+        # The open state just asked how many rooms. Real incident (2026-09-30):
+        # 8大4小 -> 「全部」 went unread and 「4人2間 2人2間」 became 4大4小 in
+        # 2 rooms, because parse_room_count took the first "2間" and the bare
+        # "4人" overwrote the stored adults. So only a plain answer ("4",
+        # "開3房") is trusted to the rules; anything else goes to the LLM for
+        # the room count alone, and the rules fall back to re-asking.
+        if not _is_waiting_for_room_count(active):
             return
-        slots["room_count"] = parse_room_count_answer(normalize_for_parsing(text))
+        text = normalize_for_parsing(message.text)
+        _drop_room_type_headcount(slots, text)
+        plain = _plain_room_count_answer(text)
+        if plain is not None:
+            slots["room_count"] = plain
+            return
+        resolved = self._resolve_room_count(message, active)
+        if resolved is not None:
+            slots["room_count"] = resolved
+        elif count_room_mentions(text) > 1:
+            # Several room figures and no LLM verdict: summing them is a guess.
+            # Leave room_count unset so the question is asked again.
+            slots["room_count"] = None
+
+    def _resolve_room_count(self, message: InboundMessage, active: dict) -> int | None:
+        if self._room_count_resolver is None:
+            return None
+        try:
+            return self._room_count_resolver(message, active)
+        except Exception:  # noqa: BLE001 -- the LLM must NEVER break state recording
+            logger.warning("Room-count LLM resolution failed", exc_info=True)
+            return None
 
     def _fill_contextual_pet_count(self, slots: dict, active: dict, text: str) -> None:
         if slots.get("pet_count") is not None or not _is_waiting_for_pet_count(active):
@@ -293,6 +345,18 @@ def _state_identity(message: InboundMessage) -> dict:
         "platform": message.platform,
         "platform_user_id": message.platform_user_id,
     }
+
+
+def _plain_room_count_answer(text: str) -> int | None:
+    plain = parse_plain_room_count_answer(text)
+    return plain if plain is not None else parse_room_count_answer(text)
+
+
+def _drop_room_type_headcount(slots: dict, text: str) -> None:
+    if count_room_mentions(text) == 0 or _EXPLICIT_GUEST_LABEL.search(text):
+        return
+    for key in _GUEST_SLOT_KEYS:
+        slots[key] = None
 
 
 def _is_waiting_for_room_count(state: dict) -> bool:

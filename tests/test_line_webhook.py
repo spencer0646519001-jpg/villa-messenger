@@ -20,7 +20,7 @@ from app.adapters.llm.fake_provider import FakeProvider
 from app.api import line_webhook_routes
 from app.api.dependencies import get_database_path
 from app.domain.availability_models import AvailabilityResult, BlockedNight
-from app.domain.llm_fallback import TYPE_4_STATE_CONTINUATION_JUDGMENT
+from app.domain.llm_fallback import TYPE_4_STATE_CONTINUATION_JUDGMENT, TYPE_7_ROOM_COUNT_ANSWER
 from app.domain.llm_provider import LLMOutput
 from app.domain.pricing_policy import calculate_price
 from app.domain.reply_templates import render_quote_message
@@ -2921,3 +2921,116 @@ def test_holiday_calendar_service_is_shared_across_requests() -> None:
 
     assert first is second
     assert first is not other
+
+
+# ============================================================
+# ROOM-COUNT ANSWERS THE RULES CAN'T SAFELY READ (2026-09-30 incident)
+# ============================================================
+#
+# Real conversation: 12/25-27 -> 8大4小 -> 「全部」 (unread, re-asked) ->
+# 「4人2間 2人2間」 -> quoted "4 大 4 小, 開 2 間房". The first "2間" became the
+# room count and the bare "4人" overwrote the stored adults.
+
+
+class _RoomCountOnlyProvider:
+    """Answers only the room-count trigger; every other trigger gets None, so
+    the rest of the pipeline runs on its rules exactly as with no LLM."""
+
+    def __init__(self, room_count: int | None) -> None:
+        self._room_count = room_count
+        self.calls: list[dict] = []
+
+    def parse(self, *, raw_text: str, reference_year: int, trigger: str, tenant_id: int):
+        self.calls.append({"raw_text": raw_text, "trigger": trigger})
+        if trigger != TYPE_7_ROOM_COUNT_ANSWER:
+            return None
+        # adult_count=4 on purpose: the room-count path must use room_count
+        # alone and never let the LLM rewrite the stored headcount.
+        return LLMOutput(
+            intent=None, checkin_date=None, checkout_date=None,
+            adult_count=4, child_count=None, infant_count=None,
+            pet_count=None, has_pet=None, last_message_text=None,
+            is_booking_intent=None, needs_clarification=False,
+            clarification_reason=None, room_count=self._room_count,
+        )
+
+
+def _send_texts(client: TestClient, texts: list[str]) -> None:
+    for text in texts:
+        body = _payload_bytes([_text_event_with_reply_token(text)])
+        assert _post(client, body, _sign(body)).status_code == 200
+
+
+@pytest.mark.parametrize("answer", ["全部", "4人2間 2人2間"])
+def test_llm_reads_room_count_answer_and_keeps_guest_counts(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+    provider = _RoomCountOnlyProvider(room_count=4)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+
+    _send_texts(client, ["12/25-27還有嗎", "8大4小"])
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    _send_texts(client, [answer])
+
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-12-25", checkout="2026-12-27",
+        adults=8, children=4, room_count=4,
+    )
+    room_calls = [c for c in provider.calls if c["trigger"] == TYPE_7_ROOM_COUNT_ANSWER]
+    assert len(room_calls) == 1
+    assert answer in room_calls[0]["raw_text"]
+
+
+@pytest.mark.parametrize("answer", ["全部", "4人2間 2人2間"])
+def test_without_llm_unreadable_room_answer_reasks_and_keeps_guest_counts(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: None)
+
+    _send_texts(client, ["12/25-27還有嗎", "8大4小", answer])
+
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    state = _rows(database_path, "conversation_states")[0]
+    assert state["status"] == "in_progress"
+    assert state["adult_count"] == 8
+    assert state["child_count"] == 4
+    assert state["room_count"] is None
+
+
+def test_llm_room_count_beyond_total_rooms_is_ignored(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+    provider = _RoomCountOnlyProvider(room_count=5)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+
+    _send_texts(client, ["12/25-27還有嗎", "8大4小", "全部"])
+
+    assert calls[-1]["text"] == MISSING_ROOM_COUNT_MESSAGE
+    assert _rows(database_path, "conversation_states")[0]["room_count"] is None
+
+
+def test_plain_room_count_answer_does_not_call_llm(
+    client: TestClient, database_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_id = _seed_channel(database_path)
+    _set_system_on(database_path, tenant_id)
+    calls = _capture_replies(monkeypatch)
+    provider = _RoomCountOnlyProvider(room_count=2)
+    monkeypatch.setattr(line_webhook_routes, "build_llm_provider_from_env", lambda: provider)
+
+    _send_texts(client, ["12/25-27還有嗎", "8大4小", "開4房"])
+
+    assert calls[-1]["text"] == _expected_quote(
+        database_path, tenant_id, checkin="2026-12-25", checkout="2026-12-27",
+        adults=8, children=4, room_count=4,
+    )
+    assert not [c for c in provider.calls if c["trigger"] == TYPE_7_ROOM_COUNT_ANSWER]

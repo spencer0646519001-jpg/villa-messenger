@@ -50,7 +50,7 @@ from app.config_loader import (
     load_tenant_config,
 )
 from app.domain.inquiry_decision import InquiryDecision
-from app.domain.llm_fallback import judge_state_continuation
+from app.domain.llm_fallback import judge_room_count_answer, judge_state_continuation
 from app.domain.llm_provider import LLMProvider
 from app.domain.log_payload_to_state_slots import log_payload_to_state_slots
 from app.domain.operation_mode_resolver import compute_most_recent_schedule_window
@@ -102,7 +102,7 @@ from app.services.conversation_reply_composer import (
     ConversationReplyComposer,
 )
 from app.services.conversation_state_service import _SLOT_KEYS
-from app.services.conversation_state_service import ConversationStateService
+from app.services.conversation_state_service import ConversationStateService, RoomCountResolver
 from app.services.inquiry_service import _QUOTE_RELEVANT_INTENTS
 from app.services.inquiry_service import InquiryService
 from app.services.message_persistence_service import MessagePersistenceService
@@ -288,13 +288,42 @@ def _build_pipeline_context(database_path: str, tenant: dict) -> _PipelineContex
     # One holiday service per request, shared by both quote paths: a year
     # fetched for the single-turn gate is then already cached for the composer.
     holiday_service = build_holiday_calendar_service(database_path)
+    llm_provider = build_llm_provider_from_env()
     return _PipelineContext(
         service=_build_inquiry_service(database_path, availability_service, holiday_service),
         persistence=MessagePersistenceService(database_path=database_path),
-        state_service=ConversationStateService(ConversationStateRepository(database_path)),
+        state_service=ConversationStateService(
+            ConversationStateRepository(database_path),
+            room_count_resolver=_build_room_count_resolver(database_path, llm_provider),
+        ),
         composer=_build_reply_composer(database_path, availability_service, holiday_service),
-        llm_provider=build_llm_provider_from_env(),
+        llm_provider=llm_provider,
     )
+
+
+def _build_room_count_resolver(
+    database_path: str, llm_provider: LLMProvider | None
+) -> RoomCountResolver | None:
+    """LLM reading of a room-count answer the rules can't safely read. Bounded
+    by the tenant's own total_rooms; anything else is None (rules decide)."""
+    if llm_provider is None:
+        return None
+    room_policy_loader = make_tenant_room_policy_loader(database_path)
+
+    def resolve(message: InboundMessage, state: dict) -> int | None:
+        total_rooms = room_policy_loader(message.tenant_id).get("total_rooms")
+        if isinstance(total_rooms, bool) or not isinstance(total_rooms, int):
+            return None
+        return judge_room_count_answer(
+            state=state,
+            raw_text=message.text,
+            total_rooms=total_rooms,
+            reference_year=(message.timestamp or datetime.now(timezone.utc)).year,
+            tenant_id=message.tenant_id,
+            provider=llm_provider,
+        )
+
+    return resolve
 
 
 def _build_availability_service(tenant: dict) -> AvailabilityService | None:
